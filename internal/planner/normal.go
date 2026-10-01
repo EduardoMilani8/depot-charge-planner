@@ -224,6 +224,7 @@ func PlanNormal(cfg Config, in Input) Plan {
 	for _, ib := range idles {
 		plan.Buses = append(plan.Buses, idleStatus(cfg, ib))
 	}
+	plan.Swaps = recommendSwaps(cfg, in, cands, idles)
 	sort.Slice(plan.Setpoints, func(i, j int) bool { return plan.Setpoints[i].ChargerID < plan.Setpoints[j].ChargerID })
 	sort.Slice(plan.Buses, func(i, j int) bool { return plan.Buses[i].BusID < plan.Buses[j].BusID })
 	return plan
