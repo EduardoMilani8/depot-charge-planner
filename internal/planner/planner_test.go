@@ -121,3 +121,67 @@ func TestPlannerEnforcesBrokenNormalLayer(t *testing.T) {
 		t.Errorf("setpoint = %v, want clamped to 150", sp(p, "C1"))
 	}
 }
+
+func TestPlannerTimeoutGoroutineDoesNotRaceWithCaller(t *testing.T) {
+	cfg := testConfig()
+	cfg.Timeout = 20 * time.Millisecond
+	var sink float64
+	done := make(chan struct{})
+	pl := New(cfg).WithNormal(func(c Config, in Input) Plan {
+		time.Sleep(100 * time.Millisecond)
+		sink = in.Buses[0].SoCKWh + in.Chargers[0].MaxKW // read after the caller has moved on
+		close(done)
+		return PlanNormal(c, in)
+	})
+	in := validInput()
+	if p := pl.Plan(in); p.Layer != LayerSafe {
+		t.Fatalf("layer = %v, want safe", p.Layer)
+	}
+	// The simulator reuses its slices on the next tick.
+	in.Buses[0].SoCKWh = 1
+	in.Chargers[0].MaxKW = 2
+	select { // let the abandoned goroutine finish its reads
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("abandoned goroutine never finished")
+	}
+	_ = sink
+	time.Sleep(50 * time.Millisecond)
+}
+
+func TestPlannerCachedPlanIsIsolatedFromCallers(t *testing.T) {
+	calls := 0
+	pl := New(testConfig()).WithNormal(func(c Config, in Input) Plan {
+		calls++
+		if calls > 1 {
+			panic("boom")
+		}
+		return PlanNormal(c, in)
+	})
+	in := validInput()
+	a := pl.Plan(in)
+	orig := sp(a, "C1")
+	if a.Layer != LayerNormal || orig <= 0 || orig == 1 {
+		t.Fatalf("unexpected first plan: %+v", a)
+	}
+	a.Setpoints[0].KW = 1 // caller mutates the returned plan
+	a.Buses[0].Reason = "mutated"
+
+	in.Now = 1
+	b := pl.Plan(in) // panics -> last-valid from cache
+	if b.Layer != LayerLastValid {
+		t.Fatalf("layer = %v, want last-valid", b.Layer)
+	}
+	if sp(b, "C1") != orig {
+		t.Errorf("cached setpoint changed: got %v, want %v", sp(b, "C1"), orig)
+	}
+	if b.Buses[0].Reason == "mutated" {
+		t.Errorf("cached bus status shares memory with the caller")
+	}
+	b.Setpoints[0].KW = 2 // mutating the last-valid plan must not corrupt the cache either
+	in.Now = 2
+	c := pl.Plan(in)
+	if c.Layer != LayerLastValid || sp(c, "C1") != orig {
+		t.Errorf("cache corrupted by caller: %+v", c)
+	}
+}

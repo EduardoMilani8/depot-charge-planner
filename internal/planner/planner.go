@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/EduardoMilani8/depot-charge-planner/internal/model"
@@ -50,7 +51,7 @@ func (p *Planner) Plan(in Input) Plan {
 	}
 	plan.Layer = LayerNormal
 	plan = p.finish(in, plan)
-	p.last, p.hasLast, p.lastAt = plan, true, in.Now
+	p.last, p.hasLast, p.lastAt = clonePlan(plan), true, in.Now
 	return plan
 }
 
@@ -64,10 +65,10 @@ func (p *Planner) finish(in Input, plan Plan) Plan {
 
 func (p *Planner) fallback(in Input, reason string, inputValid bool) Plan {
 	if p.hasLast && in.Now >= p.lastAt && in.Now-p.lastAt <= p.cfg.LastPlanTTLMin {
-		plan := p.last
+		plan := clonePlan(p.last)
 		plan.Layer = LayerLastValid
 		plan.Swaps = nil
-		plan.Notes = append(append([]string(nil), plan.Notes...), "usando o último plano válido: "+reason)
+		plan.Notes = append(plan.Notes, "usando o último plano válido: "+reason)
 		return p.finish(in, plan)
 	}
 	var plan Plan
@@ -86,6 +87,12 @@ func (p *Planner) runNormal(in Input) (Plan, error) {
 		err  error
 	}
 	cfg, normal := p.cfg, p.normal
+	// The goroutine may outlive a timeout, while the caller reuses its slices on the
+	// next tick. Give it a private snapshot (Charger and Bus hold no reference
+	// fields, so a shallow slice clone is a full copy).
+	snap := in
+	snap.Chargers = slices.Clone(in.Chargers)
+	snap.Buses = slices.Clone(in.Buses)
 	ch := make(chan result, 1)
 	go func() {
 		defer func() {
@@ -93,15 +100,24 @@ func (p *Planner) runNormal(in Input) (Plan, error) {
 				ch <- result{err: fmt.Errorf("panic: %v", r)}
 			}
 		}()
-		ch <- result{plan: normal(cfg, in)}
+		ch <- result{plan: normal(cfg, snap)}
 	}()
 	select {
 	case r := <-ch:
 		return r.plan, r.err
 	case <-time.After(cfg.Timeout):
-		// The abandoned goroutine only reads its inputs and finishes on its own.
+		// The abandoned goroutine only touches its private snapshot and finishes on its own.
 		return Plan{}, errors.New("timeout da camada normal")
 	}
+}
+
+// clonePlan deep-copies the slices of a plan so cached and returned plans never alias.
+func clonePlan(p Plan) Plan {
+	p.Setpoints = slices.Clone(p.Setpoints)
+	p.Buses = slices.Clone(p.Buses)
+	p.Swaps = slices.Clone(p.Swaps)
+	p.Notes = slices.Clone(p.Notes)
+	return p
 }
 
 // tooUnreliable reports whether most connected buses have untrustworthy SoC data.
