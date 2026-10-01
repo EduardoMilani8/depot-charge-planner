@@ -2933,4 +2933,1080 @@ git add internal
 git commit -m "feat(sim): deterministic simulator core with truth/observation split and baselines"
 ```
 
-> **Status do plano:** PARCIAL. Tarefas 1 a 8 escritas. Faltam as tarefas 9 a 13 (testes de falhas, gerador e propriedades, registro de decisões, CLI, CI/fuzz/golden).
+
+### Task 9: Testes de injeção de falhas
+
+A lógica das falhas já está em `world.go` e `controllers.go` (Tarefa 8). Esta tarefa a **fixa com testes**; são testes de caracterização que devem passar de imediato. Se algum falhar, o defeito está no simulador ou no planejador: corrija a causa, não o teste.
+
+**Files:**
+- Test: `internal/sim/faults_test.go`
+- Modify (se necessário): `internal/sim/world.go`
+
+**Interfaces:**
+- Consumes: `Scenario`, `Fault`, `Run`, `Metrics`, `NewPlannerController`, `baseScenario`, `plannerCtrl` (helpers da Tarefa 8).
+- Produces: `twoBusScenario()` (helper de teste: 2 carregadores, 2 ônibus que usam todo o limite de 300 kW).
+
+**Review Focus pinned here:** carregador offline que continua puxando potência; queda súbita do limite (violação comandada = 0, sobrecarga física permitida por 1 passo); leitura de SoC congelada ou ausente.
+
+- [ ] **Step 1: Escrever os testes**
+
+`internal/sim/faults_test.go`:
+```go
+package sim
+
+import (
+	"testing"
+	"time"
+
+	"github.com/EduardoMilani8/depot-charge-planner/internal/model"
+	"github.com/EduardoMilani8/depot-charge-planner/internal/planner"
+)
+
+// twoBusScenario has two buses that together want the whole 300 kW limit.
+func twoBusScenario() Scenario {
+	sc := baseScenario()
+	sc.BaseLimitKW = 300
+	sc.Chargers = append(sc.Chargers, model.Charger{ID: "C2", MaxKW: 150, MinKW: 5, Efficiency: 0.95, Status: model.ChargerOK})
+	mk := func(id string) BusSpec {
+		return BusSpec{Bus: model.Bus{
+			ID: id, CapacityKWh: 300, SoCKWh: 0, SoCConfidence: 1, TargetKWh: 240,
+			ArrivalMin: 0, DepartureMin: 200, MaxBatteryKW: 150,
+		}}
+	}
+	sc.Buses = []BusSpec{mk("B1"), mk("B2")}
+	return sc
+}
+
+func TestFaultPermanentChargerFailure(t *testing.T) {
+	sc := baseScenario()
+	sc.Faults = []Fault{{Kind: FaultChargerFail, Target: "C1", From: 0, To: forever}}
+	m := Run(sc, plannerCtrl(sc), nil)
+	if m.Ready != 0 || m.ShortfallKWh <= 0 {
+		t.Errorf("a bus with no working charger cannot leave ready: %+v", m)
+	}
+	if m.PlanViolations != 0 {
+		t.Errorf("violations: %+v", m)
+	}
+}
+
+func TestFaultOfflineChargerKeepsDrawingAndPlannerAccountsForIt(t *testing.T) {
+	sc := twoBusScenario()
+	sc.Faults = []Fault{{Kind: FaultChargerOffline, Target: "C1", From: 50, To: 250}}
+	m := Run(sc, plannerCtrl(sc), nil)
+	if m.PlanViolations != 0 || m.OvershootMin != 0 {
+		t.Errorf("the offline charger's draw must be reserved from the budget: %+v", m)
+	}
+}
+
+func TestFaultLimitDropCausesOnlyPhysicalOvershoot(t *testing.T) {
+	sc := twoBusScenario()
+	sc.Faults = []Fault{{Kind: FaultLimitDrop, From: 30, To: 200, Value: 0.5}}
+	m := Run(sc, plannerCtrl(sc), nil)
+	if m.PlanViolations != 0 {
+		t.Errorf("the plan must respect the new limit immediately: %+v", m)
+	}
+	if m.OvershootMin < 1 {
+		t.Errorf("with a 1-step command latency the drop should overshoot at least once: %+v", m)
+	}
+}
+
+func TestFaultMissingSoCUsesSafeProfileAndStillCharges(t *testing.T) {
+	sc := baseScenario()
+	sc.Faults = []Fault{{Kind: FaultSoCMissing, Target: "*", From: 0, To: forever}}
+	m := Run(sc, plannerCtrl(sc), nil)
+	if m.LayerTicks["safe"] == 0 {
+		t.Errorf("expected the safe layer to take over: %+v", m.LayerTicks)
+	}
+	if m.Ready != 1 {
+		t.Errorf("the safe profile must still charge the bus: %+v", m)
+	}
+}
+
+func TestFaultFrozenSoCBecomesUnreliable(t *testing.T) {
+	sc := baseScenario()
+	sc.Faults = []Fault{{Kind: FaultSoCFreeze, Target: "B1", From: 10, To: 200}}
+	m := Run(sc, plannerCtrl(sc), nil)
+	if m.LayerTicks["safe"] == 0 {
+		t.Errorf("a frozen reading must age into 'unreliable': %+v", m.LayerTicks)
+	}
+	if m.Ready != 1 {
+		t.Errorf("bus should still leave ready: %+v", m)
+	}
+}
+
+func TestFaultSoCNoiseIsTolerated(t *testing.T) {
+	sc := baseScenario()
+	sc.Faults = []Fault{{Kind: FaultSoCNoise, Target: "*", From: 0, To: forever, Value: 5}}
+	if m := Run(sc, plannerCtrl(sc), nil); m.Ready != 1 || m.PlanViolations != 0 {
+		t.Errorf("%+v", m)
+	}
+}
+
+func TestFaultPlannerPanicFallsBackToLastValidPlan(t *testing.T) {
+	sc := baseScenario()
+	sc.Faults = []Fault{{Kind: FaultPlannerPanic, From: 10, To: 20}}
+	m := Run(sc, plannerCtrl(sc), nil)
+	if m.LayerTicks["last-valid"] == 0 {
+		t.Errorf("expected last-valid ticks: %+v", m.LayerTicks)
+	}
+	if m.Ready != 1 || m.PlanViolations != 0 {
+		t.Errorf("%+v", m)
+	}
+}
+
+func TestFaultPlannerSlowTimesOut(t *testing.T) {
+	sc := baseScenario()
+	sc.Faults = []Fault{{Kind: FaultPlannerSlow, From: 10, To: 12}}
+	cfg := planner.DefaultConfig()
+	cfg.Timeout = 20 * time.Millisecond
+	m := Run(sc, NewPlannerController(cfg, sc), nil)
+	if m.LayerTicks["last-valid"]+m.LayerTicks["safe"] == 0 {
+		t.Errorf("a timeout must degrade the layer: %+v", m.LayerTicks)
+	}
+	if m.Ready != 1 {
+		t.Errorf("%+v", m)
+	}
+}
+
+func TestFaultConsumptionAboveForecastLeavesBusShort(t *testing.T) {
+	sc := baseScenario()
+	sc.Faults = []Fault{{Kind: FaultConsumption, Target: "B1", Value: 100}}
+	m := Run(sc, plannerCtrl(sc), nil)
+	if m.Ready != 0 || m.ShortfallKWh <= 0 {
+		t.Errorf("the planner cannot know the extra consumption: %+v", m)
+	}
+}
+
+func TestFaultLateArrival(t *testing.T) {
+	sc := baseScenario()
+	sc.Faults = []Fault{{Kind: FaultLateArrival, Target: "B1", Value: 100}}
+	if m := Run(sc, plannerCtrl(sc), nil); m.Ready != 1 {
+		t.Errorf("%+v", m)
+	}
+}
+
+func TestFaultEarlyDepartureIsReportedNotHidden(t *testing.T) {
+	sc := baseScenario()
+	sc.Faults = []Fault{{Kind: FaultEarlyDeparture, Target: "B1", From: 10, To: forever, Value: 30}}
+	m := Run(sc, plannerCtrl(sc), nil)
+	if m.Ready != 0 || m.ShortfallKWh <= 0 {
+		t.Errorf("30 minutes are not enough to charge 150 kWh: %+v", m)
+	}
+	if m.PlanViolations != 0 {
+		t.Errorf("%+v", m)
+	}
+}
+```
+
+- [ ] **Step 2: Rodar**
+
+Run: `go test -race ./internal/sim -run Fault -v`
+Expected: PASS. Em caso de falha, leia `m` impresso, localize a causa (ordem de eventos em `beginTick`, `endTick`, `AvailableKW`) e corrija o código.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add internal/sim
+git commit -m "test(sim): fault injection scenarios (charger, limit, sensor and planner faults)"
+```
+
+---
+
+### Task 10: Gerador de cenários, perfis de falha e propriedades
+
+**Files:**
+- Create: `internal/sim/gen.go`
+- Test: `internal/sim/gen_test.go`, `internal/sim/properties_test.go`
+
+**Interfaces:**
+- Consumes: `Scenario`, `BusSpec`, `Fault*`, `forever`, `Tariff`, `Run`, `Controller` e construtores.
+- Produces: `sim.FaultProfile` (`ProfileNone`, `ProfileMild`, `ProfileSevere`), `sim.GenParams`, `sim.DefaultGenParams() GenParams`, `sim.Generate(p GenParams, seed int64) Scenario` (determinístico por semente; minuto 0 = 18:00; chegadas entre 20:00 e 24:00; saídas entre 04:30 e 07:00; horizonte 800 minutos).
+
+**Premissas (a validar com operadoras reais):** capacidade 350 kWh, potência máxima da bateria 150 kW, carregador 150 kW com piso de 5 kW e rendimento 0,94, SoC de chegada entre 15% e 45%, alvo entre 75% e 95% da capacidade, tarifa fora de ponta R$ 0,90/kWh e ponta (18h–21h) R$ 2,70/kWh.
+
+- [ ] **Step 1: Escrever os testes que falham**
+
+`internal/sim/gen_test.go`:
+```go
+package sim
+
+import (
+	"reflect"
+	"testing"
+)
+
+func TestGenerateIsDeterministic(t *testing.T) {
+	p := DefaultGenParams()
+	p.Profile = ProfileSevere
+	a, b := Generate(p, 7), Generate(p, 7)
+	if !reflect.DeepEqual(a, b) {
+		t.Error("same seed must generate the same scenario")
+	}
+	if reflect.DeepEqual(a, Generate(p, 8)) {
+		t.Error("different seeds should differ")
+	}
+}
+
+func TestGenerateShape(t *testing.T) {
+	p := DefaultGenParams()
+	sc := Generate(p, 1)
+	if len(sc.Buses) != p.NumBuses || len(sc.Chargers) != p.NumChargers {
+		t.Fatalf("sizes: %d buses, %d chargers", len(sc.Buses), len(sc.Chargers))
+	}
+	ids := map[string]bool{}
+	for _, b := range sc.Buses {
+		if ids[b.Bus.ID] {
+			t.Errorf("duplicate bus ID %s", b.Bus.ID)
+		}
+		ids[b.Bus.ID] = true
+		if b.Bus.ArrivalMin >= b.Bus.DepartureMin || b.Bus.DepartureMin >= sc.Horizon {
+			t.Errorf("bad times for %s: %d..%d (horizon %d)", b.Bus.ID, b.Bus.ArrivalMin, b.Bus.DepartureMin, sc.Horizon)
+		}
+		if b.Bus.SoCKWh >= b.Bus.TargetKWh {
+			t.Errorf("%s arrives already at its target", b.Bus.ID)
+		}
+	}
+}
+
+func TestProfilesInjectExpectedFaults(t *testing.T) {
+	p := DefaultGenParams()
+	if got := Generate(p, 1).Faults; len(got) != 0 {
+		t.Errorf("none profile must have no faults: %v", got)
+	}
+	p.Profile = ProfileMild
+	if got := Generate(p, 1).Faults; len(got) == 0 {
+		t.Error("mild profile must inject faults")
+	}
+	p.Profile = ProfileSevere
+	kinds := map[FaultKind]bool{}
+	for _, f := range Generate(p, 1).Faults {
+		kinds[f.Kind] = true
+	}
+	for _, k := range []FaultKind{FaultChargerFail, FaultChargerOffline, FaultLimitDrop, FaultSoCNoise,
+		FaultLateArrival, FaultEarlyDeparture, FaultPlannerPanic, FaultPlannerSlow} {
+		if !kinds[k] {
+			t.Errorf("severe profile is missing %s", k)
+		}
+	}
+}
+
+func TestGenerateDegenerateSizesDoNotPanic(t *testing.T) {
+	for _, p := range []GenParams{{Profile: ProfileSevere}, {NumBuses: 3, Profile: ProfileSevere}, {NumChargers: 3, Profile: ProfileSevere}} {
+		_ = Generate(p, 1)
+	}
+}
+```
+
+`internal/sim/properties_test.go`:
+```go
+package sim
+
+import (
+	"testing"
+	"time"
+
+	"github.com/EduardoMilani8/depot-charge-planner/internal/planner"
+)
+
+var allProfiles = []FaultProfile{ProfileNone, ProfileMild, ProfileSevere}
+
+func propertyConfig() planner.Config {
+	c := planner.DefaultConfig()
+	c.Timeout = 50 * time.Millisecond
+	return c
+}
+
+func seedCount(normal, short int) int {
+	if testing.Short() {
+		return short
+	}
+	return normal
+}
+
+func TestPlannerNeverViolatesLimit(t *testing.T) {
+	for _, profile := range allProfiles {
+		for seed := int64(1); seed <= int64(seedCount(50, 5)); seed++ {
+			p := DefaultGenParams()
+			p.Profile = profile
+			sc := Generate(p, seed)
+			m := Run(sc, NewPlannerController(propertyConfig(), sc), nil)
+			if m.PlanViolations != 0 {
+				t.Fatalf("profile %s seed %d: %d plan violations (reproduce with Generate and this seed)", profile, seed, m.PlanViolations)
+			}
+		}
+	}
+}
+
+func TestBaselinesNeverViolateLimit(t *testing.T) {
+	for _, profile := range allProfiles {
+		for seed := int64(1); seed <= int64(seedCount(15, 3)); seed++ {
+			p := DefaultGenParams()
+			p.Profile = profile
+			sc := Generate(p, seed)
+			for name, c := range map[string]Controller{"fifo": NewFIFO(), "edf": NewEDF(), "safe": NewSafeOnly()} {
+				if m := Run(sc, c, nil); m.PlanViolations != 0 {
+					t.Fatalf("%s profile %s seed %d: %d violations", name, profile, seed, m.PlanViolations)
+				}
+			}
+		}
+	}
+}
+
+// If this fails it is a FINDING about the algorithm, not a reason to loosen the test:
+// investigate with `go run ./cmd/simrun -profile <p>` before changing anything.
+func TestPlannerNotWorseThanBaselines(t *testing.T) {
+	for _, profile := range allProfiles {
+		var pl, fifo, edf []Metrics
+		for seed := int64(1); seed <= int64(seedCount(15, 3)); seed++ {
+			p := DefaultGenParams()
+			p.Profile = profile
+			sc := Generate(p, seed)
+			pl = append(pl, Run(sc, NewPlannerController(propertyConfig(), sc), nil))
+			fifo = append(fifo, Run(sc, NewFIFO(), nil))
+			edf = append(edf, Run(sc, NewEDF(), nil))
+		}
+		a, f, e := Aggregate(pl).ReadyPct, Aggregate(fifo).ReadyPct, Aggregate(edf).ReadyPct
+		if a < f || a < e {
+			t.Errorf("profile %s: planner ready%% %.1f is below fifo %.1f or edf %.1f", profile, a, f, e)
+		}
+	}
+}
+```
+
+- [ ] **Step 2: Rodar e ver falhar**
+
+Run: `go test ./internal/sim -run 'Generate|Profiles|Property|Never|NotWorse' -v`
+Expected: FAIL (`undefined: DefaultGenParams`).
+
+- [ ] **Step 3: Implementar**
+
+`internal/sim/gen.go`:
+```go
+package sim
+
+import (
+	"fmt"
+	"math/rand"
+
+	"github.com/EduardoMilani8/depot-charge-planner/internal/model"
+)
+
+type FaultProfile string
+
+const (
+	ProfileNone   FaultProfile = "none"
+	ProfileMild   FaultProfile = "mild"
+	ProfileSevere FaultProfile = "severe"
+)
+
+type GenParams struct {
+	NumBuses, NumChargers int
+	LimitKW               float64
+	ChargerMaxKW          float64
+	ChargerMinKW          float64
+	Efficiency            float64
+	CapacityKWh           float64
+	MaxBatteryKW          float64
+	Profile               FaultProfile
+}
+
+// DefaultGenParams uses public-data assumptions that still need validation with real operators.
+func DefaultGenParams() GenParams {
+	return GenParams{
+		NumBuses: 50, NumChargers: 25, LimitKW: 2000,
+		ChargerMaxKW: 150, ChargerMinKW: 5, Efficiency: 0.94,
+		CapacityKWh: 350, MaxBatteryKW: 150, Profile: ProfileNone,
+	}
+}
+
+// Generate builds a reproducible scenario: minute 0 is 18:00, buses arrive 20:00-24:00
+// and leave 04:30-07:00.
+func Generate(p GenParams, seed int64) Scenario {
+	rng := rand.New(rand.NewSource(seed))
+	sc := Scenario{
+		Name:          fmt.Sprintf("gen-%s-%d", p.Profile, seed),
+		Seed:          seed,
+		StartClockMin: 18 * 60,
+		Horizon:       800,
+		BaseLimitKW:   p.LimitKW,
+		Tariff:        Tariff{PeakFromMin: 18 * 60, PeakToMin: 21 * 60, PeakPrice: 2.70, OffPeakPrice: 0.90},
+		FollowSwaps:   true,
+	}
+	for i := 0; i < p.NumChargers; i++ {
+		sc.Chargers = append(sc.Chargers, model.Charger{
+			ID: fmt.Sprintf("C%03d", i+1), MaxKW: p.ChargerMaxKW, MinKW: p.ChargerMinKW,
+			Efficiency: p.Efficiency, Status: model.ChargerOK,
+		})
+	}
+	for i := 0; i < p.NumBuses; i++ {
+		sc.Buses = append(sc.Buses, BusSpec{Bus: model.Bus{
+			ID:            fmt.Sprintf("B%03d", i+1),
+			CapacityKWh:   p.CapacityKWh,
+			SoCKWh:        p.CapacityKWh * (0.15 + 0.30*rng.Float64()),
+			SoCConfidence: 1,
+			TargetKWh:     p.CapacityKWh * (0.75 + 0.20*rng.Float64()),
+			ArrivalMin:    120 + rng.Intn(241),
+			DepartureMin:  630 + rng.Intn(151),
+			MaxBatteryKW:  p.MaxBatteryKW,
+		}})
+	}
+	genFaults(rng, p.Profile, &sc)
+	return sc
+}
+
+func genFaults(rng *rand.Rand, profile FaultProfile, sc *Scenario) {
+	if len(sc.Chargers) == 0 || len(sc.Buses) == 0 {
+		return
+	}
+	add := func(f Fault) { sc.Faults = append(sc.Faults, f) }
+	charger := func() string { return sc.Chargers[rng.Intn(len(sc.Chargers))].ID }
+	bus := func() *BusSpec { return &sc.Buses[rng.Intn(len(sc.Buses))] }
+
+	switch profile {
+	case ProfileMild:
+		from := 200 + rng.Intn(300)
+		add(Fault{Kind: FaultChargerFail, Target: charger(), From: from, To: from + 90})
+		add(Fault{Kind: FaultSoCNoise, Target: "*", From: 0, To: forever, Value: 3})
+		d := 200 + rng.Intn(300)
+		add(Fault{Kind: FaultLimitDrop, From: d, To: d + 60, Value: 0.9})
+	case ProfileSevere:
+		for i := 0; i < 2; i++ {
+			from := 150 + rng.Intn(400)
+			add(Fault{Kind: FaultChargerFail, Target: charger(), From: from, To: forever})
+		}
+		from := 150 + rng.Intn(400)
+		add(Fault{Kind: FaultChargerOffline, Target: charger(), From: from, To: from + 120})
+		d := 200 + rng.Intn(300)
+		add(Fault{Kind: FaultLimitDrop, From: d, To: d + 120, Value: 0.6})
+		add(Fault{Kind: FaultSoCNoise, Target: "*", From: 0, To: forever, Value: 10})
+		for i := range sc.Buses {
+			id := sc.Buses[i].Bus.ID
+			switch r := rng.Float64(); {
+			case r < 0.10:
+				f := 300 + rng.Intn(200)
+				add(Fault{Kind: FaultSoCFreeze, Target: id, From: f, To: f + 120})
+			case r < 0.15:
+				f := 300 + rng.Intn(200)
+				add(Fault{Kind: FaultSoCMissing, Target: id, From: f, To: f + 60})
+			case r < 0.35:
+				add(Fault{Kind: FaultConsumption, Target: id, Value: 30})
+			}
+		}
+		for i := 0; i < 3; i++ {
+			add(Fault{Kind: FaultLateArrival, Target: bus().Bus.ID, Value: 60})
+		}
+		for i := 0; i < 3; i++ {
+			b := bus()
+			newDep := b.Bus.DepartureMin - 45
+			add(Fault{Kind: FaultEarlyDeparture, Target: b.Bus.ID, From: newDep - 75, To: forever, Value: float64(newDep)})
+		}
+		pf := 200 + rng.Intn(400)
+		add(Fault{Kind: FaultPlannerPanic, From: pf, To: pf + 5})
+		ps := 200 + rng.Intn(400)
+		add(Fault{Kind: FaultPlannerSlow, From: ps, To: ps + 2})
+	}
+}
+```
+
+- [ ] **Step 4: Rodar e ver passar**
+
+Run: `gofmt -l . && go vet ./... && go test -race ./internal/sim -v`
+Expected: PASS. Se `TestPlannerNotWorseThanBaselines` falhar, **é um achado**: rode `go run ./cmd/simrun` depois da Tarefa 12 (ou imprima as métricas) e registre a causa antes de qualquer ajuste de parâmetros.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add internal/sim
+git commit -m "feat(sim): reproducible scenario generator with none/mild/severe fault profiles"
+```
+
+### Task 11: Registro de decisões e replay
+
+**Files:**
+- Create: `internal/sim/decisionlog.go`
+- Test: `internal/sim/decisionlog_test.go`
+
+**Interfaces:**
+- Consumes: `Recorder` (Tarefa 8), `planner.Input`, `planner.Plan`, `planner.PlanNormal`, `planner.Enforce`.
+- Produces: `sim.DecisionRecord{Minute int; Input planner.Input; Plan planner.Plan}`, `sim.NewDecisionLog(w io.Writer) *DecisionLog` (implementa `Recorder`, grava JSON lines, guarda o primeiro erro em `Err() error`), `sim.ReadDecisionLog(r io.Reader) ([]DecisionRecord, error)`, `sim.ReplayDiff{Minute int; ChargerID string; Logged, Replayed float64}`, `sim.Replay(cfg planner.Config, recs []DecisionRecord) []ReplayDiff` (reexecuta a camada normal sobre cada registro de camada normal e lista as diferenças de potência; lista vazia = o planejador é reproduzível).
+
+- [ ] **Step 1: Escrever os testes que falham**
+
+`internal/sim/decisionlog_test.go`:
+```go
+package sim
+
+import (
+	"bytes"
+	"errors"
+	"testing"
+
+	"github.com/EduardoMilani8/depot-charge-planner/internal/planner"
+)
+
+func TestDecisionLogRoundTripAndReplay(t *testing.T) {
+	sc := baseScenario()
+	var buf bytes.Buffer
+	log := NewDecisionLog(&buf)
+	Run(sc, plannerCtrl(sc), log)
+	if err := log.Err(); err != nil {
+		t.Fatal(err)
+	}
+	recs, err := ReadDecisionLog(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != sc.Horizon+1 {
+		t.Fatalf("got %d records, want %d", len(recs), sc.Horizon+1)
+	}
+	if diffs := Replay(planner.DefaultConfig(), recs); len(diffs) != 0 {
+		t.Errorf("replaying with the same config must reproduce every decision: %+v", diffs[:1])
+	}
+}
+
+func TestReplayDetectsChangedBehaviour(t *testing.T) {
+	sc := baseScenario()
+	var buf bytes.Buffer
+	log := NewDecisionLog(&buf)
+	Run(sc, plannerCtrl(sc), log)
+	recs, err := ReadDecisionLog(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := planner.DefaultConfig()
+	cfg.MarginKWh = 80 // a different planner
+	if diffs := Replay(cfg, recs); len(diffs) == 0 {
+		t.Error("a different configuration must produce visible differences")
+	}
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("disk full") }
+
+func TestDecisionLogKeepsFirstError(t *testing.T) {
+	log := NewDecisionLog(failingWriter{})
+	if err := log.Record(0, planner.Input{}, planner.Plan{}); err == nil {
+		t.Error("expected the write error")
+	}
+	if log.Err() == nil {
+		t.Error("Err() must keep the error")
+	}
+}
+```
+
+- [ ] **Step 2: Rodar e ver falhar**
+
+Run: `go test ./internal/sim -run 'DecisionLog|Replay' -v`
+Expected: FAIL (`undefined: NewDecisionLog`).
+
+- [ ] **Step 3: Implementar**
+
+`internal/sim/decisionlog.go`:
+```go
+package sim
+
+import (
+	"encoding/json"
+	"io"
+	"math"
+	"sort"
+
+	"github.com/EduardoMilani8/depot-charge-planner/internal/planner"
+)
+
+// DecisionRecord is one planning cycle: what the planner saw and what it decided.
+type DecisionRecord struct {
+	Minute int           `json:"minute"`
+	Input  planner.Input `json:"input"`
+	Plan   planner.Plan  `json:"plan"`
+}
+
+// DecisionLog writes records as JSON lines and remembers the first write error.
+type DecisionLog struct {
+	enc *json.Encoder
+	err error
+}
+
+var _ Recorder = (*DecisionLog)(nil)
+
+func NewDecisionLog(w io.Writer) *DecisionLog { return &DecisionLog{enc: json.NewEncoder(w)} }
+
+func (l *DecisionLog) Record(minute int, in planner.Input, p planner.Plan) error {
+	if l.err != nil {
+		return l.err
+	}
+	l.err = l.enc.Encode(DecisionRecord{Minute: minute, Input: in, Plan: p})
+	return l.err
+}
+
+func (l *DecisionLog) Err() error { return l.err }
+
+func ReadDecisionLog(r io.Reader) ([]DecisionRecord, error) {
+	dec := json.NewDecoder(r)
+	var out []DecisionRecord
+	for {
+		var rec DecisionRecord
+		err := dec.Decode(&rec)
+		if err == io.EOF {
+			return out, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rec)
+	}
+}
+
+type ReplayDiff struct {
+	Minute    int
+	ChargerID string
+	Logged    float64
+	Replayed  float64
+}
+
+// Replay reruns the normal layer on every logged normal-layer decision and reports
+// the setpoints that differ. Field problems become reproducible test cases this way.
+func Replay(cfg planner.Config, recs []DecisionRecord) []ReplayDiff {
+	var diffs []ReplayDiff
+	for _, rec := range recs {
+		if rec.Plan.Layer != planner.LayerNormal {
+			continue
+		}
+		replayed := planner.Enforce(rec.Input, planner.PlanNormal(cfg, rec.Input))
+		logged := map[string]float64{}
+		for _, s := range rec.Plan.Setpoints {
+			logged[s.ChargerID] = s.KW
+		}
+		got := map[string]float64{}
+		for _, s := range replayed.Setpoints {
+			got[s.ChargerID] = s.KW
+		}
+		ids := map[string]bool{}
+		for id := range logged {
+			ids[id] = true
+		}
+		for id := range got {
+			ids[id] = true
+		}
+		sorted := make([]string, 0, len(ids))
+		for id := range ids {
+			sorted = append(sorted, id)
+		}
+		sort.Strings(sorted)
+		for _, id := range sorted {
+			if math.Abs(logged[id]-got[id]) > 1e-9 {
+				diffs = append(diffs, ReplayDiff{Minute: rec.Minute, ChargerID: id, Logged: logged[id], Replayed: got[id]})
+			}
+		}
+	}
+	return diffs
+}
+```
+
+- [ ] **Step 4: Rodar e ver passar**
+
+Run: `gofmt -l . && go vet ./... && go test -race ./internal/sim -v`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add internal/sim
+git commit -m "feat(sim): decision log (JSON lines) and deterministic replay"
+```
+
+---
+
+### Task 12: CLI `simrun`
+
+**Files:**
+- Create: `cmd/simrun/main.go`
+- Test: `cmd/simrun/main_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: `sim.DefaultGenParams`, `sim.Generate`, `sim.Run`, `sim.Aggregate`, `sim.NewFIFO/NewEDF/NewSafeOnly/NewPlannerController`, `sim.NewDecisionLog`, `planner.DefaultConfig`.
+- Produces: o comando `go run ./cmd/simrun [-buses N] [-chargers N] [-limit kW] [-profile none|mild|severe] [-seeds N] [-log arquivo.jsonl]` que imprime uma tabela comparando `fifo`, `edf`, `safe` e `planner`. Função testável `run(args []string, stdout, stderr io.Writer) int` (retorna 0 em sucesso, 2 em argumento inválido, 1 em erro de E/S).
+
+- [ ] **Step 1: Escrever os testes que falham**
+
+`cmd/simrun/main_test.go`:
+```go
+package main
+
+import (
+	"bytes"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestRunPrintsComparisonTable(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := run([]string{"-buses", "6", "-chargers", "3", "-limit", "300", "-seeds", "2"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+	for _, name := range []string{"fifo", "edf", "safe", "planner", "ready%"} {
+		if !strings.Contains(out.String(), name) {
+			t.Errorf("output is missing %q:\n%s", name, out.String())
+		}
+	}
+}
+
+func TestRunRejectsBadArguments(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := run([]string{"-profile", "catastrophic"}, &out, &errOut); code != 2 {
+		t.Errorf("unknown profile: exit %d", code)
+	}
+	if code := run([]string{"-seeds", "0"}, &out, &errOut); code != 2 {
+		t.Errorf("zero seeds: exit %d", code)
+	}
+	if code := run([]string{"-nonsense"}, &out, &errOut); code != 2 {
+		t.Errorf("unknown flag: exit %d", code)
+	}
+}
+
+func TestRunWritesDecisionLog(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "decisions.jsonl")
+	var out, errOut bytes.Buffer
+	code := run([]string{"-buses", "4", "-chargers", "2", "-limit", "200", "-seeds", "1", "-log", path}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Size() == 0 {
+		t.Errorf("decision log not written: %v", err)
+	}
+}
+```
+
+- [ ] **Step 2: Rodar e ver falhar**
+
+Run: `go test ./cmd/simrun -v`
+Expected: FAIL (`undefined: run`).
+
+- [ ] **Step 3: Implementar**
+
+`cmd/simrun/main.go`:
+```go
+// Command simrun compares charging controllers on generated depot scenarios.
+package main
+
+import (
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"text/tabwriter"
+
+	"github.com/EduardoMilani8/depot-charge-planner/internal/planner"
+	"github.com/EduardoMilani8/depot-charge-planner/internal/sim"
+)
+
+func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
+
+func run(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("simrun", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	p := sim.DefaultGenParams()
+	fs.IntVar(&p.NumBuses, "buses", p.NumBuses, "number of buses")
+	fs.IntVar(&p.NumChargers, "chargers", p.NumChargers, "number of chargers")
+	fs.Float64Var(&p.LimitKW, "limit", p.LimitKW, "site power limit in kW")
+	profile := fs.String("profile", "none", "fault profile: none|mild|severe")
+	seeds := fs.Int("seeds", 20, "number of random seeds")
+	logPath := fs.String("log", "", "write the planner decision log (JSON lines) for seed 1")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	switch sim.FaultProfile(*profile) {
+	case sim.ProfileNone, sim.ProfileMild, sim.ProfileSevere:
+	default:
+		fmt.Fprintf(stderr, "unknown profile %q (use none, mild or severe)\n", *profile)
+		return 2
+	}
+	if *seeds < 1 || p.NumBuses < 1 || p.NumChargers < 1 || p.LimitKW <= 0 {
+		fmt.Fprintln(stderr, "seeds, buses, chargers and limit must be positive")
+		return 2
+	}
+	p.Profile = sim.FaultProfile(*profile)
+	cfg := planner.DefaultConfig()
+
+	type maker struct {
+		name string
+		make func(sim.Scenario) sim.Controller
+	}
+	makers := []maker{
+		{"fifo", func(sim.Scenario) sim.Controller { return sim.NewFIFO() }},
+		{"edf", func(sim.Scenario) sim.Controller { return sim.NewEDF() }},
+		{"safe", func(sim.Scenario) sim.Controller { return sim.NewSafeOnly() }},
+		{"planner", func(sc sim.Scenario) sim.Controller { return sim.NewPlannerController(cfg, sc) }},
+	}
+
+	w := tabwriter.NewWriter(stdout, 0, 8, 2, ' ', 0)
+	fmt.Fprintln(w, "controller\tready%\tshortfall kWh\tpeak kW\tplan violations\tovershoot min\tcost R$\tplan changes\tp99 µs")
+	for _, mk := range makers {
+		var results []sim.Metrics
+		for seed := int64(1); seed <= int64(*seeds); seed++ {
+			sc := sim.Generate(p, seed)
+			results = append(results, sim.Run(sc, mk.make(sc), nil))
+		}
+		a := sim.Aggregate(results)
+		fmt.Fprintf(w, "%s\t%.1f\t%.1f\t%.0f\t%d\t%d\t%.0f\t%d\t%d\n",
+			mk.name, a.ReadyPct, a.ShortfallKWh, a.PeakKW, a.PlanViolations, a.OvershootMin, a.CostBRL, a.PlanChanges, a.PlanP99Micros)
+	}
+	if err := w.Flush(); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+
+	if *logPath != "" {
+		f, err := os.Create(*logPath)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		defer f.Close()
+		sc := sim.Generate(p, 1)
+		log := sim.NewDecisionLog(f)
+		sim.Run(sc, sim.NewPlannerController(cfg, sc), log)
+		if err := log.Err(); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "decision log written to %s\n", *logPath)
+	}
+	return 0
+}
+```
+
+Em `README.md`, na seção "Uso rápido", acrescente:
+```markdown
+Opções do `simrun`: `-buses`, `-chargers`, `-limit` (kW), `-profile none|mild|severe`, `-seeds`, `-log decisions.jsonl`.
+Colunas: `ready%` (principal), `plan violations` (deve ser 0), `overshoot min` (potência física acima do limite).
+```
+
+- [ ] **Step 4: Rodar e ver passar**
+
+Run: `gofmt -l . && go vet ./... && go test -race ./... && go run ./cmd/simrun -profile mild -seeds 5`
+Expected: testes PASS; a tabela mostra as quatro linhas e `plan violations` 0 em todas.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add cmd README.md
+git commit -m "feat: simrun CLI comparing planner and baselines"
+```
+
+---
+
+### Task 13: Golden, fuzz e benchmark do planejador
+
+**Files:**
+- Test: `internal/planner/golden_test.go`, `internal/planner/fuzz_test.go`, `internal/planner/bench_test.go`
+- Create (gerado): `internal/planner/testdata/tight_limit.golden.json`, `internal/planner/testdata/mixed_states.golden.json`
+
+**Interfaces:**
+- Consumes: `New`, `DefaultConfig`, `Violations`, `PlanNormal`, helpers de teste da Tarefa 2.
+- Produces: testes de referência (flag `-update` regrava os arquivos), fuzz `FuzzPlannerRespectsInvariants` (nome usado pelo CI), benchmark `BenchmarkPlanNormal200` e o teste de latência `TestPlanNormal200Under50ms`.
+
+- [ ] **Step 1: Escrever os testes**
+
+`internal/planner/golden_test.go`:
+```go
+package planner
+
+import (
+	"bytes"
+	"encoding/json"
+	"flag"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/EduardoMilani8/depot-charge-planner/internal/model"
+)
+
+var update = flag.Bool("update", false, "rewrite golden files")
+
+func goldenCases() map[string]Input {
+	eff := func(c model.Charger) model.Charger { c.Efficiency = 0.95; return c }
+	offline := eff(testCharger("C2"))
+	offline.Status = model.ChargerOffline
+	offline.LastCommandedKW = 40
+	faulted := eff(testCharger("C3"))
+	faulted.Status = model.ChargerFaulted
+	stale := testBus("S", "C4", 120, 250, 500)
+	stale.SoCAgeMin = 100
+	return map[string]Input{
+		"tight_limit": {
+			Site:     model.Site{LimitKW: 200, StepMin: 1},
+			Chargers: []model.Charger{eff(testCharger("C1")), eff(testCharger("C2")), eff(testCharger("C3"))},
+			Buses: []model.Bus{
+				testBus("B1", "C1", 60, 250, 180),
+				testBus("B2", "C2", 120, 250, 300),
+				testBus("B3", "C3", 200, 250, 600),
+			},
+		},
+		"mixed_states": {
+			Site:     model.Site{LimitKW: 400, StepMin: 1},
+			Chargers: []model.Charger{eff(testCharger("C1")), offline, faulted, eff(testCharger("C4"))},
+			Buses: []model.Bus{
+				testBus("A", "C1", 300, 250, 600), // full battery: need 0 even with the margin
+				testBus("B", "C2", 100, 250, 400),
+				testBus("C", "C3", 90, 250, 300),
+				stale,
+				testBus("W", "", 100, 250, 95),
+			},
+		},
+	}
+}
+
+func TestGolden(t *testing.T) {
+	for name, in := range goldenCases() {
+		t.Run(name, func(t *testing.T) {
+			plan := New(DefaultConfig()).Plan(in)
+			got, err := json.MarshalIndent(struct {
+				Input Input
+				Plan  Plan
+			}{in, plan}, "", "  ")
+			if err != nil {
+				t.Fatal(err)
+			}
+			got = append(got, '\n')
+			path := filepath.Join("testdata", name+".golden.json")
+			if *update {
+				if err := os.MkdirAll("testdata", 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, got, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			want, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("missing golden file %s: run `go test ./internal/planner -run Golden -update` and review it", path)
+			}
+			if !bytes.Equal(got, want) {
+				t.Errorf("plan changed for %s; if intended, rerun with -update and review the diff\n--- got ---\n%s", name, got)
+			}
+		})
+	}
+}
+```
+
+`internal/planner/fuzz_test.go`:
+```go
+package planner
+
+import (
+	"fmt"
+	"testing"
+
+	"github.com/EduardoMilani8/depot-charge-planner/internal/model"
+)
+
+func FuzzPlannerRespectsInvariants(f *testing.F) {
+	f.Add(1000.0, 150.0, 5.0, 0.95, 100.0, 250.0, 300.0, 150.0, int8(3), int16(120))
+	f.Add(0.0, 150.0, 5.0, 1.0, 0.0, 300.0, 300.0, 150.0, int8(5), int16(0))
+	f.Add(100.0, 10.0, 20.0, 0.5, -1.0, 50.0, 100.0, 3.0, int8(2), int16(-5))
+	f.Fuzz(func(t *testing.T, limit, maxKW, minKW, eff, soc, target, capKWh, battKW float64, n int8, dep int16) {
+		count := int(n) % 8
+		if count < 0 {
+			count = -count
+		}
+		in := Input{Site: model.Site{LimitKW: limit, StepMin: 1}}
+		for i := 0; i < count; i++ {
+			id := fmt.Sprint(i)
+			in.Chargers = append(in.Chargers, model.Charger{ID: "C" + id, MaxKW: maxKW, MinKW: minKW, Efficiency: eff, Status: model.ChargerOK})
+			in.Buses = append(in.Buses, model.Bus{ID: "B" + id, CapacityKWh: capKWh, SoCKWh: soc, SoCConfidence: 1,
+				TargetKWh: target, DepartureMin: int(dep), MaxBatteryKW: battKW, ChargerID: "C" + id})
+		}
+		plan := New(DefaultConfig()).Plan(in)
+		if v := Violations(in, plan); len(v) > 0 {
+			t.Fatalf("invariants broken: %v\ninput: %+v\nplan: %+v", v, in, plan)
+		}
+		for _, s := range plan.Setpoints {
+			if !finite(s.KW) {
+				t.Fatalf("non-finite setpoint %+v", s)
+			}
+		}
+	})
+}
+```
+
+`internal/planner/bench_test.go`:
+```go
+package planner
+
+import (
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/EduardoMilani8/depot-charge-planner/internal/model"
+)
+
+func bigInput(n int) Input {
+	in := Input{Site: model.Site{LimitKW: 6000, StepMin: 1}}
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("%03d", i)
+		in.Chargers = append(in.Chargers, testCharger("C"+id))
+		in.Buses = append(in.Buses, testBus("B"+id, "C"+id, float64(20+i%200), 250, 200+(i*7)%500))
+	}
+	return in
+}
+
+func BenchmarkPlanNormal200(b *testing.B) {
+	in, cfg := bigInput(200), DefaultConfig()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		PlanNormal(cfg, in)
+	}
+}
+
+// The spec's initial goal: 200 buses in under 50 ms per cycle.
+func TestPlanNormal200Under50ms(t *testing.T) {
+	in, cfg := bigInput(200), DefaultConfig()
+	start := time.Now()
+	PlanNormal(cfg, in)
+	if d := time.Since(start); d > 50*time.Millisecond {
+		t.Errorf("planning 200 buses took %v, goal is under 50ms", d)
+	}
+}
+```
+
+- [ ] **Step 2: Gerar e revisar os arquivos de referência**
+
+Run: `go test ./internal/planner -run Golden -update && cat internal/planner/testdata/mixed_states.golden.json`
+Expected: dois arquivos criados. **Revise o conteúdo antes de confiar nele:** em `mixed_states` o ônibus `W` deve ter um rodízio sugerido com doador `A`, o ônibus `B` deve estar "indisponível (offline)" e `C` "indisponível (em falha)", o ônibus `S` deve citar "leitura de SoC não confiável", e a soma das potências deve ser no máximo 360 kW (400 menos os 40 kW do carregador offline). Se algo estiver errado, corrija o planejador, não o arquivo.
+
+- [ ] **Step 3: Rodar a suíte completa**
+
+Run: `gofmt -l . && go vet ./... && go test -race ./... && go test ./internal/planner -run '^$' -fuzz FuzzPlannerRespectsInvariants -fuzztime 20s && go test ./internal/planner -run '^$' -bench . -benchtime 200x`
+Expected: tudo PASS; o fuzz roda 20 s sem falhas; o benchmark imprime o tempo por ciclo (muito abaixo de 50 ms). Se o fuzz achar uma entrada que quebra uma invariante, o Go grava a entrada em `internal/planner/testdata/fuzz/`: mantenha o arquivo no commit como teste de regressão e corrija a causa.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add internal/planner
+git commit -m "test(planner): golden plans, fuzzing of invariants and latency benchmark"
+```
+
+---
+
+## Cobertura da spec
+
+| Seção da spec | Tarefas |
+|---|---|
+| 4 Arquitetura (pacotes, `ChargerGateway`) | 1, 2, 8 (`internal/gateway`) |
+| 5 Modelo de dados | 1, 2 |
+| 6 Planejador (camada 1, camada 0, verificador, degradação) | 3, 4, 5, 6, 7 |
+| 7 Simulador (verdade × observação, física, cenários, falhas, baselines, métricas) | 8, 9, 10 |
+| 8 Testes e CI (unitário, fuzz, cenários, golden, `-race`, benchmark) | 1 (CI), 5–7, 9, 10, 13 |
+| 9 Observabilidade (slog, registro de decisões, replay) | 7 (slog), 11 |
+| 10 Caminho até o mundo real (interface Gateway; OCPP e modo sombra ficam para ciclos futuros) | 8 |
+| 12 Critérios de sucesso | `TestPlannerNeverViolatesLimit`, `TestPlannerNotWorseThanBaselines` (10); motivo legível (5, golden em 13); reprodutibilidade (11) |
