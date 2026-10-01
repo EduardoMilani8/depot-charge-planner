@@ -1727,4 +1727,1210 @@ git add internal/planner
 git commit -m "feat(planner): swap recommendations for urgent waiting buses"
 ```
 
-> **Status do plano:** PARCIAL. Tarefas 1 a 6 escritas. Faltam as tarefas 7 a 13 (fachada com degradação, simulador, falhas, gerador, registro de decisões, CLI e CI/fuzz/golden).
+
+### Task 7: Fachada com degradação graciosa
+
+**Files:**
+- Create: `internal/planner/planner.go`
+- Test: `internal/planner/planner_test.go`
+
+**Interfaces:**
+- Consumes: `ValidateInput`, `PlanNormal`, `PlanSafe`, `Enforce`, `isReliable`, `chargerMap`, `presentBuses`, `Config`.
+- Produces: `planner.Planner` com `New(cfg Config) *Planner`, `(*Planner).WithNormal(f NormalFunc) *Planner`, `(*Planner).WithLogger(l *slog.Logger) *Planner`, `(*Planner).Plan(in Input) Plan`; `planner.NormalFunc = func(Config, Input) Plan`. Garantia: o plano devolvido **sempre** passa em `Violations`. Ordem de degradação: normal → último plano válido (dentro de `LastPlanTTLMin`) → perfil seguro; entrada estruturalmente inválida → último plano válido ou todos os carregadores em 0 kW.
+
+**Review Focus pinned here:** IDs duplicados/dois ônibus no mesmo carregador (entrada inválida) e entrada vazia nunca causam pânico.
+
+- [ ] **Step 1: Escrever os testes que falham**
+
+`internal/planner/planner_test.go`:
+```go
+package planner
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/EduardoMilani8/depot-charge-planner/internal/model"
+)
+
+func TestPlannerNormalPath(t *testing.T) {
+	in := validInput()
+	p := New(testConfig()).Plan(in)
+	if p.Layer != LayerNormal || sp(p, "C1") <= 0 {
+		t.Errorf("unexpected plan: %+v", p)
+	}
+	if v := Violations(in, p); len(v) != 0 {
+		t.Errorf("violations: %v", v)
+	}
+}
+
+func TestPlannerPanicFallsBackToLastValidThenSafe(t *testing.T) {
+	calls := 0
+	pl := New(testConfig()).WithNormal(func(c Config, in Input) Plan {
+		calls++
+		if calls > 1 {
+			panic("boom")
+		}
+		return PlanNormal(c, in)
+	})
+	in := validInput()
+	first := pl.Plan(in)
+	if first.Layer != LayerNormal {
+		t.Fatalf("first layer = %v", first.Layer)
+	}
+	in.Now = 1
+	second := pl.Plan(in)
+	if second.Layer != LayerLastValid || sp(second, "C1") != sp(first, "C1") {
+		t.Errorf("expected last-valid with the same setpoint: %+v", second)
+	}
+	in.Now = 100 // beyond LastPlanTTLMin
+	third := pl.Plan(in)
+	if third.Layer != LayerSafe {
+		t.Errorf("expected safe layer after TTL, got %v", third.Layer)
+	}
+	if v := Violations(in, third); len(v) != 0 {
+		t.Errorf("violations: %v", v)
+	}
+}
+
+func TestPlannerTimeoutFallsBackToSafe(t *testing.T) {
+	cfg := testConfig()
+	cfg.Timeout = 20 * time.Millisecond
+	pl := New(cfg).WithNormal(func(c Config, in Input) Plan {
+		time.Sleep(300 * time.Millisecond)
+		return PlanNormal(c, in)
+	})
+	p := pl.Plan(validInput())
+	if p.Layer != LayerSafe {
+		t.Errorf("layer = %v, want safe", p.Layer)
+	}
+	if !strings.Contains(strings.Join(p.Notes, " "), "timeout") {
+		t.Errorf("notes should mention the timeout: %v", p.Notes)
+	}
+}
+
+func TestPlannerInvalidInputGivesZeroPlan(t *testing.T) {
+	in := validInput()
+	in.Chargers = append(in.Chargers, testCharger("C1")) // duplicate ID
+	p := New(testConfig()).Plan(in)
+	if p.Layer != LayerSafe {
+		t.Errorf("layer = %v", p.Layer)
+	}
+	for _, s := range p.Setpoints {
+		if s.KW != 0 {
+			t.Errorf("invalid input must command 0 kW, got %+v", s)
+		}
+	}
+	if v := Violations(in, p); len(v) != 0 {
+		t.Errorf("violations: %v", v)
+	}
+}
+
+func TestPlannerTwoBusesOnOneChargerDoesNotPanic(t *testing.T) {
+	in := validInput()
+	in.Buses = append(in.Buses, testBus("B2", "C1", 50, 200, 300))
+	p := New(testConfig()).Plan(in)
+	for _, s := range p.Setpoints {
+		if s.KW != 0 {
+			t.Errorf("unexpected power: %+v", s)
+		}
+	}
+}
+
+func TestPlannerEmptyInput(t *testing.T) {
+	p := New(testConfig()).Plan(Input{Site: model.Site{LimitKW: 100, StepMin: 1}})
+	if len(p.Setpoints) != 0 || p.Layer != LayerNormal {
+		t.Errorf("unexpected plan: %+v", p)
+	}
+}
+
+func TestPlannerMostlyUnreliableSoCUsesSafeProfile(t *testing.T) {
+	in := validInput()
+	in.Buses[0].SoCAgeMin = 100
+	p := New(testConfig()).Plan(in)
+	if p.Layer != LayerSafe {
+		t.Errorf("layer = %v, want safe", p.Layer)
+	}
+}
+
+func TestPlannerEnforcesBrokenNormalLayer(t *testing.T) {
+	pl := New(testConfig()).WithNormal(func(c Config, in Input) Plan {
+		return Plan{Setpoints: []Setpoint{{"C1", 99999}}}
+	})
+	in := validInput()
+	p := pl.Plan(in)
+	if v := Violations(in, p); len(v) != 0 {
+		t.Errorf("verifier must repair the plan: %v", v)
+	}
+	if sp(p, "C1") != 150 {
+		t.Errorf("setpoint = %v, want clamped to 150", sp(p, "C1"))
+	}
+}
+```
+
+- [ ] **Step 2: Rodar e ver falhar**
+
+Run: `go test ./internal/planner -run Planner -v`
+Expected: FAIL (`undefined: New`).
+
+- [ ] **Step 3: Implementar**
+
+`internal/planner/planner.go`:
+```go
+package planner
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"time"
+
+	"github.com/EduardoMilani8/depot-charge-planner/internal/model"
+)
+
+// NormalFunc is the layer-1 implementation; replaceable so the simulator can inject faults.
+type NormalFunc func(Config, Input) Plan
+
+// Planner wraps the layers with graceful degradation. It is the only stateful
+// piece: it remembers the last valid plan. Not safe for concurrent use.
+type Planner struct {
+	cfg     Config
+	normal  NormalFunc
+	log     *slog.Logger
+	last    Plan
+	hasLast bool
+	lastAt  model.Minute
+}
+
+func New(cfg Config) *Planner {
+	return &Planner{cfg: cfg, normal: PlanNormal, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+}
+
+func (p *Planner) WithNormal(f NormalFunc) *Planner   { p.normal = f; return p }
+func (p *Planner) WithLogger(l *slog.Logger) *Planner { p.log = l; return p }
+
+// Plan always returns a plan that satisfies every invariant.
+func (p *Planner) Plan(in Input) Plan {
+	if err := ValidateInput(in); err != nil {
+		p.log.Warn("entrada inválida", "minute", in.Now, "err", err)
+		return p.fallback(in, "entrada inválida: "+err.Error(), false)
+	}
+	if tooUnreliable(p.cfg, in) {
+		p.log.Warn("leituras de SoC pouco confiáveis; usando perfil seguro", "minute", in.Now)
+		plan := PlanSafe(in)
+		plan.Notes = append(plan.Notes, "leituras de SoC pouco confiáveis na maioria dos ônibus")
+		return p.finish(in, plan)
+	}
+	plan, err := p.runNormal(in)
+	if err != nil {
+		p.log.Warn("camada normal falhou", "minute", in.Now, "err", err)
+		return p.fallback(in, err.Error(), true)
+	}
+	plan.Layer = LayerNormal
+	plan = p.finish(in, plan)
+	p.last, p.hasLast, p.lastAt = plan, true, in.Now
+	return plan
+}
+
+func (p *Planner) finish(in Input, plan Plan) Plan {
+	out := Enforce(in, plan)
+	if len(out.Notes) > len(plan.Notes) {
+		p.log.Warn("verificador corrigiu o plano", "minute", in.Now, "layer", plan.Layer.String())
+	}
+	return out
+}
+
+func (p *Planner) fallback(in Input, reason string, inputValid bool) Plan {
+	if p.hasLast && in.Now >= p.lastAt && in.Now-p.lastAt <= p.cfg.LastPlanTTLMin {
+		plan := p.last
+		plan.Layer = LayerLastValid
+		plan.Swaps = nil
+		plan.Notes = append(append([]string(nil), plan.Notes...), "usando o último plano válido: "+reason)
+		return p.finish(in, plan)
+	}
+	var plan Plan
+	if inputValid {
+		plan = PlanSafe(in)
+	} else {
+		plan = zeroPlan(in)
+	}
+	plan.Notes = append(plan.Notes, "fallback: "+reason)
+	return p.finish(in, plan)
+}
+
+func (p *Planner) runNormal(in Input) (Plan, error) {
+	type result struct {
+		plan Plan
+		err  error
+	}
+	cfg, normal := p.cfg, p.normal
+	ch := make(chan result, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				ch <- result{err: fmt.Errorf("panic: %v", r)}
+			}
+		}()
+		ch <- result{plan: normal(cfg, in)}
+	}()
+	select {
+	case r := <-ch:
+		return r.plan, r.err
+	case <-time.After(cfg.Timeout):
+		// The abandoned goroutine only reads its inputs and finishes on its own.
+		return Plan{}, errors.New("timeout da camada normal")
+	}
+}
+
+// tooUnreliable reports whether most connected buses have untrustworthy SoC data.
+func tooUnreliable(cfg Config, in Input) bool {
+	chargers := chargerMap(in)
+	total, bad := 0, 0
+	for _, b := range presentBuses(in) {
+		if c, ok := chargers[b.ChargerID]; ok && c.Healthy() {
+			total++
+			if !isReliable(cfg, b) {
+				bad++
+			}
+		}
+	}
+	return total > 0 && float64(bad)/float64(total) > cfg.MaxUnreliableFrac
+}
+
+// zeroPlan commands 0 kW on every (deduplicated) charger; used for broken input.
+func zeroPlan(in Input) Plan {
+	p := Plan{Layer: LayerSafe, Notes: []string{"entrada inválida: todos os carregadores em 0 kW"}}
+	seen := map[string]bool{}
+	for _, c := range in.Chargers {
+		if seen[c.ID] {
+			continue
+		}
+		seen[c.ID] = true
+		p.Setpoints = append(p.Setpoints, Setpoint{ChargerID: c.ID})
+	}
+	return p
+}
+```
+
+- [ ] **Step 4: Rodar e ver passar**
+
+Run: `gofmt -l . && go vet ./... && go test -race ./internal/planner -v`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add internal/planner
+git commit -m "feat(planner): facade with timeout, panic recovery and graceful degradation"
+```
+
+---
+
+### Task 8: Núcleo do simulador
+
+**Files:**
+- Create: `internal/gateway/gateway.go`
+- Create: `internal/sim/scenario.go`, `internal/sim/metrics.go`, `internal/sim/world.go`, `internal/sim/run.go`, `internal/sim/controllers.go`
+- Test: `internal/sim/helpers_test.go`, `internal/sim/run_test.go`, `internal/sim/metrics_test.go`
+
+**Interfaces:**
+- Consumes: pacotes `model` e `planner` (`Input`, `Plan`, `Setpoint`, `Swap`, `New`, `PlanNormal`, `PlanSafe`, `Enforce`, `AvailableKW`, `MaxGridKW`).
+- Produces:
+  - `gateway.Gateway` (`Chargers() []model.Charger`, `SetPower(chargerID string, kw float64) error`).
+  - `sim.Fault{Kind FaultKind; Target string; From, To model.Minute; Value float64}` com `Active(t int) bool`, constantes `FaultChargerFail`, `FaultChargerOffline`, `FaultLimitDrop`, `FaultSoCNoise`, `FaultSoCBias`, `FaultSoCFreeze`, `FaultSoCMissing`, `FaultConsumption`, `FaultLateArrival`, `FaultEarlyDeparture`, `FaultPlannerPanic`, `FaultPlannerSlow`, e `forever`.
+  - `sim.Tariff{PeakFromMin, PeakToMin int; PeakPrice, OffPeakPrice float64}` com `PriceAt(clockMin int) float64`.
+  - `sim.BusSpec{Bus model.Bus; TrueTargetKWh float64}`.
+  - `sim.Scenario{Name string; Seed int64; StartClockMin int; Horizon model.Minute; BaseLimitKW float64; Chargers []model.Charger; Buses []BusSpec; Faults []Fault; Tariff Tariff; FollowSwaps bool}`.
+  - `sim.Metrics{Buses, Ready int; ReadyPct, ShortfallKWh, PeakKW float64; PlanViolations, OvershootMin int; EnergyKWh, CostBRL float64; PlanChanges int; LayerTicks map[string]int; PlanP99Micros int64}` e `sim.Aggregate([]Metrics) Metrics`.
+  - `sim.Controller` (`Plan(in planner.Input) planner.Plan`), `sim.NewFIFO()`, `sim.NewEDF()`, `sim.NewSafeOnly()`, `sim.NewPlannerController(cfg planner.Config, sc Scenario) Controller`.
+  - `sim.Recorder` (`Record(minute int, in planner.Input, p planner.Plan) error`) e `sim.Run(sc Scenario, ctrl Controller, rec Recorder) Metrics` (`rec` pode ser `nil`).
+
+Modelo de tempo de um passo `t`: (1) o mundo aplica chegadas/saídas/falhas; (2) o planejador vê só a **observação**; (3) os comandos são guardados; (4) a física usa os comandos do **passo anterior** (latência de 1 passo); (5) mede-se pico, energia e custo.
+
+- [ ] **Step 1: Escrever os testes que falham**
+
+`internal/sim/helpers_test.go`:
+```go
+package sim
+
+import (
+	"github.com/EduardoMilani8/depot-charge-planner/internal/model"
+	"github.com/EduardoMilani8/depot-charge-planner/internal/planner"
+)
+
+func baseScenario() Scenario {
+	return Scenario{
+		Name: "base", Seed: 1, StartClockMin: 1080, Horizon: 400, BaseLimitKW: 500,
+		Chargers: []model.Charger{{ID: "C1", MaxKW: 150, MinKW: 5, Efficiency: 0.95, Status: model.ChargerOK}},
+		Buses: []BusSpec{{Bus: model.Bus{
+			ID: "B1", CapacityKWh: 300, SoCKWh: 50, SoCConfidence: 1, TargetKWh: 200,
+			ArrivalMin: 0, DepartureMin: 300, MaxBatteryKW: 150,
+		}}},
+		Tariff:      Tariff{PeakFromMin: 1080, PeakToMin: 1260, PeakPrice: 2.7, OffPeakPrice: 0.9},
+		FollowSwaps: true,
+	}
+}
+
+// stubController always commands the same power on C1.
+type stubController struct{ kw float64 }
+
+func (s stubController) Plan(in planner.Input) planner.Plan {
+	return planner.Plan{Setpoints: []planner.Setpoint{{ChargerID: "C1", KW: s.kw}}}
+}
+
+func plannerCtrl(sc Scenario) Controller {
+	cfg := planner.DefaultConfig()
+	return NewPlannerController(cfg, sc)
+}
+```
+
+`internal/sim/run_test.go`:
+```go
+package sim
+
+import (
+	"reflect"
+	"testing"
+
+	"github.com/EduardoMilani8/depot-charge-planner/internal/model"
+)
+
+func TestRunSingleBusReady(t *testing.T) {
+	sc := baseScenario()
+	m := Run(sc, plannerCtrl(sc), nil)
+	if m.Ready != 1 || m.ReadyPct != 100 {
+		t.Errorf("bus should leave ready: %+v", m)
+	}
+	if m.PlanViolations != 0 || m.OvershootMin != 0 {
+		t.Errorf("no violations expected: %+v", m)
+	}
+	if m.EnergyKWh < 150 {
+		t.Errorf("energy delivered %.1f kWh is below the 150 kWh the battery gained", m.EnergyKWh)
+	}
+	if m.CostBRL <= 0 || m.PeakKW <= 0 {
+		t.Errorf("cost/peak not measured: %+v", m)
+	}
+}
+
+func TestRunFIFOReady(t *testing.T) {
+	if m := Run(baseScenario(), NewFIFO(), nil); m.Ready != 1 {
+		t.Errorf("FIFO should also finish: %+v", m)
+	}
+}
+
+func TestRunEDFAndSafeOnlyReady(t *testing.T) {
+	for name, c := range map[string]Controller{"edf": NewEDF(), "safe": NewSafeOnly()} {
+		if m := Run(baseScenario(), c, nil); m.Ready != 1 {
+			t.Errorf("%s: %+v", name, m)
+		}
+	}
+}
+
+func TestRunDeterministic(t *testing.T) {
+	sc := baseScenario()
+	a := Run(sc, plannerCtrl(sc), nil)
+	b := Run(sc, plannerCtrl(sc), nil)
+	a.PlanP99Micros, b.PlanP99Micros = 0, 0
+	if !reflect.DeepEqual(a, b) {
+		t.Errorf("same seed must give identical metrics:\n%+v\n%+v", a, b)
+	}
+}
+
+func TestRunCountsPlanViolations(t *testing.T) {
+	m := Run(baseScenario(), stubController{kw: 1000}, nil)
+	if m.PlanViolations == 0 {
+		t.Error("commanding 1000 kW on a 500 kW site must be counted")
+	}
+	if m.PeakKW > 150+1e-6 {
+		t.Errorf("physical power %.1f kW exceeds the charger max", m.PeakKW)
+	}
+}
+
+func TestRunNoPowerMeansShortfall(t *testing.T) {
+	m := Run(baseScenario(), stubController{kw: 0}, nil)
+	if m.Ready != 0 || m.ShortfallKWh < 149 || m.ShortfallKWh > 151 {
+		t.Errorf("expected a 150 kWh shortfall: %+v", m)
+	}
+}
+
+func TestRunWaitingBusTakesFreedCharger(t *testing.T) {
+	sc := baseScenario()
+	sc.Buses[0].Bus.DepartureMin = 100
+	sc.Buses = append(sc.Buses, BusSpec{Bus: model.Bus{
+		ID: "B2", CapacityKWh: 300, SoCKWh: 50, SoCConfidence: 1, TargetKWh: 200,
+		ArrivalMin: 0, DepartureMin: 400, MaxBatteryKW: 150,
+	}})
+	m := Run(sc, plannerCtrl(sc), nil)
+	if m.Ready != 2 {
+		t.Errorf("both buses should be served in turn: %+v", m)
+	}
+}
+
+func TestTariffPriceAt(t *testing.T) {
+	tf := Tariff{PeakFromMin: 1080, PeakToMin: 1260, PeakPrice: 3, OffPeakPrice: 1}
+	cases := map[int]float64{0: 1, 1079: 1, 1080: 3, 1259: 3, 1260: 1, 1440 + 1100: 3}
+	for clock, want := range cases {
+		if got := tf.PriceAt(clock); got != want {
+			t.Errorf("PriceAt(%d) = %v, want %v", clock, got, want)
+		}
+	}
+}
+```
+
+`internal/sim/metrics_test.go`:
+```go
+package sim
+
+import (
+	"testing"
+	"time"
+)
+
+func TestP99Micros(t *testing.T) {
+	var d []time.Duration
+	for i := 1; i <= 100; i++ {
+		d = append(d, time.Duration(i)*time.Microsecond)
+	}
+	if got := p99Micros(d); got != 99 {
+		t.Errorf("p99 = %d, want 99", got)
+	}
+	if p99Micros(nil) != 0 {
+		t.Error("empty must be 0")
+	}
+}
+
+func TestAggregate(t *testing.T) {
+	a := Aggregate([]Metrics{
+		{Buses: 10, Ready: 10, ReadyPct: 100, PeakKW: 100, PlanViolations: 1, PlanChanges: 10, PlanP99Micros: 5},
+		{Buses: 10, Ready: 5, ReadyPct: 50, PeakKW: 200, PlanViolations: 2, PlanChanges: 20, PlanP99Micros: 9},
+	})
+	if a.ReadyPct != 75 || a.PeakKW != 150 || a.PlanViolations != 3 || a.PlanChanges != 15 || a.PlanP99Micros != 9 || a.Ready != 15 {
+		t.Errorf("unexpected aggregate: %+v", a)
+	}
+	if z := Aggregate(nil); z.Buses != 0 || z.ReadyPct != 0 {
+		t.Error("empty aggregate must be zero")
+	}
+}
+```
+
+- [ ] **Step 2: Rodar e ver falhar**
+
+Run: `go test ./internal/sim -v`
+Expected: FAIL (build failed: `undefined: Scenario`, ...).
+
+- [ ] **Step 3: Implementar a interface do gateway e os tipos do cenário**
+
+`internal/gateway/gateway.go`:
+```go
+// Package gateway is the boundary between the planner and physical (or simulated) chargers.
+package gateway
+
+import "github.com/EduardoMilani8/depot-charge-planner/internal/model"
+
+type Gateway interface {
+	// Chargers returns every charger as the controller observes it.
+	Chargers() []model.Charger
+	// SetPower commands a charger's grid-side power in kW; it takes effect on the next step.
+	SetPower(chargerID string, kw float64) error
+}
+```
+
+`internal/sim/scenario.go`:
+```go
+// Package sim is a deterministic discrete-time simulator of a bus depot.
+package sim
+
+import (
+	"math"
+
+	"github.com/EduardoMilani8/depot-charge-planner/internal/model"
+)
+
+type FaultKind string
+
+const (
+	FaultChargerFail    FaultKind = "charger_fail"     // Target: charger ID; delivers nothing
+	FaultChargerOffline FaultKind = "charger_offline"  // Target: charger ID; keeps last power, cannot be commanded
+	FaultLimitDrop      FaultKind = "limit_drop"       // Value: factor applied to the site limit
+	FaultSoCNoise       FaultKind = "soc_noise"        // Target: bus ID or "*"; Value: std dev in kWh
+	FaultSoCBias        FaultKind = "soc_bias"         // Target: bus ID or "*"; Value: kWh added to readings
+	FaultSoCFreeze      FaultKind = "soc_freeze"       // Target: bus ID or "*"; reading stops updating
+	FaultSoCMissing     FaultKind = "soc_missing"      // Target: bus ID or "*"; no usable reading
+	FaultConsumption    FaultKind = "consumption_over" // Target: bus ID; Value: extra kWh needed at departure
+	FaultLateArrival    FaultKind = "late_arrival"     // Target: bus ID; Value: minutes of delay
+	FaultEarlyDeparture FaultKind = "early_departure"  // Target: bus ID; From: when announced; Value: new departure minute
+	FaultPlannerPanic   FaultKind = "planner_panic"    // the normal layer panics while active
+	FaultPlannerSlow    FaultKind = "planner_slow"     // the normal layer exceeds its timeout while active
+)
+
+// forever is a To value for permanent faults.
+const forever = math.MaxInt32
+
+// Fault is active during the window [From, To).
+type Fault struct {
+	Kind     FaultKind
+	Target   string
+	From, To model.Minute
+	Value    float64
+}
+
+func (f Fault) Active(t int) bool { return t >= f.From && t < f.To }
+
+// Tariff has a peak window expressed in minutes of the day.
+type Tariff struct {
+	PeakFromMin, PeakToMin   int
+	PeakPrice, OffPeakPrice float64
+}
+
+func (t Tariff) PriceAt(clockMin int) float64 {
+	m := ((clockMin % 1440) + 1440) % 1440
+	if m >= t.PeakFromMin && m < t.PeakToMin {
+		return t.PeakPrice
+	}
+	return t.OffPeakPrice
+}
+
+// BusSpec is a bus plus the truth the planner does not know.
+type BusSpec struct {
+	Bus           model.Bus // SoCKWh is the true initial SoC; TargetKWh is the forecast the planner sees
+	TrueTargetKWh float64   // energy actually needed at departure; 0 means equal to the forecast
+}
+
+type Scenario struct {
+	Name          string
+	Seed          int64
+	StartClockMin int // minute of the day at scenario minute 0
+	Horizon       model.Minute
+	BaseLimitKW   float64
+	Chargers      []model.Charger
+	Buses         []BusSpec
+	Faults        []Fault
+	Tariff        Tariff
+	FollowSwaps   bool // operators execute the planner's swap recommendations
+}
+```
+
+`internal/sim/metrics.go`:
+```go
+package sim
+
+import (
+	"math"
+	"sort"
+	"time"
+)
+
+type Metrics struct {
+	Buses          int            `json:"buses"`
+	Ready          int            `json:"ready"`
+	ReadyPct       float64        `json:"ready_pct"`
+	ShortfallKWh   float64        `json:"shortfall_kwh"`
+	PeakKW         float64        `json:"peak_kw"`
+	PlanViolations int            `json:"plan_violations"` // commanded power above the limit (must be 0)
+	OvershootMin   int            `json:"overshoot_min"`   // minutes of physical power above the limit
+	EnergyKWh      float64        `json:"energy_kwh"`
+	CostBRL        float64        `json:"cost_brl"`
+	PlanChanges    int            `json:"plan_changes"`
+	LayerTicks     map[string]int `json:"layer_ticks"`
+	PlanP99Micros  int64          `json:"plan_p99_micros"`
+}
+
+func p99Micros(d []time.Duration) int64 {
+	if len(d) == 0 {
+		return 0
+	}
+	s := append([]time.Duration(nil), d...)
+	sort.Slice(s, func(i, j int) bool { return s[i] < s[j] })
+	idx := int(math.Ceil(0.99*float64(len(s)))) - 1
+	if idx < 0 {
+		idx = 0
+	}
+	return s[idx].Microseconds()
+}
+
+// Aggregate averages rates and costs, sums counts of violations, and keeps the worst p99.
+func Aggregate(ms []Metrics) Metrics {
+	var a Metrics
+	if len(ms) == 0 {
+		return a
+	}
+	n := float64(len(ms))
+	for _, m := range ms {
+		a.Buses += m.Buses
+		a.Ready += m.Ready
+		a.ReadyPct += m.ReadyPct / n
+		a.ShortfallKWh += m.ShortfallKWh / n
+		a.PeakKW += m.PeakKW / n
+		a.PlanViolations += m.PlanViolations
+		a.OvershootMin += m.OvershootMin
+		a.EnergyKWh += m.EnergyKWh / n
+		a.CostBRL += m.CostBRL / n
+		a.PlanChanges += m.PlanChanges
+		if m.PlanP99Micros > a.PlanP99Micros {
+			a.PlanP99Micros = m.PlanP99Micros
+		}
+	}
+	a.PlanChanges /= len(ms)
+	return a
+}
+```
+
+- [ ] **Step 4: Implementar o mundo (verdade, física, observação)**
+
+`internal/sim/world.go`:
+```go
+package sim
+
+import (
+	"fmt"
+	"math"
+	"math/rand"
+	"sort"
+
+	"github.com/EduardoMilani8/depot-charge-planner/internal/gateway"
+	"github.com/EduardoMilani8/depot-charge-planner/internal/model"
+	"github.com/EduardoMilani8/depot-charge-planner/internal/planner"
+)
+
+const (
+	stepHours       = 1.0 / 60.0
+	swapDurationMin = 5
+)
+
+var _ gateway.Gateway = (*World)(nil)
+
+type busState struct {
+	spec      BusSpec
+	soc       float64 // true SoC
+	target    float64 // true energy required at departure
+	arrival   int
+	departure int
+	chargerID string
+	present   bool
+	departed  bool
+	busyUntil int
+	lastGood  float64 // last observed value, used by the freeze fault
+	lastGoodT int
+}
+
+// World holds the truth. The planner only ever sees observe() and Chargers().
+type World struct {
+	sc        Scenario
+	rng       *rand.Rand
+	t         int
+	buses     []*busState // sorted by ID
+	chargers  []model.Charger
+	cmd       map[string]float64 // commands issued this step
+	applied   map[string]float64 // power in effect (commands of the previous step)
+	ready     int
+	shortfall float64
+}
+
+func newWorld(sc Scenario) *World {
+	w := &World{
+		sc:      sc,
+		rng:     rand.New(rand.NewSource(sc.Seed)),
+		cmd:     map[string]float64{},
+		applied: map[string]float64{},
+	}
+	w.chargers = append([]model.Charger(nil), sc.Chargers...)
+	sort.Slice(w.chargers, func(i, j int) bool { return w.chargers[i].ID < w.chargers[j].ID })
+	specs := append([]BusSpec(nil), sc.Buses...)
+	sort.Slice(specs, func(i, j int) bool { return specs[i].Bus.ID < specs[j].Bus.ID })
+	for _, s := range specs {
+		bs := &busState{spec: s, soc: s.Bus.SoCKWh, target: s.Bus.TargetKWh,
+			arrival: s.Bus.ArrivalMin, departure: s.Bus.DepartureMin}
+		if s.TrueTargetKWh > 0 {
+			bs.target = s.TrueTargetKWh
+		}
+		for _, f := range sc.Faults {
+			if f.Target != s.Bus.ID {
+				continue
+			}
+			switch f.Kind {
+			case FaultLateArrival:
+				bs.arrival += int(f.Value)
+			case FaultConsumption:
+				bs.target += f.Value
+			}
+		}
+		bs.target = math.Min(bs.target, s.Bus.CapacityKWh)
+		w.buses = append(w.buses, bs)
+	}
+	return w
+}
+
+func (w *World) charger(id string) *model.Charger {
+	for i := range w.chargers {
+		if w.chargers[i].ID == id {
+			return &w.chargers[i]
+		}
+	}
+	return nil
+}
+
+func (w *World) statusOf(id string) model.ChargerStatus {
+	if c := w.charger(id); c != nil {
+		return c.Status
+	}
+	return model.ChargerFaulted
+}
+
+func (w *World) find(id string) *busState {
+	for _, bs := range w.buses {
+		if bs.spec.Bus.ID == id {
+			return bs
+		}
+	}
+	return nil
+}
+
+// Chargers implements gateway.Gateway: the observed state (offline chargers are
+// visible as offline, with the power they keep drawing).
+func (w *World) Chargers() []model.Charger {
+	out := make([]model.Charger, len(w.chargers))
+	for i, c := range w.chargers {
+		c.LastCommandedKW = w.applied[c.ID]
+		out[i] = c
+	}
+	return out
+}
+
+// SetPower implements gateway.Gateway.
+func (w *World) SetPower(id string, kw float64) error {
+	c := w.charger(id)
+	if c == nil {
+		return fmt.Errorf("carregador desconhecido: %s", id)
+	}
+	if c.Status != model.ChargerOK {
+		return fmt.Errorf("carregador %s indisponível", id)
+	}
+	if math.IsNaN(kw) || math.IsInf(kw, 0) || kw < 0 {
+		return fmt.Errorf("potência inválida: %v", kw)
+	}
+	w.cmd[id] = kw
+	return nil
+}
+
+func (w *World) limitAt(t int) float64 {
+	f := 1.0
+	for _, x := range w.sc.Faults {
+		if x.Kind == FaultLimitDrop && x.Active(t) && x.Value < f {
+			f = x.Value
+		}
+	}
+	return w.sc.BaseLimitKW * f
+}
+
+// beginTick applies faults, departures, arrivals and operator behaviour.
+func (w *World) beginTick(t int) {
+	w.t = t
+	for i := range w.chargers {
+		w.chargers[i].Status = model.ChargerOK
+		for _, f := range w.sc.Faults {
+			if f.Target != w.chargers[i].ID || !f.Active(t) {
+				continue
+			}
+			switch f.Kind {
+			case FaultChargerFail:
+				w.chargers[i].Status = model.ChargerFaulted
+			case FaultChargerOffline:
+				if w.chargers[i].Status == model.ChargerOK {
+					w.chargers[i].Status = model.ChargerOffline
+				}
+			}
+		}
+	}
+	for _, f := range w.sc.Faults {
+		if f.Kind == FaultEarlyDeparture && f.From == t {
+			if bs := w.find(f.Target); bs != nil {
+				bs.departure = int(f.Value)
+			}
+		}
+	}
+	for _, bs := range w.buses {
+		if bs.present && !bs.departed && t >= bs.departure {
+			w.depart(bs)
+		}
+	}
+	for _, bs := range w.buses {
+		if !bs.present && !bs.departed && t >= bs.arrival {
+			bs.present = true
+			bs.lastGood, bs.lastGoodT = bs.soc, t
+		}
+	}
+	w.connectWaiting()
+}
+
+func (w *World) depart(bs *busState) {
+	bs.departed = true
+	bs.chargerID = ""
+	if bs.soc >= bs.target-1e-6 {
+		w.ready++
+	} else {
+		w.shortfall += bs.target - bs.soc
+	}
+}
+
+// connectWaiting plugs waiting buses (and buses on faulted chargers) into free healthy chargers.
+func (w *World) connectWaiting() {
+	occupied := map[string]bool{}
+	for _, bs := range w.buses {
+		if bs.present && !bs.departed && bs.chargerID != "" {
+			occupied[bs.chargerID] = true
+		}
+	}
+	var waiting []*busState
+	for _, bs := range w.buses {
+		if !bs.present || bs.departed {
+			continue
+		}
+		if bs.chargerID == "" || w.statusOf(bs.chargerID) == model.ChargerFaulted {
+			waiting = append(waiting, bs)
+		}
+	}
+	sort.SliceStable(waiting, func(i, j int) bool { return waiting[i].arrival < waiting[j].arrival })
+	for _, bs := range waiting {
+		for i := range w.chargers {
+			c := &w.chargers[i]
+			if c.Status == model.ChargerOK && !occupied[c.ID] {
+				occupied[c.ID] = true
+				bs.chargerID = c.ID
+				break
+			}
+		}
+	}
+}
+
+// sense returns what the SoC sensor reports for a bus.
+func (w *World) sense(bs *busState) (soc float64, ageMin int, conf float64) {
+	soc = bs.soc
+	frozen, missing := false, false
+	for _, f := range w.sc.Faults {
+		if !f.Active(w.t) || (f.Target != "*" && f.Target != bs.spec.Bus.ID) {
+			continue
+		}
+		switch f.Kind {
+		case FaultSoCNoise:
+			soc += w.rng.NormFloat64() * f.Value
+		case FaultSoCBias:
+			soc += f.Value
+		case FaultSoCFreeze:
+			frozen = true
+		case FaultSoCMissing:
+			missing = true
+		}
+	}
+	switch {
+	case missing:
+		return 0, 10000, 0
+	case frozen:
+		return bs.lastGood, w.t - bs.lastGoodT, 1
+	}
+	bs.lastGood, bs.lastGoodT = soc, w.t
+	return soc, 0, 1
+}
+
+// observe builds the planner input from sensors and schedules (never from the truth).
+func (w *World) observe() planner.Input {
+	in := planner.Input{
+		Now:      w.t,
+		Site:     model.Site{LimitKW: w.limitAt(w.t), StepMin: 1},
+		Chargers: w.Chargers(),
+	}
+	for _, bs := range w.buses {
+		if !bs.present || bs.departed {
+			continue
+		}
+		b := bs.spec.Bus
+		b.ChargerID = bs.chargerID
+		b.ArrivalMin = bs.arrival
+		b.DepartureMin = bs.departure
+		b.SoCKWh, b.SoCAgeMin, b.SoCConfidence = w.sense(bs)
+		in.Buses = append(in.Buses, b)
+	}
+	return in
+}
+
+// commandedTotal is the power the commands imply: this step's commands for
+// controllable chargers plus what offline chargers keep drawing.
+func (w *World) commandedTotal() float64 {
+	total := 0.0
+	for _, c := range w.chargers {
+		if c.Status == model.ChargerOffline {
+			total += w.applied[c.ID]
+		} else {
+			total += w.cmd[c.ID]
+		}
+	}
+	return total
+}
+
+// applySwaps executes recommended swaps (when operators follow them).
+func (w *World) applySwaps(swaps []planner.Swap) {
+	for _, s := range swaps {
+		out, in := w.find(s.OutBusID), w.find(s.InBusID)
+		if out == nil || in == nil || !out.present || out.departed || !in.present || in.departed {
+			continue
+		}
+		if out.chargerID != s.ChargerID || w.statusOf(s.ChargerID) != model.ChargerOK {
+			continue
+		}
+		prev := in.chargerID
+		in.chargerID = s.ChargerID
+		out.chargerID = ""
+		if prev != "" && w.statusOf(prev) == model.ChargerOK {
+			out.chargerID = prev
+		}
+		in.busyUntil = w.t + swapDurationMin
+		out.busyUntil = w.t + swapDurationMin
+	}
+}
+
+// advance runs the physics for one step using the power in effect (previous commands).
+func (w *World) advance(m *Metrics) {
+	total := 0.0
+	for _, bs := range w.buses {
+		if !bs.present || bs.departed || bs.chargerID == "" || w.t < bs.busyUntil {
+			continue
+		}
+		c := w.charger(bs.chargerID)
+		if c == nil || c.Status == model.ChargerFaulted {
+			continue
+		}
+		gridKW := math.Min(w.applied[c.ID], c.MaxKW)
+		if gridKW < c.MinKW {
+			gridKW = 0
+		}
+		b := bs.spec.Bus
+		battKW := math.Min(gridKW*c.Efficiency, b.MaxBatteryKW*model.TaperFactor(bs.soc, b.CapacityKWh))
+		e := math.Min(battKW*stepHours, b.CapacityKWh-bs.soc)
+		if e <= 0 {
+			continue
+		}
+		bs.soc += e
+		grid := e / c.Efficiency
+		total += grid / stepHours
+		m.EnergyKWh += grid
+		m.CostBRL += grid * w.sc.Tariff.PriceAt(w.sc.StartClockMin+w.t)
+	}
+	if total > m.PeakKW {
+		m.PeakKW = total
+	}
+	if total > w.limitAt(w.t)+1e-6 {
+		m.OvershootMin++
+	}
+}
+
+// endTick makes this step's commands the power in effect for the next step.
+func (w *World) endTick() {
+	for _, c := range w.chargers {
+		switch c.Status {
+		case model.ChargerOK:
+			w.applied[c.ID] = w.cmd[c.ID]
+		case model.ChargerFaulted:
+			w.applied[c.ID] = 0
+		} // offline chargers keep drawing their last power
+	}
+}
+
+func (w *World) finish(m *Metrics) {
+	for _, bs := range w.buses {
+		if bs.present && !bs.departed {
+			w.depart(bs)
+		}
+	}
+	m.Ready = w.ready
+	m.ShortfallKWh = w.shortfall
+	if m.Buses > 0 {
+		m.ReadyPct = 100 * float64(m.Ready) / float64(m.Buses)
+	}
+}
+```
+
+- [ ] **Step 5: Implementar o laço e os controladores**
+
+`internal/sim/run.go`:
+```go
+package sim
+
+import (
+	"math"
+	"time"
+
+	"github.com/EduardoMilani8/depot-charge-planner/internal/planner"
+)
+
+// Recorder receives every decision (input and plan); see the decision log.
+type Recorder interface {
+	Record(minute int, in planner.Input, p planner.Plan) error
+}
+
+// Run simulates the scenario with the given controller. rec may be nil.
+func Run(sc Scenario, ctrl Controller, rec Recorder) Metrics {
+	w := newWorld(sc)
+	m := Metrics{Buses: len(sc.Buses), LayerTicks: map[string]int{}}
+	durations := make([]time.Duration, 0, sc.Horizon+1)
+	prev := map[string]float64{}
+	for t := 0; t <= sc.Horizon; t++ {
+		w.beginTick(t)
+		in := w.observe()
+		start := time.Now()
+		plan := ctrl.Plan(in)
+		durations = append(durations, time.Since(start))
+		m.LayerTicks[plan.Layer.String()]++
+		if rec != nil {
+			_ = rec.Record(t, in, plan)
+		}
+		w.cmd = map[string]float64{}
+		for _, s := range plan.Setpoints {
+			_ = w.SetPower(s.ChargerID, s.KW)
+		}
+		if w.commandedTotal() > w.limitAt(t)+1e-6 {
+			m.PlanViolations++
+		}
+		if changed(prev, w.cmd) {
+			m.PlanChanges++
+		}
+		prev = w.cmd
+		if sc.FollowSwaps {
+			w.applySwaps(plan.Swaps)
+		}
+		w.advance(&m)
+		w.endTick()
+	}
+	w.finish(&m)
+	m.PlanP99Micros = p99Micros(durations)
+	return m
+}
+
+func changed(a, b map[string]float64) bool {
+	for k, v := range a {
+		if math.Abs(v-b[k]) > 1e-6 {
+			return true
+		}
+	}
+	for k, v := range b {
+		if math.Abs(v-a[k]) > 1e-6 {
+			return true
+		}
+	}
+	return false
+}
+```
+
+`internal/sim/controllers.go`:
+```go
+package sim
+
+import (
+	"math"
+	"sort"
+	"time"
+
+	"github.com/EduardoMilani8/depot-charge-planner/internal/model"
+	"github.com/EduardoMilani8/depot-charge-planner/internal/planner"
+)
+
+// Controller is anything that turns an observation into a plan.
+type Controller interface {
+	Plan(in planner.Input) planner.Plan
+}
+
+// greedyController serves buses in a fixed order at full power until the power budget runs out.
+type greedyController struct {
+	less func(a, b model.Bus) bool
+}
+
+// NewFIFO serves buses by arrival time (charge on arrival, capped by the site limit).
+func NewFIFO() Controller {
+	return greedyController{less: func(a, b model.Bus) bool {
+		if a.ArrivalMin != b.ArrivalMin {
+			return a.ArrivalMin < b.ArrivalMin
+		}
+		return a.ID < b.ID
+	}}
+}
+
+// NewEDF serves buses by earliest departure first.
+func NewEDF() Controller {
+	return greedyController{less: func(a, b model.Bus) bool {
+		if a.DepartureMin != b.DepartureMin {
+			return a.DepartureMin < b.DepartureMin
+		}
+		return a.ID < b.ID
+	}}
+}
+
+func (g greedyController) Plan(in planner.Input) planner.Plan {
+	chargers := map[string]model.Charger{}
+	for _, c := range in.Chargers {
+		chargers[c.ID] = c
+	}
+	var buses []model.Bus
+	for _, b := range in.Buses {
+		c, ok := chargers[b.ChargerID]
+		if ok && c.Healthy() && b.ArrivalMin <= in.Now && b.SoCKWh < b.TargetKWh {
+			buses = append(buses, b)
+		}
+	}
+	sort.SliceStable(buses, func(i, j int) bool { return g.less(buses[i], buses[j]) })
+	budget := planner.AvailableKW(in)
+	var p planner.Plan
+	for _, b := range buses {
+		c := chargers[b.ChargerID]
+		kw := math.Min(planner.MaxGridKW(c, b), budget)
+		if kw < c.MinKW {
+			kw = 0
+		}
+		p.Setpoints = append(p.Setpoints, planner.Setpoint{ChargerID: c.ID, KW: kw})
+		budget -= kw
+	}
+	return p
+}
+
+type safeController struct{}
+
+// NewSafeOnly runs only layer 0 (equal split), to measure the fallback on its own.
+func NewSafeOnly() Controller { return safeController{} }
+
+func (safeController) Plan(in planner.Input) planner.Plan {
+	return planner.Enforce(in, planner.PlanSafe(in))
+}
+
+// NewPlannerController wraps the real planner, injecting the scenario's planner faults
+// (panic or slowness) into its normal layer.
+func NewPlannerController(cfg planner.Config, sc Scenario) Controller {
+	normal := func(c planner.Config, in planner.Input) planner.Plan {
+		for _, f := range sc.Faults {
+			if !f.Active(in.Now) {
+				continue
+			}
+			switch f.Kind {
+			case FaultPlannerPanic:
+				panic("injected planner fault")
+			case FaultPlannerSlow:
+				time.Sleep(2 * c.Timeout)
+			}
+		}
+		return planner.PlanNormal(c, in)
+	}
+	return planner.New(cfg).WithNormal(normal)
+}
+```
+
+- [ ] **Step 6: Rodar e ver passar**
+
+Run: `gofmt -l . && go vet ./... && go test -race ./...`
+Expected: PASS em todos os pacotes. Se `TestRunWaitingBusTakesFreedCharger` falhar, imprima `m` e verifique se o ônibus B1 chegou a 210 kWh antes do minuto 100 (necessário ~70 min a 150 kW) antes de mexer no simulador.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add internal
+git commit -m "feat(sim): deterministic simulator core with truth/observation split and baselines"
+```
+
+> **Status do plano:** PARCIAL. Tarefas 1 a 8 escritas. Faltam as tarefas 9 a 13 (testes de falhas, gerador e propriedades, registro de decisões, CLI, CI/fuzz/golden).
