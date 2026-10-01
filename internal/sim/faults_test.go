@@ -1,6 +1,7 @@
 package sim
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -35,14 +36,75 @@ func TestFaultPermanentChargerFailure(t *testing.T) {
 	}
 }
 
+// Scenario: two 150 kW chargers under a 250 kW limit (so the chargers alone can exceed
+// the limit: 2*150 = 300 > 250), two buses that want full power (240 kWh in 150 min needs
+// 240/0.95/150 h = 101 min of full power, laxity 49 min, required power above the 150 kW
+// charger max). Least-laxity-first with ID tie-break gives B1 (on C1) about 150 kW
+// (147.2 kW observed at minute 50) and B2 (on C2) the rest. When C1 goes offline at minute
+// 50 it keeps drawing its last ~150 kW, so the budget left for C2 is about 250 - 150 = 100 kW. If the planner ignored the
+// offline draw it would give C2 up to 150 kW (150 + 150 = 300 > 250): a commanded
+// violation (and a physical overshoot).
 func TestFaultOfflineChargerKeepsDrawingAndPlannerAccountsForIt(t *testing.T) {
+	const from, to = 50, 120
 	sc := twoBusScenario()
-	sc.Faults = []Fault{{Kind: FaultChargerOffline, Target: "C1", From: 50, To: 250}}
-	m := Run(sc, plannerCtrl(sc), nil)
+	sc.BaseLimitKW = 250
+	sc.Buses[0].Bus.DepartureMin = 150
+	sc.Buses[1].Bus.DepartureMin = 150
+	sc.Faults = []Fault{{Kind: FaultChargerOffline, Target: "C1", From: from, To: to}}
+	rc := &recordingController{inner: plannerCtrl(sc)}
+	m := Run(sc, rc, nil)
+
+	for min := from; min < to; min++ {
+		in, plan := rc.ins[min], rc.plans[min]
+		var c1 model.Charger
+		for _, c := range in.Chargers {
+			if c.ID == "C1" {
+				c1 = c
+			}
+		}
+		if c1.Status != model.ChargerOffline || c1.LastCommandedKW <= 0 {
+			t.Fatalf("minute %d: fault not in effect, C1 observed as %v with last command %v kW", min, c1.Status, c1.LastCommandedKW)
+		}
+		for _, sp := range plan.Setpoints {
+			if sp.ChargerID == "C2" && sp.KW > in.Site.LimitKW-c1.LastCommandedKW+1e-6 {
+				t.Fatalf("minute %d: C2 set to %.1f kW but only %.1f - %.1f = %.1f kW is left", min,
+					sp.KW, in.Site.LimitKW, c1.LastCommandedKW, in.Site.LimitKW-c1.LastCommandedKW)
+			}
+		}
+	}
 	if m.PlanViolations != 0 || m.OvershootMin != 0 {
 		t.Errorf("the offline charger's draw must be reserved from the budget: %+v", m)
 	}
+
+	// The accounting side: the metrics must count the offline draw. A controller that
+	// ignores it (C1 at 150 kW until it goes offline, then C2 at 150 kW as well) commands
+	// 150 (offline C1, still drawing) + 150 = 300 > 250 kW on every minute of the window:
+	// to-from = 70 commanded violations, and the physical draw exceeds 250 kW from the
+	// second window minute on (commands take effect one step later).
+	naive := funcController(func(in planner.Input) planner.Plan {
+		kw := map[string]float64{"C1": 150}
+		if in.Now >= from {
+			kw = map[string]float64{"C2": 150}
+		}
+		var p planner.Plan
+		for id, v := range kw {
+			p.Setpoints = append(p.Setpoints, planner.Setpoint{ChargerID: id, KW: v})
+		}
+		return p
+	})
+	nm := Run(sc, naive, nil)
+	if nm.PlanViolations != to-from {
+		t.Errorf("offline draw not counted in the commanded total: want %d violations, got %+v", to-from, nm)
+	}
+	if nm.OvershootMin < 1 {
+		t.Errorf("offline draw not counted in the physical total: %+v", nm)
+	}
 }
+
+// funcController adapts a function to Controller.
+type funcController func(in planner.Input) planner.Plan
+
+func (f funcController) Plan(in planner.Input) planner.Plan { return f(in) }
 
 func TestFaultLimitDropCausesOnlyPhysicalOvershoot(t *testing.T) {
 	sc := twoBusScenario()
@@ -86,6 +148,33 @@ func TestFaultSoCNoiseIsTolerated(t *testing.T) {
 	if m := Run(sc, plannerCtrl(sc), nil); m.Ready != 1 || m.PlanViolations != 0 {
 		t.Errorf("%+v", m)
 	}
+
+	// The fault must really perturb the readings. With a controller that commands 0 kW
+	// the true SoC stays at 50 kWh, so without noise every observation is exactly 50;
+	// with noise (std dev 5) many readings must deviate by more than 1 kWh.
+	observe := func(faults []Fault) []float64 {
+		s := baseScenario()
+		s.Faults = faults
+		rc := &recordingController{inner: stubController{kw: 0}}
+		Run(s, rc, nil)
+		return rc.socSequence()
+	}
+	for i, v := range observe(nil) {
+		if v != 50 {
+			t.Fatalf("no-fault reading %d is %v, want exactly 50", i, v)
+		}
+	}
+	noisy := observe(sc.Faults)
+	far := 0
+	for _, v := range noisy {
+		if math.Abs(v-50) > 1 {
+			far++
+		}
+	}
+	// P(|N(0,5)| > 1) = 84%; over 300 readings, far < 100 is astronomically unlikely.
+	if far < 100 {
+		t.Errorf("noise not applied: only %d of %d readings deviate by more than 1 kWh", far, len(noisy))
+	}
 }
 
 func TestFaultPlannerPanicFallsBackToLastValidPlan(t *testing.T) {
@@ -126,8 +215,23 @@ func TestFaultConsumptionAboveForecastLeavesBusShort(t *testing.T) {
 func TestFaultLateArrival(t *testing.T) {
 	sc := baseScenario()
 	sc.Faults = []Fault{{Kind: FaultLateArrival, Target: "B1", Value: 100}}
-	if m := Run(sc, plannerCtrl(sc), nil); m.Ready != 1 {
+	rc := &recordingController{inner: plannerCtrl(sc)}
+	if m := Run(sc, rc, nil); m.Ready != 1 {
 		t.Errorf("%+v", m)
+	}
+	// The bus is scheduled at minute 0 but must only be observed from minute 100.
+	for min := 0; min <= 110; min++ {
+		seen := len(rc.ins[min].Buses) == 1
+		if want := min >= 100; seen != want {
+			t.Fatalf("minute %d: bus observed=%v, want %v", min, seen, want)
+		}
+	}
+	// Control: without the fault the bus is observed from minute 0.
+	nf := baseScenario()
+	ctrl := &recordingController{inner: plannerCtrl(nf)}
+	Run(nf, ctrl, nil)
+	if len(ctrl.ins[0].Buses) != 1 {
+		t.Errorf("without the fault the bus must be observed at minute 0")
 	}
 }
 
@@ -144,18 +248,21 @@ func TestFaultEarlyDepartureIsReportedNotHidden(t *testing.T) {
 }
 
 // recordingController wraps a Controller and keeps a copy of every observation it is
-// given (and the swaps it recommends), so tests can inspect what the planner saw.
+// given (and the plans it returns, and the swaps it recommends), so tests can inspect what the planner saw.
 type recordingController struct {
 	inner Controller
 	ins   []planner.Input
+	plans []planner.Plan
 	swaps int
 }
 
 func (r *recordingController) Plan(in planner.Input) planner.Plan {
 	cp := in
 	cp.Buses = append([]model.Bus(nil), in.Buses...)
+	cp.Chargers = append([]model.Charger(nil), in.Chargers...)
 	r.ins = append(r.ins, cp)
 	p := r.inner.Plan(in)
+	r.plans = append(r.plans, p)
 	r.swaps += len(p.Swaps)
 	return p
 }
