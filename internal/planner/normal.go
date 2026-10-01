@@ -107,7 +107,21 @@ func allocate(cfg Config, budget float64, cands []*candidate) {
 		return doomed[i].bus.ID < doomed[j].bus.ID
 	})
 	order := append(append([]*candidate(nil), savable...), doomed...)
+	// Pass A: buses whose full requirement still fits get it. A bus whose requirement
+	// exceeds what is left cannot be saved by this budget, so it is deferred and must
+	// not consume power that a bus further down the order could still use to finish.
+	var deferred []*candidate
 	for _, c := range order {
+		if c.requiredKW > budget {
+			deferred = append(deferred, c)
+			continue
+		}
+		c.allocKW = c.requiredKW
+		budget -= c.requiredKW
+	}
+	// Deferred buses (same order) share whatever is left; below the charger floor
+	// the setpoint is 0, never a value between 0 and the floor.
+	for _, c := range deferred {
 		give := math.Min(c.requiredKW, budget)
 		if give < c.charger.MinKW {
 			give = 0
@@ -156,6 +170,8 @@ func (cd *candidate) status() BusStatus {
 		st.Reason = "sem potência disponível dentro do limite da garagem"
 	case cd.laxityMin < 0:
 		st.Reason = fmt.Sprintf("inviável: mesmo na potência máxima faltam %.0f min; déficit previsto %.1f kWh", -cd.laxityMin, st.ShortfallKWh)
+	case !st.WillReachTarget:
+		st.Reason = fmt.Sprintf("potência insuficiente: %.1f de %.1f kW necessários; déficit previsto %.1f kWh", cd.allocKW, cd.requiredKW, st.ShortfallKWh)
 	default:
 		st.Reason = fmt.Sprintf("folga %.0f min; %.1f kW", cd.laxityMin, cd.allocKW)
 	}

@@ -54,6 +54,9 @@ func TestNormalScarceBudgetPrioritisesLeastLaxity(t *testing.T) {
 	if !near(sp(p, "C1"), 136) || !near(sp(p, "C2"), 24) {
 		t.Errorf("got A=%v B=%v, want 136/24", sp(p, "C1"), sp(p, "C2"))
 	}
+	if v := Violations(in, p); len(v) != 0 {
+		t.Errorf("plan violates invariants: %v", v)
+	}
 }
 
 func TestNormalDoomedBusDoesNotStarveSavableOne(t *testing.T) {
@@ -75,6 +78,9 @@ func TestNormalDoomedBusDoesNotStarveSavableOne(t *testing.T) {
 	}
 	if !statusOf(p, "B").WillReachTarget {
 		t.Error("B must reach its target")
+	}
+	if v := Violations(in, p); len(v) != 0 {
+		t.Errorf("plan violates invariants: %v", v)
 	}
 }
 
@@ -184,5 +190,75 @@ func TestNormalIsDeterministicAndPure(t *testing.T) {
 	}
 	if v := Violations(in, a); len(v) != 0 {
 		t.Errorf("normal plan violates invariants: %v", v)
+	}
+}
+
+func TestNormalUnsavableBusDoesNotStarveSavableOne(t *testing.T) {
+	// limit 100. A: need 120 kWh in 60 min -> required 120 kW (> 100, cannot be saved
+	// by this budget); laxity 60 - 120/150*60 = 12. B: need 120 kWh in 300 min ->
+	// required 24 kW, laxity 252. Order A, B. A's requirement exceeds the budget, so it
+	// is deferred; B takes 24, leaving 76 for A (deficit 120-76 = 44 kWh).
+	in := Input{
+		Site:     model.Site{LimitKW: 100, StepMin: 1},
+		Chargers: []model.Charger{testCharger("C1"), testCharger("C2")},
+		Buses: []model.Bus{
+			testBus("A", "C1", 100, 220, 60),
+			testBus("B", "C2", 100, 220, 300),
+		},
+	}
+	p := PlanNormal(testConfig(), in)
+	if !near(sp(p, "C2"), 24) || !near(sp(p, "C1"), 76) {
+		t.Errorf("got A=%v B=%v, want 76/24", sp(p, "C1"), sp(p, "C2"))
+	}
+	if !statusOf(p, "B").WillReachTarget {
+		t.Errorf("B must reach its target: %+v", statusOf(p, "B"))
+	}
+	a := statusOf(p, "A")
+	if a.WillReachTarget || !near(a.ShortfallKWh, 44) {
+		t.Errorf("A must miss its target by 44 kWh: %+v", a)
+	}
+	if !strings.Contains(a.Reason, "insuficiente") || strings.Contains(a.Reason, "folga") {
+		t.Errorf("A's reason must report insufficient power, not slack: %q", a.Reason)
+	}
+	if v := Violations(in, p); len(v) != 0 {
+		t.Errorf("plan violates invariants: %v", v)
+	}
+}
+
+func TestNormalLeftoverBelowChargerFloorGivesZero(t *testing.T) {
+	// limit 27. A and B both need 120 kWh in 300 min -> required 24 kW, equal laxity,
+	// order A, B. A takes 24, 3 kW are left (< floor 5): B must get exactly 0.
+	in := Input{
+		Site:     model.Site{LimitKW: 27, StepMin: 1},
+		Chargers: []model.Charger{testCharger("C1"), testCharger("C2")},
+		Buses: []model.Bus{
+			testBus("A", "C1", 100, 220, 300),
+			testBus("B", "C2", 100, 220, 300),
+		},
+	}
+	p := PlanNormal(testConfig(), in)
+	if !near(sp(p, "C1"), 24) || sp(p, "C2") != 0 {
+		t.Errorf("got A=%v B=%v, want 24/0", sp(p, "C1"), sp(p, "C2"))
+	}
+	if st := statusOf(p, "B"); st.WillReachTarget || !strings.Contains(st.Reason, "potência") {
+		t.Errorf("B must be reported as unpowered: %+v", st)
+	}
+	if v := Violations(in, p); len(v) != 0 {
+		t.Errorf("plan violates invariants: %v", v)
+	}
+}
+
+func TestNormalTinyRequirementIsRaisedToChargerFloor(t *testing.T) {
+	// need 1 kWh in 300 min -> 0.2 kW, below the 5 kW floor: setpoint is exactly 5.
+	in := oneBus(1000, testBus("B1", "C1", 100, 101, 300))
+	p := PlanNormal(testConfig(), in)
+	if sp(p, "C1") != 5 {
+		t.Errorf("setpoint = %v, want exactly 5", sp(p, "C1"))
+	}
+	if !statusOf(p, "B1").WillReachTarget {
+		t.Errorf("B1 must reach its target: %+v", statusOf(p, "B1"))
+	}
+	if v := Violations(in, p); len(v) != 0 {
+		t.Errorf("plan violates invariants: %v", v)
 	}
 }
