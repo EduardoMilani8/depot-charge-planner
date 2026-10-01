@@ -847,4 +847,884 @@ git commit -m "feat(planner): layer 0 safe profile with equal power split"
 ```
 
 
-> **Status do plano:** PARCIAL. Tarefas 1 a 3 escritas. Faltam as tarefas 4 a 13 (verificador de invariantes, camada 1, rodízio, fachada com degradação, simulador, falhas, gerador, registro de decisões, CLI e CI/fuzz/golden).
+
+### Task 4: Verificador de invariantes
+
+**Files:**
+- Create: `internal/planner/enforce.go`
+- Test: `internal/planner/enforce_test.go`
+
+**Interfaces:**
+- Consumes: `Input`, `Plan`, `Setpoint`, `AvailableKW`, `chargerMap`, `finite`.
+- Produces: `planner.Violations(in Input, p Plan) []string` (checagem pura, lista vazia = plano válido) e `planner.Enforce(in Input, p Plan) Plan` (devolve o plano corrigido, com nota em `Notes` quando corrigiu algo; nunca altera o plano recebido).
+
+- [ ] **Step 1: Escrever os testes que falham**
+
+`internal/planner/enforce_test.go`:
+```go
+package planner
+
+import (
+	"math"
+	"reflect"
+	"testing"
+
+	"github.com/EduardoMilani8/depot-charge-planner/internal/model"
+)
+
+func twoChargerInput(limit float64) Input {
+	return Input{
+		Now:      0,
+		Site:     model.Site{LimitKW: limit, StepMin: 1},
+		Chargers: []model.Charger{testCharger("C1"), testCharger("C2")},
+	}
+}
+
+func TestEnforceKeepsValidPlan(t *testing.T) {
+	in := twoChargerInput(200)
+	p := Plan{Setpoints: []Setpoint{{"C1", 80}, {"C2", 100}}}
+	if v := Violations(in, p); len(v) != 0 {
+		t.Fatalf("unexpected violations: %v", v)
+	}
+	if got := Enforce(in, p); !reflect.DeepEqual(got, p) {
+		t.Errorf("valid plan must be returned unchanged: %+v", got)
+	}
+}
+
+func TestEnforceScalesDownOverLimit(t *testing.T) {
+	in := twoChargerInput(100)
+	p := Plan{Setpoints: []Setpoint{{"C1", 100}, {"C2", 100}}}
+	if len(Violations(in, p)) == 0 {
+		t.Fatal("expected a violation")
+	}
+	got := Enforce(in, p)
+	if !near(sp(got, "C1"), 50) || !near(sp(got, "C2"), 50) {
+		t.Errorf("expected 50/50, got %+v", got.Setpoints)
+	}
+	if v := Violations(in, got); len(v) != 0 {
+		t.Errorf("enforced plan still violates: %v", v)
+	}
+	if len(got.Notes) == 0 {
+		t.Error("a correction must leave a note")
+	}
+	if p.Setpoints[0].KW != 100 {
+		t.Error("Enforce must not mutate its input")
+	}
+}
+
+func TestEnforceClampsToChargerMax(t *testing.T) {
+	in := twoChargerInput(1000)
+	got := Enforce(in, Plan{Setpoints: []Setpoint{{"C1", 400}}})
+	if sp(got, "C1") != 150 {
+		t.Errorf("got %v, want 150", sp(got, "C1"))
+	}
+}
+
+func TestEnforceZeroesBelowFloor(t *testing.T) {
+	in := twoChargerInput(1000)
+	got := Enforce(in, Plan{Setpoints: []Setpoint{{"C1", 3}}})
+	if sp(got, "C1") != 0 {
+		t.Errorf("got %v, want 0 (below 5 kW floor)", sp(got, "C1"))
+	}
+}
+
+func TestEnforceDropsUnknownDuplicateInvalidAndUnhealthy(t *testing.T) {
+	in := twoChargerInput(1000)
+	in.Chargers[1].Status = model.ChargerFaulted
+	p := Plan{Setpoints: []Setpoint{
+		{"X", 50}, {"C1", 60}, {"C1", 70}, {"C2", 80},
+	}}
+	got := Enforce(in, p)
+	if len(got.Setpoints) != 1 || got.Setpoints[0].ChargerID != "C1" || got.Setpoints[0].KW != 60 {
+		t.Errorf("unexpected setpoints: %+v", got.Setpoints)
+	}
+	bad := Plan{Setpoints: []Setpoint{{"C1", math.NaN()}}}
+	if got := Enforce(in, bad); len(got.Setpoints) != 0 {
+		t.Errorf("NaN setpoint must be dropped: %+v", got.Setpoints)
+	}
+	neg := Plan{Setpoints: []Setpoint{{"C1", -5}}}
+	if got := Enforce(in, neg); len(got.Setpoints) != 0 {
+		t.Errorf("negative setpoint must be dropped: %+v", got.Setpoints)
+	}
+}
+
+func TestEnforceReservesOfflineDraw(t *testing.T) {
+	in := twoChargerInput(100)
+	in.Chargers[0].Status = model.ChargerOffline
+	in.Chargers[0].LastCommandedKW = 60
+	got := Enforce(in, Plan{Setpoints: []Setpoint{{"C2", 80}}})
+	if !near(sp(got, "C2"), 40) {
+		t.Errorf("C2 = %v, want 40", sp(got, "C2"))
+	}
+}
+
+func TestEnforceNaNLimitMeansZero(t *testing.T) {
+	in := twoChargerInput(math.NaN())
+	got := Enforce(in, Plan{Setpoints: []Setpoint{{"C1", 100}}})
+	if sp(got, "C1") != 0 {
+		t.Errorf("got %v, want 0", sp(got, "C1"))
+	}
+}
+```
+
+- [ ] **Step 2: Rodar e ver falhar**
+
+Run: `go test ./internal/planner -run Enforce -v`
+Expected: FAIL (`undefined: Violations`).
+
+- [ ] **Step 3: Implementar**
+
+`internal/planner/enforce.go`:
+```go
+package planner
+
+import (
+	"fmt"
+	"math"
+)
+
+const eps = 1e-6
+
+// Violations lists every invariant the plan breaks. It is intentionally small and
+// independent of the planner layers: whoever computes is not who guarantees.
+func Violations(in Input, p Plan) []string {
+	chargers := chargerMap(in)
+	var out []string
+	seen := map[string]bool{}
+	total := 0.0
+	for _, s := range p.Setpoints {
+		c, ok := chargers[s.ChargerID]
+		if !ok {
+			out = append(out, fmt.Sprintf("carregador desconhecido: %s", s.ChargerID))
+			continue
+		}
+		if seen[s.ChargerID] {
+			out = append(out, fmt.Sprintf("setpoint duplicado: %s", s.ChargerID))
+			continue
+		}
+		seen[s.ChargerID] = true
+		if !finite(s.KW) || s.KW < 0 {
+			out = append(out, fmt.Sprintf("potência inválida em %s: %v", s.ChargerID, s.KW))
+			continue
+		}
+		if !c.Healthy() && s.KW > 0 {
+			out = append(out, fmt.Sprintf("carregador indisponível %s recebeu %.1f kW", s.ChargerID, s.KW))
+		}
+		if s.KW > c.MaxKW+eps {
+			out = append(out, fmt.Sprintf("%s acima do teto: %.1f > %.1f kW", s.ChargerID, s.KW, c.MaxKW))
+		}
+		if s.KW > 0 && s.KW < c.MinKW-eps {
+			out = append(out, fmt.Sprintf("%s abaixo do piso: %.1f < %.1f kW", s.ChargerID, s.KW, c.MinKW))
+		}
+		total += s.KW
+	}
+	if limit := AvailableKW(in); total > limit+eps {
+		out = append(out, fmt.Sprintf("potência total %.1f kW acima do orçamento %.1f kW", total, limit))
+	}
+	return out
+}
+
+// Enforce returns a plan that satisfies every invariant, correcting the input
+// plan if needed (scaling down proportionally, then switching off below the floor).
+func Enforce(in Input, p Plan) Plan {
+	viol := Violations(in, p)
+	if len(viol) == 0 {
+		return p
+	}
+	chargers := chargerMap(in)
+	fixed := make([]Setpoint, 0, len(p.Setpoints))
+	seen := map[string]bool{}
+	total := 0.0
+	for _, s := range p.Setpoints {
+		c, ok := chargers[s.ChargerID]
+		if !ok || seen[s.ChargerID] || !c.Healthy() || !finite(s.KW) || s.KW < 0 {
+			continue
+		}
+		seen[s.ChargerID] = true
+		kw := math.Min(s.KW, c.MaxKW)
+		fixed = append(fixed, Setpoint{ChargerID: s.ChargerID, KW: kw})
+		total += kw
+	}
+	if limit := AvailableKW(in); total > limit {
+		f := 0.0
+		if total > 0 {
+			f = limit / total
+		}
+		for i := range fixed {
+			fixed[i].KW *= f
+		}
+	}
+	for i := range fixed {
+		if fixed[i].KW < chargers[fixed[i].ChargerID].MinKW {
+			fixed[i].KW = 0
+		}
+	}
+	out := p
+	out.Setpoints = fixed
+	out.Notes = append(append([]string(nil), p.Notes...), fmt.Sprintf("verificador corrigiu o plano: %d violação(ões)", len(viol)))
+	return out
+}
+```
+
+- [ ] **Step 4: Rodar e ver passar**
+
+Run: `gofmt -l . && go vet ./... && go test ./internal/planner -v`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add internal/planner
+git commit -m "feat(planner): independent invariant verifier (Violations/Enforce)"
+```
+
+---
+
+### Task 5: Camada 1 — regra por folga
+
+**Files:**
+- Create: `internal/planner/normal.go`
+- Test: `internal/planner/normal_test.go`
+
+**Interfaces:**
+- Consumes: tudo das Tarefas 1 a 4.
+- Produces: `planner.PlanNormal(cfg Config, in Input) Plan` (função pura, `Layer: LayerNormal`, setpoints ordenados por ID de carregador, status ordenados por ID de ônibus, `Swaps` vazio até a Tarefa 6). Internos usados na Tarefa 6: `candidate` (campos `bus model.Bus`, `charger model.Charger`, `need`, `gridNeed`, `availMin`, `maxKW`, `laxityMin`, `requiredKW`, `allocKW float64`, `unusable`, `reliable bool`), `idleBus{bus model.Bus; reason string}`, `newCandidate(cfg Config, in Input, b model.Bus, c model.Charger) candidate`.
+
+**Review Focus pinned here:** limite da bateria abaixo do piso; SoC NaN/negativo/acima da capacidade; saída já passada; entrada vazia e limite zero; carregador offline reservando orçamento.
+
+- [ ] **Step 1: Escrever os testes que falham**
+
+`internal/planner/normal_test.go`:
+```go
+package planner
+
+import (
+	"math"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/EduardoMilani8/depot-charge-planner/internal/model"
+)
+
+func oneBus(limit float64, b model.Bus) Input {
+	return Input{
+		Now:      0,
+		Site:     model.Site{LimitKW: limit, StepMin: 1},
+		Chargers: []model.Charger{testCharger("C1")},
+		Buses:    []model.Bus{b},
+	}
+}
+
+func TestNormalJustInTime(t *testing.T) {
+	// need 120 kWh, 240 min left, laxity 192 min (>= 120): no surplus, just 30 kW.
+	p := PlanNormal(testConfig(), oneBus(1000, testBus("B1", "C1", 100, 220, 240)))
+	if !near(sp(p, "C1"), 30) {
+		t.Errorf("setpoint = %v, want 30", sp(p, "C1"))
+	}
+	st := statusOf(p, "B1")
+	if !st.WillReachTarget || !strings.Contains(st.Reason, "folga") {
+		t.Errorf("unexpected status: %+v", st)
+	}
+	if p.Layer != LayerNormal {
+		t.Errorf("layer = %v", p.Layer)
+	}
+}
+
+func TestNormalSurplusForLowLaxity(t *testing.T) {
+	// 100 min left: laxity 52 min (< 120): required 72 kW, surplus raises it to the max.
+	p := PlanNormal(testConfig(), oneBus(1000, testBus("B1", "C1", 100, 220, 100)))
+	if !near(sp(p, "C1"), 150) {
+		t.Errorf("setpoint = %v, want 150", sp(p, "C1"))
+	}
+}
+
+func TestNormalScarceBudgetPrioritisesLeastLaxity(t *testing.T) {
+	in := Input{
+		Site:     model.Site{LimitKW: 160, StepMin: 1},
+		Chargers: []model.Charger{testCharger("C1"), testCharger("C2")},
+		Buses: []model.Bus{
+			testBus("A", "C1", 100, 220, 60),  // laxity 12, required 120
+			testBus("B", "C2", 100, 220, 300), // laxity 252, required 24
+		},
+	}
+	p := PlanNormal(testConfig(), in)
+	if !near(sp(p, "C1"), 136) || !near(sp(p, "C2"), 24) {
+		t.Errorf("got A=%v B=%v, want 136/24", sp(p, "C1"), sp(p, "C2"))
+	}
+}
+
+func TestNormalDoomedBusDoesNotStarveSavableOne(t *testing.T) {
+	in := Input{
+		Site:     model.Site{LimitKW: 150, StepMin: 1},
+		Chargers: []model.Charger{testCharger("C1"), testCharger("C2")},
+		Buses: []model.Bus{
+			testBus("A", "C1", 0, 240, 60),    // needs 96 min at max, has 60: doomed
+			testBus("B", "C2", 100, 220, 300), // savable, required 24
+		},
+	}
+	p := PlanNormal(testConfig(), in)
+	if !near(sp(p, "C2"), 24) || !near(sp(p, "C1"), 126) {
+		t.Errorf("got A=%v B=%v, want 126/24", sp(p, "C1"), sp(p, "C2"))
+	}
+	a := statusOf(p, "A")
+	if a.WillReachTarget || a.ShortfallKWh <= 0 || !strings.Contains(a.Reason, "inviável") {
+		t.Errorf("A should be flagged infeasible with shortfall: %+v", a)
+	}
+	if !statusOf(p, "B").WillReachTarget {
+		t.Error("B must reach its target")
+	}
+}
+
+func TestNormalBatteryLimitBelowChargerFloor(t *testing.T) {
+	b := testBus("B1", "C1", 100, 220, 300)
+	b.MaxBatteryKW = 3 // charger floor is 5 kW
+	p := PlanNormal(testConfig(), oneBus(1000, b))
+	if sp(p, "C1") != 0 {
+		t.Errorf("setpoint = %v, want 0", sp(p, "C1"))
+	}
+	if st := statusOf(p, "B1"); st.WillReachTarget || !strings.Contains(st.Reason, "bateria") {
+		t.Errorf("unexpected status: %+v", st)
+	}
+}
+
+func TestNormalUnreliableSoCIsConservative(t *testing.T) {
+	b := testBus("B1", "C1", 200, 220, 300)
+	b.SoCAgeMin = 100 // stale: 200 - 10% of 300 = 170, need 50 kWh over 300 min
+	p := PlanNormal(testConfig(), oneBus(1000, b))
+	if !near(sp(p, "C1"), 10) {
+		t.Errorf("setpoint = %v, want 10", sp(p, "C1"))
+	}
+	if !strings.Contains(statusOf(p, "B1").Reason, "não confiável") {
+		t.Errorf("reason should mention unreliable reading: %q", statusOf(p, "B1").Reason)
+	}
+}
+
+func TestNormalAbsurdSoCReadingsAssumeEmptyBattery(t *testing.T) {
+	for _, soc := range []float64{math.NaN(), -10, 500} {
+		b := testBus("B1", "C1", soc, 150, 300) // target 150 from 0, 300 min: 30 kW
+		p := PlanNormal(testConfig(), oneBus(1000, b))
+		if !near(sp(p, "C1"), 30) {
+			t.Errorf("soc %v: setpoint = %v, want 30", soc, sp(p, "C1"))
+		}
+	}
+}
+
+func TestNormalOfflineChargerReservesBudget(t *testing.T) {
+	in := Input{
+		Site: model.Site{LimitKW: 100, StepMin: 1},
+		Chargers: []model.Charger{
+			{ID: "C1", MaxKW: 150, MinKW: 5, Efficiency: 1, Status: model.ChargerOffline, LastCommandedKW: 60},
+			testCharger("C2"),
+		},
+		Buses: []model.Bus{
+			testBus("B1", "C1", 100, 220, 300),
+			testBus("B2", "C2", 0, 240, 100),
+		},
+	}
+	p := PlanNormal(testConfig(), in)
+	if !near(sp(p, "C2"), 40) {
+		t.Errorf("C2 = %v, want 40 (limit 100 minus 60 offline draw)", sp(p, "C2"))
+	}
+	if sp(p, "C1") != 0 || !strings.Contains(statusOf(p, "B1").Reason, "indisponível") {
+		t.Errorf("offline charger must not be commanded: %+v", p)
+	}
+}
+
+func TestNormalDepartureNotInTheFuture(t *testing.T) {
+	p := PlanNormal(testConfig(), oneBus(1000, testBus("B1", "C1", 100, 220, 0)))
+	kw := sp(p, "C1")
+	if math.IsNaN(kw) || math.IsInf(kw, 0) || kw > 150 {
+		t.Errorf("setpoint must be finite and within the charger max, got %v", kw)
+	}
+	if st := statusOf(p, "B1"); st.WillReachTarget || st.ShortfallKWh <= 0 {
+		t.Errorf("bus past its departure must be infeasible: %+v", st)
+	}
+}
+
+func TestNormalEmptyAndZeroLimit(t *testing.T) {
+	if p := PlanNormal(testConfig(), Input{}); len(p.Setpoints) != 0 {
+		t.Errorf("empty input: %+v", p)
+	}
+	p := PlanNormal(testConfig(), oneBus(0, testBus("B1", "C1", 100, 220, 100)))
+	if sp(p, "C1") != 0 {
+		t.Errorf("zero limit: setpoint %v", sp(p, "C1"))
+	}
+	if st := statusOf(p, "B1"); !strings.Contains(st.Reason, "potência") {
+		t.Errorf("reason should explain the lack of power: %+v", st)
+	}
+}
+
+func TestNormalBusAlreadyAtTarget(t *testing.T) {
+	p := PlanNormal(testConfig(), oneBus(1000, testBus("B1", "C1", 230, 220, 300)))
+	if sp(p, "C1") != 0 || !statusOf(p, "B1").WillReachTarget {
+		t.Errorf("unexpected plan: %+v", p)
+	}
+}
+
+func TestNormalIsDeterministicAndPure(t *testing.T) {
+	in := Input{
+		Site:     model.Site{LimitKW: 200, StepMin: 1},
+		Chargers: []model.Charger{testCharger("C1"), testCharger("C2"), testCharger("C3")},
+		Buses: []model.Bus{
+			testBus("B3", "C3", 90, 220, 200),
+			testBus("B1", "C1", 100, 220, 200),
+			testBus("B2", "C2", 100, 220, 200),
+		},
+	}
+	a := PlanNormal(testConfig(), in)
+	b := PlanNormal(testConfig(), in)
+	if !reflect.DeepEqual(a, b) {
+		t.Error("same input must give the same plan")
+	}
+	if in.Buses[0].ID != "B3" {
+		t.Error("input must not be reordered or mutated")
+	}
+	if v := Violations(in, a); len(v) != 0 {
+		t.Errorf("normal plan violates invariants: %v", v)
+	}
+}
+```
+
+- [ ] **Step 2: Rodar e ver falhar**
+
+Run: `go test ./internal/planner -run Normal -v`
+Expected: FAIL (`undefined: PlanNormal`).
+
+- [ ] **Step 3: Implementar**
+
+`internal/planner/normal.go`:
+```go
+package planner
+
+import (
+	"fmt"
+	"math"
+	"sort"
+
+	"github.com/EduardoMilani8/depot-charge-planner/internal/model"
+)
+
+// candidate is a connected bus on a healthy charger, with its derived numbers.
+type candidate struct {
+	bus        model.Bus
+	charger    model.Charger
+	need       float64 // battery kWh missing to the (margin-adjusted) target
+	gridNeed   float64 // grid kWh required, using the conservative taper cost
+	availMin   float64 // minutes until departure (never negative)
+	maxKW      float64 // highest grid-side power for this pair
+	laxityMin  float64 // minutes of spare time at max power
+	requiredKW float64 // power that just meets the deadline
+	allocKW    float64
+	unusable   bool // battery limit is below the charger floor: cannot charge at all
+	reliable   bool
+}
+
+// idleBus is a present bus that cannot be charged right now.
+type idleBus struct {
+	bus    model.Bus
+	reason string
+}
+
+func isReliable(cfg Config, b model.Bus) bool {
+	if !finite(b.SoCKWh) || b.SoCKWh < 0 || b.SoCKWh > b.CapacityKWh {
+		return false
+	}
+	if !finite(b.SoCConfidence) || b.SoCConfidence < cfg.MinConfidence {
+		return false
+	}
+	return b.SoCAgeMin <= cfg.StaleAfterMin
+}
+
+// usableSoC returns the SoC the planner will trust: absurd readings are treated as
+// an empty battery (worst case), stale ones get a conservative penalty.
+func usableSoC(cfg Config, b model.Bus) (float64, bool) {
+	rel := isReliable(cfg, b)
+	switch {
+	case !finite(b.SoCKWh) || b.SoCKWh < 0 || b.SoCKWh > b.CapacityKWh:
+		return 0, false
+	case !rel:
+		return clamp(b.SoCKWh-cfg.UnreliablePenaltyFrac*b.CapacityKWh, 0, b.CapacityKWh), false
+	}
+	return b.SoCKWh, true
+}
+
+func newCandidate(cfg Config, in Input, b model.Bus, c model.Charger) candidate {
+	soc, rel := usableSoC(cfg, b)
+	target := math.Min(b.CapacityKWh, b.TargetKWh+cfg.MarginKWh)
+	cd := candidate{bus: b, charger: c, reliable: rel}
+	cd.need = math.Max(0, target-soc)
+	cd.maxKW = MaxGridKW(c, b)
+	cd.availMin = math.Max(0, float64(b.DepartureMin-in.Now))
+	cd.gridNeed = model.EffectiveEnergy(soc, target, b.CapacityKWh) / c.Efficiency
+	if cd.maxKW <= 0 || cd.maxKW < c.MinKW {
+		cd.unusable = true
+	}
+	switch {
+	case cd.need <= 0:
+		cd.laxityMin = cd.availMin
+	case cd.unusable:
+		cd.laxityMin = math.Inf(-1)
+	default:
+		cd.laxityMin = cd.availMin - cd.gridNeed/cd.maxKW*60
+		if cd.availMin > 0 {
+			cd.requiredKW = clamp(cd.gridNeed/(cd.availMin/60), c.MinKW, cd.maxKW)
+		} else {
+			cd.requiredKW = cd.maxKW
+		}
+	}
+	return cd
+}
+
+// allocate gives each bus the power that just meets its deadline (savable buses
+// first, least laxity first; doomed buses last), then spends spare power on buses
+// whose laxity is below cfg.SurplusLaxityMin.
+func allocate(cfg Config, budget float64, cands []*candidate) {
+	var savable, doomed []*candidate
+	for _, c := range cands {
+		if c.need <= 0 || c.unusable {
+			continue
+		}
+		if c.laxityMin >= 0 {
+			savable = append(savable, c)
+		} else {
+			doomed = append(doomed, c)
+		}
+	}
+	sort.SliceStable(savable, func(i, j int) bool {
+		if savable[i].laxityMin != savable[j].laxityMin {
+			return savable[i].laxityMin < savable[j].laxityMin
+		}
+		return savable[i].bus.ID < savable[j].bus.ID
+	})
+	sort.SliceStable(doomed, func(i, j int) bool {
+		if doomed[i].laxityMin != doomed[j].laxityMin {
+			return doomed[i].laxityMin > doomed[j].laxityMin
+		}
+		return doomed[i].bus.ID < doomed[j].bus.ID
+	})
+	order := append(append([]*candidate(nil), savable...), doomed...)
+	for _, c := range order {
+		give := math.Min(c.requiredKW, budget)
+		if give < c.charger.MinKW {
+			give = 0
+		}
+		c.allocKW = give
+		budget -= give
+	}
+	for _, c := range order {
+		if budget <= 0 {
+			break
+		}
+		if c.allocKW == 0 || c.laxityMin >= cfg.SurplusLaxityMin {
+			continue
+		}
+		extra := math.Min(c.maxKW-c.allocKW, budget)
+		if extra > 0 {
+			c.allocKW += extra
+			budget -= extra
+		}
+	}
+}
+
+func finiteLaxity(x float64) float64 {
+	switch {
+	case math.IsInf(x, -1):
+		return -1e6
+	case math.IsInf(x, 1):
+		return 1e6
+	}
+	return x
+}
+
+func (cd *candidate) status() BusStatus {
+	st := BusStatus{BusID: cd.bus.ID, Assessed: true, LaxityMin: finiteLaxity(cd.laxityMin)}
+	delivered := cd.allocKW * cd.availMin / 60
+	st.WillReachTarget = cd.need <= 0 || delivered >= cd.gridNeed-1e-6
+	if !st.WillReachTarget {
+		st.ShortfallKWh = math.Max(0, cd.gridNeed-delivered) * cd.charger.Efficiency
+	}
+	switch {
+	case cd.need <= 0:
+		st.Reason = "alvo atingido"
+	case cd.unusable:
+		st.Reason = "limite da bateria abaixo do piso do carregador: não é possível carregar"
+	case cd.allocKW == 0:
+		st.Reason = "sem potência disponível dentro do limite da garagem"
+	case cd.laxityMin < 0:
+		st.Reason = fmt.Sprintf("inviável: mesmo na potência máxima faltam %.0f min; déficit previsto %.1f kWh", -cd.laxityMin, st.ShortfallKWh)
+	default:
+		st.Reason = fmt.Sprintf("folga %.0f min; %.1f kW", cd.laxityMin, cd.allocKW)
+	}
+	if !cd.reliable && cd.need > 0 {
+		st.Reason += " (leitura de SoC não confiável: estimativa conservadora)"
+	}
+	return st
+}
+
+func statusName(s model.ChargerStatus) string {
+	switch s {
+	case model.ChargerFaulted:
+		return "em falha"
+	case model.ChargerOffline:
+		return "offline"
+	}
+	return "ok"
+}
+
+func idleStatus(cfg Config, ib idleBus) BusStatus {
+	soc, _ := usableSoC(cfg, ib.bus)
+	target := math.Min(ib.bus.CapacityKWh, ib.bus.TargetKWh+cfg.MarginKWh)
+	need := math.Max(0, target-soc)
+	return BusStatus{BusID: ib.bus.ID, Assessed: true, WillReachTarget: need <= 0, ShortfallKWh: need, Reason: ib.reason}
+}
+
+// PlanNormal is layer 1: least-laxity-first allocation under the power budget.
+func PlanNormal(cfg Config, in Input) Plan {
+	chargers := chargerMap(in)
+	plan := Plan{Layer: LayerNormal}
+	var cands []*candidate
+	var idles []idleBus
+	for _, b := range presentBuses(in) {
+		c, ok := chargers[b.ChargerID]
+		switch {
+		case b.ChargerID == "" || !ok:
+			idles = append(idles, idleBus{bus: b, reason: "aguardando carregador"})
+		case !c.Healthy():
+			idles = append(idles, idleBus{bus: b, reason: fmt.Sprintf("carregador %s indisponível (%s)", c.ID, statusName(c.Status))})
+		default:
+			cd := newCandidate(cfg, in, b, c)
+			cands = append(cands, &cd)
+		}
+	}
+	allocate(cfg, AvailableKW(in), cands)
+	for _, cd := range cands {
+		plan.Setpoints = append(plan.Setpoints, Setpoint{ChargerID: cd.charger.ID, KW: cd.allocKW})
+		plan.Buses = append(plan.Buses, cd.status())
+	}
+	for _, ib := range idles {
+		plan.Buses = append(plan.Buses, idleStatus(cfg, ib))
+	}
+	sort.Slice(plan.Setpoints, func(i, j int) bool { return plan.Setpoints[i].ChargerID < plan.Setpoints[j].ChargerID })
+	sort.Slice(plan.Buses, func(i, j int) bool { return plan.Buses[i].BusID < plan.Buses[j].BusID })
+	return plan
+}
+```
+
+- [ ] **Step 4: Rodar e ver passar**
+
+Run: `gofmt -l . && go vet ./... && go test ./internal/planner -v`
+Expected: PASS. Se algum teste numérico falhar, confira a conta no comentário do teste antes de mudar o código.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add internal/planner
+git commit -m "feat(planner): layer 1 least-laxity allocation with just-in-time power"
+```
+
+---
+
+### Task 6: Recomendação de rodízio
+
+**Files:**
+- Create: `internal/planner/swaps.go`
+- Modify: `internal/planner/normal.go` (uma linha em `PlanNormal`)
+- Test: `internal/planner/swaps_test.go`
+
+**Interfaces:**
+- Consumes: `candidate`, `idleBus`, `newCandidate`, `Config.SwapUrgentLaxityMin`, `Config.SwapDonorGapMin`.
+- Produces: `recommendSwaps(cfg Config, in Input, cands []*candidate, idles []idleBus) []Swap`; `PlanNormal` passa a preencher `Plan.Swaps`.
+
+Regras: só recomenda quando **não há carregador saudável livre** (se houver, o ônibus esperando deve apenas se conectar a ele); ônibus esperando é "urgente" se `need > 0` e folga menor que `SwapUrgentLaxityMin` (calculada contra o melhor carregador saudável); o doador é o ônibus conectado com maior folga, que precisa ter pelo menos `SwapDonorGapMin` minutos a mais de folga que o urgente.
+
+- [ ] **Step 1: Escrever os testes que falham**
+
+`internal/planner/swaps_test.go`:
+```go
+package planner
+
+import (
+	"testing"
+
+	"github.com/EduardoMilani8/depot-charge-planner/internal/model"
+)
+
+func swapInput(donor, waiting model.Bus, extraChargers ...model.Charger) Input {
+	in := Input{
+		Site:     model.Site{LimitKW: 500, StepMin: 1},
+		Chargers: append([]model.Charger{testCharger("C1")}, extraChargers...),
+		Buses:    []model.Bus{donor, waiting},
+	}
+	return in
+}
+
+func TestSwapRecommendedWhenWaitingBusIsUrgent(t *testing.T) {
+	donor := testBus("D", "C1", 220, 220, 600) // already at target, laxity 600
+	waiting := testBus("W", "", 100, 220, 90)  // laxity 42 < 60
+	p := PlanNormal(testConfig(), swapInput(donor, waiting))
+	if len(p.Swaps) != 1 {
+		t.Fatalf("expected 1 swap, got %+v", p.Swaps)
+	}
+	s := p.Swaps[0]
+	if s.ChargerID != "C1" || s.OutBusID != "D" || s.InBusID != "W" || s.Reason == "" {
+		t.Errorf("unexpected swap: %+v", s)
+	}
+}
+
+func TestNoSwapWhenAFreeChargerExists(t *testing.T) {
+	donor := testBus("D", "C1", 220, 220, 600)
+	waiting := testBus("W", "", 100, 220, 90)
+	p := PlanNormal(testConfig(), swapInput(donor, waiting, testCharger("C2")))
+	if len(p.Swaps) != 0 {
+		t.Errorf("a free charger exists, expected no swap: %+v", p.Swaps)
+	}
+}
+
+func TestNoSwapWhenWaitingBusIsNotUrgent(t *testing.T) {
+	donor := testBus("D", "C1", 220, 220, 600)
+	waiting := testBus("W", "", 100, 220, 600)
+	if p := PlanNormal(testConfig(), swapInput(donor, waiting)); len(p.Swaps) != 0 {
+		t.Errorf("unexpected swap: %+v", p.Swaps)
+	}
+}
+
+func TestNoSwapWhenDonorHasNoSpareLaxity(t *testing.T) {
+	donor := testBus("D", "C1", 100, 220, 150) // laxity 102
+	waiting := testBus("W", "", 100, 220, 90)  // laxity 42: gap 60 < 120
+	if p := PlanNormal(testConfig(), swapInput(donor, waiting)); len(p.Swaps) != 0 {
+		t.Errorf("unexpected swap: %+v", p.Swaps)
+	}
+}
+
+func TestNoSwapWithoutHealthyCharger(t *testing.T) {
+	donor := testBus("D", "C1", 220, 220, 600)
+	waiting := testBus("W", "", 100, 220, 90)
+	in := swapInput(donor, waiting)
+	in.Chargers[0].Status = model.ChargerFaulted
+	if p := PlanNormal(testConfig(), in); len(p.Swaps) != 0 {
+		t.Errorf("unexpected swap: %+v", p.Swaps)
+	}
+}
+```
+
+- [ ] **Step 2: Rodar e ver falhar**
+
+Run: `go test ./internal/planner -run Swap -v`
+Expected: FAIL (`TestSwapRecommendedWhenWaitingBusIsUrgent`: expected 1 swap, got []).
+
+- [ ] **Step 3: Implementar**
+
+`internal/planner/swaps.go`:
+```go
+package planner
+
+import (
+	"fmt"
+	"sort"
+
+	"github.com/EduardoMilani8/depot-charge-planner/internal/model"
+)
+
+// bestCharger returns the healthy charger with the highest max power (ties by ID).
+func bestCharger(in Input) (model.Charger, bool) {
+	var best model.Charger
+	found := false
+	for _, c := range in.Chargers {
+		if !c.Healthy() {
+			continue
+		}
+		if !found || c.MaxKW > best.MaxKW || (c.MaxKW == best.MaxKW && c.ID < best.ID) {
+			best, found = c, true
+		}
+	}
+	return best, found
+}
+
+func recommendSwaps(cfg Config, in Input, cands []*candidate, idles []idleBus) []Swap {
+	ref, ok := bestCharger(in)
+	if !ok || len(idles) == 0 || len(cands) == 0 {
+		return nil
+	}
+	occupied := map[string]bool{}
+	for _, cd := range cands {
+		occupied[cd.charger.ID] = true
+	}
+	for _, ib := range idles {
+		if ib.bus.ChargerID != "" {
+			occupied[ib.bus.ChargerID] = true
+		}
+	}
+	for _, c := range in.Chargers {
+		if c.Healthy() && !occupied[c.ID] {
+			return nil // a free charger exists: the waiting bus just plugs in there
+		}
+	}
+	type urgent struct {
+		bus    model.Bus
+		laxity float64
+	}
+	var urgents []urgent
+	for _, ib := range idles {
+		cd := newCandidate(cfg, in, ib.bus, ref)
+		if cd.need > 0 && !cd.unusable && cd.laxityMin < cfg.SwapUrgentLaxityMin {
+			urgents = append(urgents, urgent{ib.bus, cd.laxityMin})
+		}
+	}
+	sort.Slice(urgents, func(i, j int) bool {
+		if urgents[i].laxity != urgents[j].laxity {
+			return urgents[i].laxity < urgents[j].laxity
+		}
+		return urgents[i].bus.ID < urgents[j].bus.ID
+	})
+	donors := append([]*candidate(nil), cands...)
+	sort.Slice(donors, func(i, j int) bool {
+		if donors[i].laxityMin != donors[j].laxityMin {
+			return donors[i].laxityMin > donors[j].laxityMin
+		}
+		return donors[i].bus.ID < donors[j].bus.ID
+	})
+	var swaps []Swap
+	for i, u := range urgents {
+		if i >= len(donors) {
+			break
+		}
+		d := donors[i]
+		if d.laxityMin-u.laxity < cfg.SwapDonorGapMin {
+			break
+		}
+		swaps = append(swaps, Swap{
+			ChargerID: d.charger.ID,
+			OutBusID:  d.bus.ID,
+			InBusID:   u.bus.ID,
+			Reason: fmt.Sprintf("ônibus %s tem folga de %.0f min e precisa de carregador; ônibus %s tem folga de %.0f min",
+				u.bus.ID, u.laxity, d.bus.ID, finiteLaxity(d.laxityMin)),
+		})
+	}
+	return swaps
+}
+```
+
+Em `internal/planner/normal.go`, dentro de `PlanNormal`, troque:
+```go
+	sort.Slice(plan.Setpoints, func(i, j int) bool { return plan.Setpoints[i].ChargerID < plan.Setpoints[j].ChargerID })
+```
+por:
+```go
+	plan.Swaps = recommendSwaps(cfg, in, cands, idles)
+	sort.Slice(plan.Setpoints, func(i, j int) bool { return plan.Setpoints[i].ChargerID < plan.Setpoints[j].ChargerID })
+```
+
+- [ ] **Step 4: Rodar e ver passar**
+
+Run: `gofmt -l . && go vet ./... && go test ./internal/planner -v`
+Expected: PASS (inclusive os testes das tarefas anteriores).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add internal/planner
+git commit -m "feat(planner): swap recommendations for urgent waiting buses"
+```
+
+> **Status do plano:** PARCIAL. Tarefas 1 a 6 escritas. Faltam as tarefas 7 a 13 (fachada com degradação, simulador, falhas, gerador, registro de decisões, CLI e CI/fuzz/golden).
