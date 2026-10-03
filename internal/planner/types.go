@@ -64,7 +64,12 @@ func (l Layer) String() string {
 	return "unknown"
 }
 
-// Setpoint is the grid-side power commanded to one charger. Chargers not listed are at 0.
+// Setpoint is the grid-side power commanded to one charger.
+//
+// A Plan lists only the chargers it powers (and possibly some at 0 kW): every charger
+// NOT listed in Plan.Setpoints must be at 0 kW. Whoever applies a plan (the simulator
+// today, the future OCPP adapter) must therefore switch off unlisted chargers, e.g. by
+// clearing any charging profile left over from a previous plan, never keep their old power.
 type Setpoint struct {
 	ChargerID string
 	KW        float64
@@ -75,9 +80,15 @@ type BusStatus struct {
 	BusID           string
 	Assessed        bool // false when the layer does not evaluate the target (safe profile)
 	WillReachTarget bool
-	ShortfallKWh    float64 // effective kWh missing at departure if WillReachTarget is false
-	LaxityMin       float64
-	Reason          string
+	// ShortfallKWh is the battery energy predicted to be missing at departure when
+	// WillReachTarget is false, measured against the margin-adjusted target. For a
+	// connected bus it is EFFECTIVE energy (the part above the taper knee is weighted
+	// by model.PlannerTailCostFactor), so it can be larger than the real kWh missing;
+	// for a bus without a usable charger it is the plain kWh missing. It is not the
+	// same unit as sim.Metrics.ShortfallKWh, which is real kWh against the true route need.
+	ShortfallKWh float64
+	LaxityMin    float64
+	Reason       string
 }
 
 // Swap suggests a human move: InBusID takes ChargerID from OutBusID.

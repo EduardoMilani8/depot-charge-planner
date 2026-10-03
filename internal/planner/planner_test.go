@@ -207,3 +207,19 @@ func TestPlannerReplayedPlanOnNaNChargerIsOff(t *testing.T) {
 		t.Errorf("C1 must be 0 kW, got %v (layer %v)", kw, p.Layer)
 	}
 }
+
+func TestPlannerWithNilLoggerDoesNotPanic(t *testing.T) {
+	// Exercise paths that log: normal-layer panic (warn) and the verifier correcting a plan.
+	pl := New(testConfig()).WithLogger(nil).WithNormal(func(c Config, in Input) Plan {
+		if in.Now > 0 {
+			panic("boom")
+		}
+		return Plan{Setpoints: []Setpoint{{"C1", 99999}}}
+	})
+	in := validInput()
+	_ = pl.Plan(in)
+	in.Now = 1
+	if p := pl.Plan(in); len(Violations(in, p)) != 0 {
+		t.Errorf("violations: %v", Violations(in, p))
+	}
+}

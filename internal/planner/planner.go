@@ -12,6 +12,12 @@ import (
 )
 
 // NormalFunc is the layer-1 implementation; replaceable so the simulator can inject faults.
+//
+// Concurrency: the planner runs it in its own goroutine and abandons it after
+// Config.Timeout. An abandoned call keeps running until it returns, so a slow
+// NormalFunc may run concurrently with a later call of itself (each call gets a
+// private copy of the input). Implementations must not share mutable state between
+// calls without their own synchronisation.
 type NormalFunc func(Config, Input) Plan
 
 // Planner wraps the layers with graceful degradation. It is the only stateful
@@ -26,11 +32,21 @@ type Planner struct {
 }
 
 func New(cfg Config) *Planner {
-	return &Planner{cfg: cfg, normal: PlanNormal, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	return &Planner{cfg: cfg, normal: PlanNormal, log: discardLogger()}
 }
 
-func (p *Planner) WithNormal(f NormalFunc) *Planner   { p.normal = f; return p }
-func (p *Planner) WithLogger(l *slog.Logger) *Planner { p.log = l; return p }
+func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+func (p *Planner) WithNormal(f NormalFunc) *Planner { p.normal = f; return p }
+
+// WithLogger sets the structured logger; nil means discard.
+func (p *Planner) WithLogger(l *slog.Logger) *Planner {
+	if l == nil {
+		l = discardLogger()
+	}
+	p.log = l
+	return p
+}
 
 // Plan always returns a plan that satisfies every invariant.
 func (p *Planner) Plan(in Input) Plan {

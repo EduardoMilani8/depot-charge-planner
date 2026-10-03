@@ -10,7 +10,7 @@ type Metrics struct {
 	Buses          int            `json:"buses"`
 	Ready          int            `json:"ready"`
 	ReadyPct       float64        `json:"ready_pct"`
-	ShortfallKWh   float64        `json:"shortfall_kwh"`
+	ShortfallKWh   float64        `json:"shortfall_kwh"` // real battery kWh missing vs the TRUE route need (not the planner's effective kWh)
 	PeakKW         float64        `json:"peak_kw"`
 	PlanViolations int            `json:"plan_violations"` // commanded power above the limit (must be 0)
 	OvershootMin   int            `json:"overshoot_min"`   // minutes of physical power above the limit
