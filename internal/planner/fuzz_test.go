@@ -2,6 +2,7 @@ package planner
 
 import (
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/EduardoMilani8/depot-charge-planner/internal/model"
@@ -23,14 +24,38 @@ func FuzzPlannerRespectsInvariants(f *testing.F) {
 			in.Buses = append(in.Buses, model.Bus{ID: "B" + id, CapacityKWh: capKWh, SoCKWh: soc, SoCConfidence: 1,
 				TargetKWh: target, DepartureMin: int(dep), MaxBatteryKW: battKW, ChargerID: "C" + id})
 		}
-		plan := New(DefaultConfig()).Plan(in)
-		if v := Violations(in, plan); len(v) > 0 {
-			t.Fatalf("invariants broken: %v\ninput: %+v\nplan: %+v", v, in, plan)
-		}
-		for _, s := range plan.Setpoints {
-			if !finite(s.KW) {
-				t.Fatalf("non-finite setpoint %+v", s)
+		pl := New(DefaultConfig())
+		check := func(label string, in Input, plan Plan) {
+			if v := Violations(in, plan); len(v) > 0 {
+				t.Fatalf("%s: invariants broken: %v\ninput: %+v\nplan: %+v", label, v, in, plan)
 			}
+			for _, s := range plan.Setpoints {
+				if !finite(s.KW) {
+					t.Fatalf("%s: non-finite setpoint %+v", label, s)
+				}
+			}
+		}
+		check("first plan", in, pl.Plan(in))
+
+		// Second cycle on the SAME planner (so the last-valid layer can replay the
+		// first plan) with one charger spec perturbed by the fuzz-provided floats.
+		if count > 0 {
+			in2 := in
+			in2.Now++
+			in2.Chargers = append([]model.Charger(nil), in.Chargers...)
+			i := int(uint8(dep)) % count
+			switch {
+			case n%2 != 0:
+				in2.Chargers[i].MaxKW = math.NaN()
+			case minKW-maxKW != maxKW:
+				in2.Chargers[i].MaxKW = minKW - maxKW
+			default:
+				in2.Chargers[i].MaxKW = battKW
+			}
+			if n%3 == 0 {
+				in2.Chargers[i].MinKW = math.NaN()
+			}
+			check("second plan", in2, pl.Plan(in2))
 		}
 	})
 }

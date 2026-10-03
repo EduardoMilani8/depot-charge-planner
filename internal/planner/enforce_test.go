@@ -122,3 +122,76 @@ func TestZeroSetpointIsAlwaysLegal(t *testing.T) {
 		t.Errorf("enforced plan still violates: %v", v)
 	}
 }
+
+func nanCharger(id string, maxNaN, minNaN bool) model.Charger {
+	c := testCharger(id)
+	if maxNaN {
+		c.MaxKW = math.NaN()
+	}
+	if minNaN {
+		c.MinKW = math.NaN()
+	}
+	return c
+}
+
+// A NaN ceiling or floor makes every ordinary comparison false, so a positive
+// setpoint on such a charger must be rejected explicitly and switched off.
+func TestNaNChargerSpecIsAViolationAndEnforcedOff(t *testing.T) {
+	for name, c := range map[string]model.Charger{
+		"NaN MaxKW": nanCharger("C1", true, false),
+		"NaN MinKW": nanCharger("C1", false, true),
+	} {
+		t.Run(name, func(t *testing.T) {
+			in := Input{Site: model.Site{LimitKW: 100, StepMin: 1}, Chargers: []model.Charger{c}}
+			p := Plan{Setpoints: []Setpoint{{"C1", 10}}}
+			if len(Violations(in, p)) == 0 {
+				t.Fatal("10 kW on a charger with a NaN bound must be a violation")
+			}
+			got := Enforce(in, p)
+			if v := Violations(in, got); len(v) != 0 {
+				t.Errorf("enforced plan still violates: %v", v)
+			}
+			if kw := sp(got, "C1"); kw != 0 {
+				t.Errorf("expected 0 kW, got %v", kw)
+			}
+			if v := Violations(in, Plan{Setpoints: []Setpoint{{"C1", 0}}}); len(v) != 0 {
+				t.Errorf("0 kW must stay legal: %v", v)
+			}
+		})
+	}
+}
+
+// Isolates the Enforce clamp: the ceiling is negative but the floor is not above it,
+// so Violations alone flags the ceiling; and a NaN charger next to an over-limit one.
+func TestEnforceClampsBrokenCeilings(t *testing.T) {
+	neg := testCharger("C1")
+	neg.MaxKW, neg.MinKW = -64, -100
+	in := Input{Site: model.Site{LimitKW: 100, StepMin: 1}, Chargers: []model.Charger{neg}}
+	got := Enforce(in, Plan{Setpoints: []Setpoint{{"C1", 10}}})
+	if kw := sp(got, "C1"); kw != 0 {
+		t.Errorf("negative ceiling: expected 0 kW, got %v", kw)
+	}
+	if v := Violations(in, got); len(v) != 0 {
+		t.Errorf("negative ceiling: still violates: %v", v)
+	}
+
+	in = Input{Site: model.Site{LimitKW: 100, StepMin: 1},
+		Chargers: []model.Charger{nanCharger("C1", true, false), testCharger("C2")}}
+	got = Enforce(in, Plan{Setpoints: []Setpoint{{"C1", 10}, {"C2", 400}}})
+	for _, s := range got.Setpoints {
+		if !finite(s.KW) {
+			t.Errorf("non-finite setpoint %+v", s)
+		}
+	}
+	if v := Violations(in, got); len(v) != 0 {
+		t.Errorf("mixed plan still violates: %v (%+v)", v, got.Setpoints)
+	}
+	if kw := sp(got, "C1"); kw != 0 {
+		t.Errorf("NaN charger must be 0 kW, got %v", kw)
+	}
+	if kw := sp(got, "C2"); !near(kw, 100) {
+		// C2 is capped at its 150 kW max and then scaled to the 100 kW budget
+		// (total before scaling is 0 + 150).
+		t.Errorf("C2: expected 100 kW, got %v", kw)
+	}
+}

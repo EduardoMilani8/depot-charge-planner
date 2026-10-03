@@ -1,6 +1,7 @@
 package planner
 
 import (
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -183,5 +184,26 @@ func TestPlannerCachedPlanIsIsolatedFromCallers(t *testing.T) {
 	c := pl.Plan(in)
 	if c.Layer != LayerLastValid || sp(c, "C1") != orig {
 		t.Errorf("cache corrupted by caller: %+v", c)
+	}
+}
+
+// A charger spec that turns NaN between cycles sends the planner down the last-valid
+// path; the replayed positive setpoint must still be switched off.
+func TestPlannerReplayedPlanOnNaNChargerIsOff(t *testing.T) {
+	pl := New(testConfig())
+	in := validInput()
+	first := pl.Plan(in)
+	if first.Layer != LayerNormal || sp(first, "C1") <= 0 {
+		t.Fatalf("setup: expected a normal plan with power on C1, got %+v", first)
+	}
+	in2 := validInput()
+	in2.Now = 1
+	in2.Chargers[0].MaxKW = math.NaN()
+	p := pl.Plan(in2)
+	if v := Violations(in2, p); len(v) != 0 {
+		t.Errorf("violations: %v (%+v)", v, p.Setpoints)
+	}
+	if kw := sp(p, "C1"); kw != 0 {
+		t.Errorf("C1 must be 0 kW, got %v (layer %v)", kw, p.Layer)
 	}
 }
