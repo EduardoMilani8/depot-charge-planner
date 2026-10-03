@@ -32,7 +32,9 @@ func Violations(in Input, p Plan) []string {
 		if !c.Healthy() && s.KW > 0 {
 			out = append(out, fmt.Sprintf("carregador indisponível %s recebeu %.1f kW", s.ChargerID, s.KW))
 		}
-		if s.KW > c.MaxKW+eps {
+		// 0 kW is always a legal setpoint, even for a charger whose spec is broken
+		// (e.g. a negative MaxKW): switching off can never exceed a ceiling.
+		if s.KW > 0 && s.KW > c.MaxKW+eps {
 			out = append(out, fmt.Sprintf("%s acima do teto: %.1f > %.1f kW", s.ChargerID, s.KW, c.MaxKW))
 		}
 		if s.KW > 0 && s.KW < c.MinKW-eps {
@@ -64,6 +66,9 @@ func Enforce(in Input, p Plan) Plan {
 		}
 		seen[s.ChargerID] = true
 		kw := math.Min(s.KW, c.MaxKW)
+		if !finite(kw) || kw < 0 {
+			kw = 0 // broken charger spec: the only safe command is off
+		}
 		fixed = append(fixed, Setpoint{ChargerID: s.ChargerID, KW: kw})
 		total += kw
 	}

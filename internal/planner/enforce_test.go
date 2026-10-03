@@ -101,3 +101,24 @@ func TestEnforceNaNLimitMeansZero(t *testing.T) {
 		t.Errorf("got %v, want 0", sp(got, "C1"))
 	}
 }
+
+// Found by FuzzPlannerRespectsInvariants: a charger with a broken (negative) MaxKW
+// must be commanded to 0 kW, and 0 kW must not be reported as "above the ceiling".
+func TestZeroSetpointIsAlwaysLegal(t *testing.T) {
+	bad := testCharger("C1")
+	bad.MaxKW = -64
+	in := Input{Site: model.Site{LimitKW: 100, StepMin: 1}, Chargers: []model.Charger{bad}}
+	if v := Violations(in, Plan{Setpoints: []Setpoint{{"C1", 0}}}); len(v) != 0 {
+		t.Errorf("0 kW must be legal: %v", v)
+	}
+	if v := Violations(in, Plan{Setpoints: []Setpoint{{"C1", 10}}}); len(v) == 0 {
+		t.Error("a positive setpoint above a negative ceiling must still be a violation")
+	}
+	got := Enforce(in, Plan{Setpoints: []Setpoint{{"C1", 10}}})
+	if kw := sp(got, "C1"); kw != 0 {
+		t.Errorf("Enforce must switch the broken charger off, got %v", kw)
+	}
+	if v := Violations(in, got); len(v) != 0 {
+		t.Errorf("enforced plan still violates: %v", v)
+	}
+}
