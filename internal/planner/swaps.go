@@ -135,13 +135,23 @@ func recommendSwaps(cfg Config, in Input, budget float64, cands []*candidate, id
 			}
 			return da.bus.ID < db.bus.ID
 		})
+		// A full donor draws no power, so swapping it out frees no budget: the trial
+		// result depends only on the donor's charger spec. Specs that already failed
+		// for this bus are skipped.
+		type spec struct{ max, min, eff float64 }
+		failed := map[spec]bool{}
 		for _, i := range order {
 			if trials >= maxSwapTrials {
 				return swaps
 			}
 			d := state[i]
+			key := spec{d.charger.MaxKW, d.charger.MinKW, d.charger.Efficiency}
+			if failed[key] {
+				continue
+			}
 			in := newCandidate(cfg, later, u.bus, d.charger)
-			if in.unusable || in.need <= 0 {
+			if in.unusable || in.need <= 0 || in.laxityMin < 0 { // cannot finish even at full power
+				failed[key] = true
 				continue
 			}
 			trials++
@@ -150,6 +160,7 @@ func recommendSwaps(cfg Config, in Input, budget float64, cands []*candidate, id
 			trialWaiting := append(withoutBus(waiting, u.bus.ID), d.bus)
 			n := reachCount(cfg, budget, trial, trialWaiting)
 			if n <= base {
+				failed[key] = true
 				continue
 			}
 			swaps = append(swaps, Swap{

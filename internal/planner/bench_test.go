@@ -35,3 +35,28 @@ func TestPlanNormal200Under50ms(t *testing.T) {
 		t.Errorf("planning 200 buses took %v, goal is under 50ms", d)
 	}
 }
+
+// swapHeavyInput: 200 buses on 100 chargers; half the connected buses are already full
+// and 100 buses wait, so every cycle searches swaps up to the trial cap.
+func swapHeavyInput() Input {
+	in := Input{Site: model.Site{LimitKW: 3000, StepMin: 1}}
+	for i := 0; i < 100; i++ {
+		id := fmt.Sprintf("%03d", i)
+		in.Chargers = append(in.Chargers, testCharger("C"+id))
+		soc := 260.0 // full
+		if i%2 == 0 {
+			soc = float64(20 + i)
+		}
+		in.Buses = append(in.Buses, testBus("B"+id, "C"+id, soc, 250, 200+(i*7)%500))
+		in.Buses = append(in.Buses, testBus("W"+id, "", float64(20+i), 250, 150+(i*11)%500))
+	}
+	return in
+}
+
+func BenchmarkPlanNormalSwapSearch200(b *testing.B) {
+	in, cfg := swapHeavyInput(), DefaultConfig()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		PlanNormal(cfg, in)
+	}
+}
