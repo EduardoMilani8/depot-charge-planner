@@ -12,7 +12,7 @@ Status: em desenvolvimento (planejador + simulador). Design: `docs/superpowers/s
 Opções do `simrun`: `-buses`, `-chargers`, `-limit` (kW), `-profile none|mild|severe`, `-seeds`, `-log decisions.jsonl`.
 Colunas: `ready%` (principal), `plan violations` (deve ser 0), `overshoot min` (potência física acima do limite).
 
-`plan violations` conta os minutos em que a potência comandada passou do limite (deve ser 0). `overshoot min` conta os minutos em que a potência física passou do limite: pode ser diferente de zero mesmo com `plan violations` 0, porque os comandos só fazem efeito um minuto depois e uma queda repentina do limite (perfis `mild` e `severe`) pode causar excesso por cerca de um minuto mesmo com um plano correto. Os baselines estouram mais porque não reagem ao limite por meio de planejamento.
+`plan violations` conta os minutos em que a potência comandada passou do limite (deve ser 0). `overshoot min` conta os minutos em que a potência física passou do limite: pode ser diferente de zero mesmo com `plan violations` 0, porque os comandos só fazem efeito um minuto depois e uma queda repentina do limite (perfis `mild` e `severe`) pode causar excesso por cerca de um minuto mesmo com um plano correto. Nas execuções com `-seeds 20` o `overshoot min` do planner foi 0 (sem falhas e perfil `mild`) e 1 (perfil `severe`), contra 5 a 8 minutos nos baselines nos perfis `mild` e `severe`.
 
 ## Resultados de exemplo
 
