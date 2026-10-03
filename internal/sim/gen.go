@@ -13,6 +13,9 @@ const (
 	ProfileNone   FaultProfile = "none"
 	ProfileMild   FaultProfile = "mild"
 	ProfileSevere FaultProfile = "severe"
+	// ProfileRandom is the fuzz mode of spec §7: a seeded, random combination of every
+	// fault kind with random counts, windows and intensities.
+	ProfileRandom FaultProfile = "random"
 )
 
 type GenParams struct {
@@ -125,5 +128,104 @@ func genFaults(rng *rand.Rand, profile FaultProfile, sc *Scenario) {
 		add(Fault{Kind: FaultPlannerPanic, From: pf, To: pf + 5})
 		ps := 200 + rng.Intn(400)
 		add(Fault{Kind: FaultPlannerSlow, From: ps, To: ps + 2})
+	case ProfileRandom:
+		genRandomFaults(rng, sc, add, charger, bus)
+	}
+}
+
+// genRandomFaults draws each fault kind with probability 1/2, with random count,
+// window and intensity. Planner slowness is kept to a few short windows because every
+// slow cycle really waits for the planner timeout.
+func genRandomFaults(rng *rand.Rand, sc *Scenario, add func(Fault), charger func() string, bus func() *BusSpec) {
+	horizon := sc.Horizon
+	if horizon <= 0 {
+		horizon = 800
+	}
+	maybe := func() bool { return rng.Intn(2) == 0 }
+	window := func(minLen, maxLen int) (int, int) {
+		from := rng.Intn(horizon)
+		if rng.Intn(4) == 0 {
+			return from, forever
+		}
+		return from, from + minLen + rng.Intn(maxLen-minLen+1)
+	}
+	target := func() string {
+		if rng.Intn(3) == 0 {
+			return "*"
+		}
+		return bus().Bus.ID
+	}
+	if maybe() {
+		for i := 0; i <= rng.Intn(4); i++ {
+			from, to := window(1, 240)
+			add(Fault{Kind: FaultChargerFail, Target: charger(), From: from, To: to})
+		}
+	}
+	if maybe() {
+		for i := 0; i <= rng.Intn(3); i++ {
+			from, to := window(1, 180)
+			add(Fault{Kind: FaultChargerOffline, Target: charger(), From: from, To: to})
+		}
+	}
+	if maybe() {
+		for i := 0; i <= rng.Intn(3); i++ {
+			from, to := window(1, 180)
+			add(Fault{Kind: FaultLimitDrop, From: from, To: to, Value: 0.2 + 0.8*rng.Float64()})
+		}
+	}
+	if maybe() {
+		from, to := window(10, 600)
+		add(Fault{Kind: FaultSoCNoise, Target: target(), From: from, To: to, Value: 25 * rng.Float64()})
+	}
+	if maybe() {
+		for i := 0; i <= rng.Intn(3); i++ {
+			from, to := window(10, 600)
+			add(Fault{Kind: FaultSoCBias, Target: target(), From: from, To: to, Value: 80*rng.Float64() - 40})
+		}
+	}
+	if maybe() {
+		for i := 0; i <= rng.Intn(5); i++ {
+			from, to := window(5, 240)
+			add(Fault{Kind: FaultSoCFreeze, Target: target(), From: from, To: to})
+		}
+	}
+	if maybe() {
+		for i := 0; i <= rng.Intn(5); i++ {
+			from, to := window(1, 120)
+			add(Fault{Kind: FaultSoCMissing, Target: target(), From: from, To: to})
+		}
+	}
+	if maybe() {
+		frac := 0.5 * rng.Float64()
+		for i := range sc.Buses {
+			if rng.Float64() < frac {
+				add(Fault{Kind: FaultConsumption, Target: sc.Buses[i].Bus.ID, Value: 5 + 75*rng.Float64()})
+			}
+		}
+	}
+	if maybe() {
+		for i := 0; i <= rng.Intn(6); i++ {
+			add(Fault{Kind: FaultLateArrival, Target: bus().Bus.ID, Value: float64(5 + rng.Intn(180))})
+		}
+	}
+	if maybe() {
+		for i := 0; i <= rng.Intn(6); i++ {
+			b := bus()
+			newDep := b.Bus.DepartureMin - 10 - rng.Intn(150)
+			announced := newDep - rng.Intn(120)
+			add(Fault{Kind: FaultEarlyDeparture, Target: b.Bus.ID, From: announced, To: forever, Value: float64(newDep)})
+		}
+	}
+	if maybe() {
+		for i := 0; i <= rng.Intn(3); i++ {
+			from := rng.Intn(horizon)
+			add(Fault{Kind: FaultPlannerPanic, From: from, To: from + 1 + rng.Intn(20)})
+		}
+	}
+	if maybe() {
+		for i := 0; i <= rng.Intn(2); i++ {
+			from := rng.Intn(horizon)
+			add(Fault{Kind: FaultPlannerSlow, From: from, To: from + 1 + rng.Intn(2)})
+		}
 	}
 }

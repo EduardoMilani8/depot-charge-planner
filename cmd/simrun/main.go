@@ -29,7 +29,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.IntVar(&p.NumBuses, "buses", p.NumBuses, "number of buses")
 	fs.IntVar(&p.NumChargers, "chargers", p.NumChargers, "number of chargers")
 	fs.Float64Var(&p.LimitKW, "limit", p.LimitKW, "site power limit in kW")
-	profile := fs.String("profile", "none", "fault profile: none|mild|severe")
+	profile := fs.String("profile", "none", "fault profile: none|mild|severe|random")
 	seeds := fs.Int("seeds", 20, "number of random seeds")
 	logPath := fs.String("log", "", "write the planner decision log (JSON lines) for seed 1")
 	fs.BoolVar(&p.FollowSwaps, "follow-swaps", p.FollowSwaps,
@@ -38,9 +38,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	switch sim.FaultProfile(*profile) {
-	case sim.ProfileNone, sim.ProfileMild, sim.ProfileSevere:
+	case sim.ProfileNone, sim.ProfileMild, sim.ProfileSevere, sim.ProfileRandom:
 	default:
-		fmt.Fprintf(stderr, "unknown profile %q (use none, mild or severe)\n", *profile)
+		fmt.Fprintf(stderr, "unknown profile %q (use none, mild, severe or random)\n", *profile)
 		return 2
 	}
 	if fs.NArg() > 0 {

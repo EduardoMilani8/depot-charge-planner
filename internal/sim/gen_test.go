@@ -61,7 +61,8 @@ func TestProfilesInjectExpectedFaults(t *testing.T) {
 }
 
 func TestGenerateDegenerateSizesDoNotPanic(t *testing.T) {
-	for _, p := range []GenParams{{Profile: ProfileSevere}, {NumBuses: 3, Profile: ProfileSevere}, {NumChargers: 3, Profile: ProfileSevere}} {
+	for _, p := range []GenParams{{Profile: ProfileSevere}, {NumBuses: 3, Profile: ProfileSevere}, {NumChargers: 3, Profile: ProfileSevere},
+		{Profile: ProfileRandom}, {NumBuses: 3, NumChargers: 1, Profile: ProfileRandom}} {
 		_ = Generate(p, 1)
 	}
 }
@@ -74,5 +75,34 @@ func TestGenerateFollowSwapsComesFromParams(t *testing.T) {
 	p.FollowSwaps = false
 	if Generate(p, 1).FollowSwaps {
 		t.Error("FollowSwaps=false must reach the scenario")
+	}
+}
+
+// The random (fuzz) profile draws a seeded combination of every fault kind with random
+// intensity: deterministic per seed, and over a few seeds every kind shows up.
+func TestRandomProfileCombinesEveryFaultKind(t *testing.T) {
+	p := DefaultGenParams()
+	p.Profile = ProfileRandom
+	if !reflect.DeepEqual(Generate(p, 3), Generate(p, 3)) {
+		t.Fatal("same seed must generate the same random faults")
+	}
+	kinds := map[FaultKind]bool{}
+	distinct := map[int]bool{}
+	for seed := int64(1); seed <= 20; seed++ {
+		fs := Generate(p, seed).Faults
+		distinct[len(fs)] = true
+		for _, f := range fs {
+			kinds[f.Kind] = true
+		}
+	}
+	for _, k := range []FaultKind{FaultChargerFail, FaultChargerOffline, FaultLimitDrop, FaultSoCNoise,
+		FaultSoCBias, FaultSoCFreeze, FaultSoCMissing, FaultConsumption, FaultLateArrival,
+		FaultEarlyDeparture, FaultPlannerPanic, FaultPlannerSlow} {
+		if !kinds[k] {
+			t.Errorf("random profile never injected %s in 20 seeds", k)
+		}
+	}
+	if len(distinct) < 5 {
+		t.Errorf("random profile should vary the number of faults across seeds: %v", distinct)
 	}
 }

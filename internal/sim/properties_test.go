@@ -10,7 +10,7 @@ import (
 	"github.com/EduardoMilani8/depot-charge-planner/internal/planner"
 )
 
-var allProfiles = []FaultProfile{ProfileNone, ProfileMild, ProfileSevere}
+var allProfiles = []FaultProfile{ProfileNone, ProfileMild, ProfileSevere, ProfileRandom}
 
 func propertyConfig() planner.Config {
 	c := planner.DefaultConfig()
@@ -89,6 +89,40 @@ func TestPlannerNotWorseThanBaselines(t *testing.T) {
 					t.Errorf("planner ready%% %.1f is below fifo %.1f or edf %.1f", a, f, e)
 				}
 			})
+		}
+	}
+}
+
+// checkingController asserts, every cycle, that the planner's plan satisfies the
+// invariants for the observation it was given (not only the commanded total).
+type checkingController struct {
+	t     *testing.T
+	inner Controller
+	label string
+}
+
+func (c checkingController) Plan(in planner.Input) planner.Plan {
+	p := c.inner.Plan(in)
+	if v := planner.Violations(in, p); len(v) != 0 {
+		c.t.Fatalf("%s minute %d: invalid plan (layer %v): %v", c.label, in.Now, p.Layer, v)
+	}
+	return p
+}
+
+// Spec §7 fuzz mode: random combinations and intensities of every fault kind. The
+// planner must return a valid plan on every cycle and never command above the limit.
+func TestPlannerRandomFaultsKeepInvariants(t *testing.T) {
+	for seed := int64(1); seed <= int64(seedCount(20, 3)); seed++ {
+		p := DefaultGenParams()
+		p.Profile = ProfileRandom
+		sc := Generate(p, seed)
+		label := fmt.Sprintf("random seed %d", seed)
+		m := Run(sc, checkingController{t: t, inner: NewPlannerController(propertyConfig(), sc), label: label}, nil)
+		if m.PlanViolations != 0 {
+			t.Fatalf("%s: %d plan violations (reproduce with Generate and this seed)", label, m.PlanViolations)
+		}
+		if m.LayerTicks["normal"] == 0 {
+			t.Errorf("%s: the normal layer never ran: %v", label, m.LayerTicks)
 		}
 	}
 }
