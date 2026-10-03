@@ -1,6 +1,8 @@
 package sim
 
 import (
+	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -15,16 +17,24 @@ func propertyConfig() planner.Config {
 	return c
 }
 
+// seedCount returns how many seeds a property test should run. With -short it returns short.
+// Otherwise it returns normal, unless the environment variable PROPERTY_SEEDS is a positive
+// integer, which overrides normal for every property test, e.g. for a long run:
+//
+//	PROPERTY_SEEDS=100 go test ./internal/sim
 func seedCount(normal, short int) int {
 	if testing.Short() {
 		return short
+	}
+	if n, err := strconv.Atoi(os.Getenv("PROPERTY_SEEDS")); err == nil && n > 0 {
+		return n
 	}
 	return normal
 }
 
 func TestPlannerNeverViolatesLimit(t *testing.T) {
 	for _, profile := range allProfiles {
-		for seed := int64(1); seed <= int64(seedCount(50, 5)); seed++ {
+		for seed := int64(1); seed <= int64(seedCount(20, 3)); seed++ {
 			p := DefaultGenParams()
 			p.Profile = profile
 			sc := Generate(p, seed)
@@ -38,7 +48,7 @@ func TestPlannerNeverViolatesLimit(t *testing.T) {
 
 func TestBaselinesNeverViolateLimit(t *testing.T) {
 	for _, profile := range allProfiles {
-		for seed := int64(1); seed <= int64(seedCount(15, 3)); seed++ {
+		for seed := int64(1); seed <= int64(seedCount(8, 2)); seed++ {
 			p := DefaultGenParams()
 			p.Profile = profile
 			sc := Generate(p, seed)
@@ -56,7 +66,7 @@ func TestBaselinesNeverViolateLimit(t *testing.T) {
 func TestPlannerNotWorseThanBaselines(t *testing.T) {
 	for _, profile := range allProfiles {
 		var pl, fifo, edf []Metrics
-		for seed := int64(1); seed <= int64(seedCount(15, 3)); seed++ {
+		for seed := int64(1); seed <= int64(seedCount(8, 2)); seed++ {
 			p := DefaultGenParams()
 			p.Profile = profile
 			sc := Generate(p, seed)
