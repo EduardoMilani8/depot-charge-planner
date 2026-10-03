@@ -1,6 +1,7 @@
 package planner
 
 import (
+	"fmt"
 	"math"
 	"reflect"
 	"testing"
@@ -193,5 +194,42 @@ func TestEnforceClampsBrokenCeilings(t *testing.T) {
 		// C2 is capped at its 150 kW max and then scaled to the 100 kW budget
 		// (total before scaling is 0 + 150).
 		t.Errorf("C2: expected 100 kW, got %v", kw)
+	}
+}
+
+// Scaling a plan down to a huge limit must not leave a rounding excess that the
+// verifier then reports (the absolute 1e-6 kW tolerance is below one ulp of 1e8).
+func TestEnforceHugeLimitsSurviveRounding(t *testing.T) {
+	failures := 0
+	for _, limit := range []float64{1e7, 1e8 / 3, 1e8, 7.77e8, 1e9, 1e12} {
+		for n := 2; n <= 40; n++ {
+			in := Input{Site: model.Site{LimitKW: limit, StepMin: 1}}
+			var p Plan
+			asked := 0.0
+			for i := 0; i < n; i++ {
+				c := testCharger(fmt.Sprintf("C%02d", i))
+				c.MaxKW = 1e13
+				in.Chargers = append(in.Chargers, c)
+				p.Setpoints = append(p.Setpoints, Setpoint{c.ID, limit / 3 * (1 + float64(i)/7)})
+				asked += p.Setpoints[i].KW
+			}
+			got := Enforce(in, p)
+			if v := Violations(in, got); len(v) != 0 {
+				failures++
+				if failures < 5 {
+					t.Errorf("limit %g, %d chargers: %v", limit, n, v)
+				}
+			}
+			total := 0.0
+			for _, s := range got.Setpoints {
+				total += s.KW
+			}
+			if total > limit {
+				t.Errorf("limit %g, %d chargers: enforced total %v exceeds the limit", limit, n, total)
+			}
+			if asked > limit && total < limit*(1-1e-9) {
+				t.Errorf("limit %g, %d chargers: enforced total %v wastes power", limit, n, total)
+			}
+		}
 	}
 }

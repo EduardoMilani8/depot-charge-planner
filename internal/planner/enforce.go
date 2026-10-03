@@ -5,6 +5,12 @@ import (
 	"math"
 )
 
+// eps is the absolute tolerance (kW) of the verifier's comparisons. It is far above
+// float64 rounding for any realistic depot (one ulp of 1e7 kW is about 2e-9 kW, and
+// cmd/simrun caps -limit at 1e7). For much larger limits a proportional scale-down
+// can round a few ulps above the limit, more than eps; Enforce therefore never relies
+// on eps for the total: it shaves the rounding off (shaveRounding) so the enforced
+// total, summed in plan order as Violations does, is never above the budget.
 const eps = 1e-6
 
 // Violations lists every invariant the plan breaks. It is intentionally small and
@@ -86,6 +92,7 @@ func Enforce(in Input, p Plan) Plan {
 		for i := range fixed {
 			fixed[i].KW *= f
 		}
+		shaveRounding(fixed, limit)
 	}
 	for i := range fixed {
 		if fixed[i].KW < chargers[fixed[i].ChargerID].MinKW {
@@ -96,4 +103,30 @@ func Enforce(in Input, p Plan) Plan {
 	out.Setpoints = fixed
 	out.Notes = append(append([]string(nil), p.Notes...), fmt.Sprintf("verificador corrigiu o plano: %d violação(ões)", len(viol)))
 	return out
+}
+
+// shaveRounding nudges proportionally scaled setpoints down until their sum (in plan
+// order, as Violations computes it) is not above limit. Scaling by limit/total is
+// exact in real arithmetic but may round a few ulps high.
+func shaveRounding(sps []Setpoint, limit float64) {
+	sum := func() float64 {
+		t := 0.0
+		for _, s := range sps {
+			t += s.KW
+		}
+		return t
+	}
+	shrink := 1.0
+	for i := 0; i < 64; i++ {
+		if sum() <= limit {
+			return
+		}
+		shrink -= math.Ldexp(1, -52+i) // grows from 1 ulp of 1.0 upwards
+		for j := range sps {
+			sps[j].KW *= shrink
+		}
+	}
+	for j := range sps { // unreachable in practice; off is always safe
+		sps[j].KW = 0
+	}
 }

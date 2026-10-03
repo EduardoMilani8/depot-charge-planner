@@ -17,7 +17,7 @@ const (
 	maxBuses    = 10000
 	maxChargers = 10000
 	maxSeeds    = 1000
-	maxLimitKW  = 1e9
+	maxLimitKW  = 1e7 // above this the verifier's absolute tolerance is near float rounding
 )
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
