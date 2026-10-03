@@ -1,0 +1,169 @@
+{
+  "Input": {
+    "Now": 0,
+    "Site": {
+      "LimitKW": 400,
+      "StepMin": 1
+    },
+    "Chargers": [
+      {
+        "ID": "C1",
+        "MaxKW": 150,
+        "MinKW": 5,
+        "Efficiency": 0.95,
+        "Status": 0,
+        "LastCommandedKW": 0
+      },
+      {
+        "ID": "C2",
+        "MaxKW": 150,
+        "MinKW": 5,
+        "Efficiency": 0.95,
+        "Status": 2,
+        "LastCommandedKW": 40
+      },
+      {
+        "ID": "C3",
+        "MaxKW": 150,
+        "MinKW": 5,
+        "Efficiency": 0.95,
+        "Status": 1,
+        "LastCommandedKW": 0
+      },
+      {
+        "ID": "C4",
+        "MaxKW": 150,
+        "MinKW": 5,
+        "Efficiency": 0.95,
+        "Status": 0,
+        "LastCommandedKW": 0
+      }
+    ],
+    "Buses": [
+      {
+        "ID": "A",
+        "CapacityKWh": 300,
+        "SoCKWh": 300,
+        "SoCAgeMin": 0,
+        "SoCConfidence": 1,
+        "TargetKWh": 250,
+        "ArrivalMin": 0,
+        "DepartureMin": 600,
+        "MaxBatteryKW": 150,
+        "ChargerID": "C1"
+      },
+      {
+        "ID": "B",
+        "CapacityKWh": 300,
+        "SoCKWh": 100,
+        "SoCAgeMin": 0,
+        "SoCConfidence": 1,
+        "TargetKWh": 250,
+        "ArrivalMin": 0,
+        "DepartureMin": 400,
+        "MaxBatteryKW": 150,
+        "ChargerID": "C2"
+      },
+      {
+        "ID": "C",
+        "CapacityKWh": 300,
+        "SoCKWh": 90,
+        "SoCAgeMin": 0,
+        "SoCConfidence": 1,
+        "TargetKWh": 250,
+        "ArrivalMin": 0,
+        "DepartureMin": 300,
+        "MaxBatteryKW": 150,
+        "ChargerID": "C3"
+      },
+      {
+        "ID": "S",
+        "CapacityKWh": 300,
+        "SoCKWh": 120,
+        "SoCAgeMin": 100,
+        "SoCConfidence": 1,
+        "TargetKWh": 250,
+        "ArrivalMin": 0,
+        "DepartureMin": 500,
+        "MaxBatteryKW": 150,
+        "ChargerID": "C4"
+      },
+      {
+        "ID": "W",
+        "CapacityKWh": 300,
+        "SoCKWh": 100,
+        "SoCAgeMin": 0,
+        "SoCConfidence": 1,
+        "TargetKWh": 250,
+        "ArrivalMin": 0,
+        "DepartureMin": 95,
+        "MaxBatteryKW": 150,
+        "ChargerID": ""
+      }
+    ]
+  },
+  "Plan": {
+    "Layer": 0,
+    "Setpoints": [
+      {
+        "ChargerID": "C1",
+        "KW": 0
+      },
+      {
+        "ChargerID": "C4",
+        "KW": 24
+      }
+    ],
+    "Buses": [
+      {
+        "BusID": "A",
+        "Assessed": true,
+        "WillReachTarget": true,
+        "ShortfallKWh": 0,
+        "LaxityMin": 600,
+        "Reason": "alvo atingido"
+      },
+      {
+        "BusID": "B",
+        "Assessed": true,
+        "WillReachTarget": false,
+        "ShortfallKWh": 160,
+        "LaxityMin": 0,
+        "Reason": "carregador C2 indisponível (offline)"
+      },
+      {
+        "BusID": "C",
+        "Assessed": true,
+        "WillReachTarget": false,
+        "ShortfallKWh": 170,
+        "LaxityMin": 0,
+        "Reason": "carregador C3 indisponível (em falha)"
+      },
+      {
+        "BusID": "S",
+        "Assessed": true,
+        "WillReachTarget": true,
+        "ShortfallKWh": 0,
+        "LaxityMin": 420,
+        "Reason": "folga 420 min; 24.0 kW (leitura de SoC não confiável: estimativa conservadora)"
+      },
+      {
+        "BusID": "W",
+        "Assessed": true,
+        "WillReachTarget": false,
+        "ShortfallKWh": 160,
+        "LaxityMin": 0,
+        "Reason": "aguardando carregador"
+      }
+    ],
+    "Swaps": [
+      {
+        "ChargerID": "C1",
+        "OutBusID": "A",
+        "InBusID": "W",
+        "Reason": "ônibus W tem folga de 19 min e precisa de carregador; ônibus A tem folga de 600 min"
+      }
+    ],
+    "Notes": null
+  }
+}

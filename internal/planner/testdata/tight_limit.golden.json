@@ -1,0 +1,118 @@
+{
+  "Input": {
+    "Now": 0,
+    "Site": {
+      "LimitKW": 200,
+      "StepMin": 1
+    },
+    "Chargers": [
+      {
+        "ID": "C1",
+        "MaxKW": 150,
+        "MinKW": 5,
+        "Efficiency": 0.95,
+        "Status": 0,
+        "LastCommandedKW": 0
+      },
+      {
+        "ID": "C2",
+        "MaxKW": 150,
+        "MinKW": 5,
+        "Efficiency": 0.95,
+        "Status": 0,
+        "LastCommandedKW": 0
+      },
+      {
+        "ID": "C3",
+        "MaxKW": 150,
+        "MinKW": 5,
+        "Efficiency": 0.95,
+        "Status": 0,
+        "LastCommandedKW": 0
+      }
+    ],
+    "Buses": [
+      {
+        "ID": "B1",
+        "CapacityKWh": 300,
+        "SoCKWh": 60,
+        "SoCAgeMin": 0,
+        "SoCConfidence": 1,
+        "TargetKWh": 250,
+        "ArrivalMin": 0,
+        "DepartureMin": 180,
+        "MaxBatteryKW": 150,
+        "ChargerID": "C1"
+      },
+      {
+        "ID": "B2",
+        "CapacityKWh": 300,
+        "SoCKWh": 120,
+        "SoCAgeMin": 0,
+        "SoCConfidence": 1,
+        "TargetKWh": 250,
+        "ArrivalMin": 0,
+        "DepartureMin": 300,
+        "MaxBatteryKW": 150,
+        "ChargerID": "C2"
+      },
+      {
+        "ID": "B3",
+        "CapacityKWh": 300,
+        "SoCKWh": 200,
+        "SoCAgeMin": 0,
+        "SoCConfidence": 1,
+        "TargetKWh": 250,
+        "ArrivalMin": 0,
+        "DepartureMin": 600,
+        "MaxBatteryKW": 150,
+        "ChargerID": "C3"
+      }
+    ]
+  },
+  "Plan": {
+    "Layer": 0,
+    "Setpoints": [
+      {
+        "ChargerID": "C1",
+        "KW": 150
+      },
+      {
+        "ChargerID": "C2",
+        "KW": 33.684210526315795
+      },
+      {
+        "ChargerID": "C3",
+        "KW": 8.421052631578949
+      }
+    ],
+    "Buses": [
+      {
+        "BusID": "B1",
+        "Assessed": true,
+        "WillReachTarget": true,
+        "ShortfallKWh": 0,
+        "LaxityMin": 87.36842105263158,
+        "Reason": "folga 87 min; 150.0 kW"
+      },
+      {
+        "BusID": "B2",
+        "Assessed": true,
+        "WillReachTarget": true,
+        "ShortfallKWh": 0,
+        "LaxityMin": 232.6315789473684,
+        "Reason": "folga 233 min; 33.7 kW"
+      },
+      {
+        "BusID": "B3",
+        "Assessed": true,
+        "WillReachTarget": true,
+        "ShortfallKWh": 0,
+        "LaxityMin": 566.3157894736842,
+        "Reason": "folga 566 min; 8.4 kW"
+      }
+    ],
+    "Swaps": null,
+    "Notes": null
+  }
+}
