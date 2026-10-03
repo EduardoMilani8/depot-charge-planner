@@ -29,6 +29,8 @@ type busState struct {
 	departed  bool
 	busyUntil int
 	parked    bool    // unplugged by operators after charging (UnplugFull): never re-plugged
+	shown     float64 // last SoC reading given to the controller (what operators also see)
+	shownOK   bool    // false until a usable reading was shown (or while it is missing)
 	lastGood  float64 // last observed value, used by the freeze fault
 	lastGoodT int
 }
@@ -194,8 +196,8 @@ func (w *World) waitingBus(bs *busState) bool {
 	return bs.chargerID == "" || w.statusOf(bs.chargerID) == model.ChargerFaulted
 }
 
-// unplugFull frees one charger per waiting bus by unplugging connected buses that
-// already reached their forecast target (operators read the bus's own SoC display).
+// unplugFull frees one charger per waiting bus by unplugging connected buses whose
+// SoC reading already reached their forecast target.
 func (w *World) unplugFull() {
 	waiting := 0
 	for _, bs := range w.buses {
@@ -208,8 +210,10 @@ func (w *World) unplugFull() {
 		if waiting == 0 {
 			return
 		}
+		// Operators judge by the same (possibly faulty) SoC reading the controllers get,
+		// from the previous minute: they have no access to the simulator's truth.
 		if !bs.present || bs.departed || bs.chargerID == "" || w.t < bs.busyUntil ||
-			w.statusOf(bs.chargerID) != model.ChargerOK || bs.soc < bs.spec.Bus.TargetKWh-1e-6 {
+			w.statusOf(bs.chargerID) != model.ChargerOK || !bs.shownOK || bs.shown < bs.spec.Bus.TargetKWh-1e-6 {
 			continue
 		}
 		w.freed[bs.chargerID] = true
@@ -304,6 +308,7 @@ func (w *World) observe() planner.Input {
 		b.ArrivalMin = bs.arrival
 		b.DepartureMin = bs.departure
 		b.SoCKWh, b.SoCAgeMin, b.SoCConfidence = w.sense(bs)
+		bs.shown, bs.shownOK = b.SoCKWh, b.SoCConfidence > 0
 		in.Buses = append(in.Buses, b)
 	}
 	return in

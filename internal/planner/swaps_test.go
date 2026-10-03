@@ -38,18 +38,53 @@ func TestNoSwapWhenAFreeChargerExists(t *testing.T) {
 	}
 }
 
+// With SwapUrgentLaxityMin set, only waiting buses with less laxity are considered.
 func TestNoSwapWhenWaitingBusIsNotUrgent(t *testing.T) {
+	cfg := testConfig()
+	cfg.SwapUrgentLaxityMin = 60
 	donor := testBus("D", "C1", 220, 220, 600)
 	waiting := testBus("W", "", 100, 220, 600)
+	if p := PlanNormal(cfg, swapInput(donor, waiting)); len(p.Swaps) != 0 {
+		t.Errorf("unexpected swap: %+v", p.Swaps)
+	}
+}
+
+// By default any waiting bus that needs charge may take the charger of a full bus,
+// as long as that adds a ready bus (here W can finish only if it gets C1).
+func TestSwapByDefaultForAnyWaitingBusAndAFullDonor(t *testing.T) {
+	donor := testBus("D", "C1", 220, 220, 600)
+	waiting := testBus("W", "", 100, 220, 600)
+	p := PlanNormal(testConfig(), swapInput(donor, waiting))
+	if len(p.Swaps) != 1 || p.Swaps[0].OutBusID != "D" || p.Swaps[0].InBusID != "W" {
+		t.Errorf("expected W to take C1 from the full D: %+v", p.Swaps)
+	}
+}
+
+// A donor that still needs charge never gives way, even when it has far more laxity.
+func TestNoSwapWhenDonorStillNeedsCharge(t *testing.T) {
+	donor := testBus("D", "C1", 100, 220, 150) // laxity 102, needs 120 kWh
+	waiting := testBus("W", "", 100, 220, 90)  // laxity 42
 	if p := PlanNormal(testConfig(), swapInput(donor, waiting)); len(p.Swaps) != 0 {
 		t.Errorf("unexpected swap: %+v", p.Swaps)
 	}
 }
 
-func TestNoSwapWhenDonorHasNoSpareLaxity(t *testing.T) {
-	donor := testBus("D", "C1", 100, 220, 150) // laxity 102
-	waiting := testBus("W", "", 100, 220, 90)  // laxity 42: gap 60 < 120
-	if p := PlanNormal(testConfig(), swapInput(donor, waiting)); len(p.Swaps) != 0 {
+// Even a donor the current budget cannot finish keeps its charger: budget frees up as
+// other buses leave, which a snapshot cannot see.
+func TestNoSwapWithADonorThatCannotFinishNow(t *testing.T) {
+	in := Input{
+		Site:     model.Site{LimitKW: 20, StepMin: 1},
+		Chargers: []model.Charger{testCharger("C1")},
+		Buses: []model.Bus{
+			testBus("D", "C1", 0, 240, 600), // laxity 504 but needs 24 kW: cannot finish on 20 kW
+			testBus("W", "", 210, 220, 60),  // laxity 56, needs about 11 kW after the move
+		},
+	}
+	p := PlanNormal(testConfig(), in)
+	if st := statusOf(p, "D"); st.WillReachTarget {
+		t.Fatalf("setup: D must not reach its target under this budget: %+v", st)
+	}
+	if len(p.Swaps) != 0 {
 		t.Errorf("unexpected swap: %+v", p.Swaps)
 	}
 }
@@ -157,14 +192,14 @@ func TestSwapForBusOnAFaultedCharger(t *testing.T) {
 	}
 }
 
-// A donor with too little spare laxity is skipped, but a later donor may still serve.
-func TestSwapSkipsDonorWithoutGapButTriesOthers(t *testing.T) {
+// Donors that still need charge are skipped; a full one later in the order serves.
+func TestSwapSkipsDonorsThatNeedChargeButTriesOthers(t *testing.T) {
 	in := Input{
 		Site:     model.Site{LimitKW: 500, StepMin: 1},
 		Chargers: []model.Charger{testCharger("C1"), testCharger("C2")},
 		Buses: []model.Bus{
-			testBus("D1", "C1", 220, 220, 100), // full, laxity 100: gap 58 < 120
-			testBus("D2", "C2", 220, 220, 400), // full, laxity 400
+			testBus("D1", "C1", 210, 220, 700), // most laxity, but still needs 10 kWh
+			testBus("D2", "C2", 220, 220, 400), // full
 			testBus("W", "", 100, 220, 90),
 		},
 	}

@@ -69,8 +69,8 @@ type Scenario struct {
 	Tariff        Tariff
 	FollowSwaps   bool // operators execute every swap the planner recommends (an assumption to validate)
 	// UnplugFull models today's manual routine, for baselines: when a bus is waiting for
-	// a charger, operators unplug a connected bus whose battery already reached its
-	// forecast route target and park it; the waiting bus takes the charger after the
-	// same move time as a swap.
+	// a charger, operators unplug a connected bus whose SoC reading (the same one the
+	// controllers get, faults included) already reached its forecast route target and
+	// park it; the waiting bus takes the charger after the same move time as a swap.
 	UnplugFull bool
 }

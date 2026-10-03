@@ -51,12 +51,18 @@ func reachCount(cfg Config, budget float64, cands []candidate, waiting []model.B
 	return n
 }
 
-// recommendSwaps suggests moves (executed by people) that put an urgent waiting bus
-// on the charger of a connected bus that can give way. A swap is recommended only if
-// it increases the number of buses that reach their target under the current budget,
-// re-running the allocation with the swap applied (the incoming bus starts charging
-// cfg.SwapMoveMin minutes later). Swaps are chosen greedily: each one is judged on
-// the state left by the swaps already recommended in this cycle.
+// recommendSwaps suggests moves (executed by people) that put a waiting bus on the
+// charger of a connected bus that already reached its (margin-adjusted) target.
+// A swap is recommended only if it increases the number of buses that reach their
+// target under the current budget, re-running the allocation with the swap applied
+// (the incoming bus starts charging cfg.SwapMoveMin minutes later, on the donor's
+// own charger). Swaps are chosen greedily, waiting buses with least laxity first:
+// each one is judged on the state left by the swaps already recommended this cycle.
+//
+// Only full buses give way. A donor that still needs charge is never unplugged, not
+// even one the current budget cannot finish: as other buses leave, budget frees up and
+// such a bus may still finish, which a snapshot cannot see (measured: letting such
+// donors go cost up to 5 points of ready% under tight limits).
 func recommendSwaps(cfg Config, in Input, budget float64, cands []*candidate, idles []idleBus) []Swap {
 	ref, ok := bestCharger(in)
 	if !ok || len(idles) == 0 || len(cands) == 0 {
@@ -76,8 +82,9 @@ func recommendSwaps(cfg Config, in Input, budget float64, cands []*candidate, id
 			return nil // a free charger exists: the waiting bus just plugs in there
 		}
 	}
-	// Screen: waiting buses that need charge and have little laxity even on the best
-	// charger. Whether a swap really helps is decided below on the donor's charger.
+	// Screen: waiting buses that need charge and have less laxity than
+	// cfg.SwapUrgentLaxityMin on the best charger (by default every such bus). Whether
+	// a swap really helps is decided below, on the donor's charger.
 	type urgent struct {
 		bus    model.Bus
 		laxity float64
@@ -114,11 +121,10 @@ func recommendSwaps(cfg Config, in Input, budget float64, cands []*candidate, id
 	trials := 0
 	var swaps []Swap
 	for _, u := range urgents {
-		// Donors: connected buses, most laxity first, that would not lose a ready
-		// bus by giving way (already at target, or not reaching it anyway).
+		// Donors: connected buses already at their target, most laxity first.
 		order := make([]int, 0, len(state))
 		for i := range state {
-			if !moved[state[i].bus.ID] {
+			if !moved[state[i].bus.ID] && state[i].need <= 0 {
 				order = append(order, i)
 			}
 		}
@@ -135,7 +141,7 @@ func recommendSwaps(cfg Config, in Input, budget float64, cands []*candidate, id
 			}
 			d := state[i]
 			in := newCandidate(cfg, later, u.bus, d.charger)
-			if in.unusable || in.need <= 0 || d.laxityMin-in.laxityMin < cfg.SwapDonorGapMin {
+			if in.unusable || in.need <= 0 {
 				continue
 			}
 			trials++
@@ -150,8 +156,8 @@ func recommendSwaps(cfg Config, in Input, budget float64, cands []*candidate, id
 				ChargerID: d.charger.ID,
 				OutBusID:  d.bus.ID,
 				InBusID:   u.bus.ID,
-				Reason: fmt.Sprintf("ônibus %s (folga de %.0f min no carregador %s, contando %d min da troca) precisa de carregador; ônibus %s tem folga de %.0f min e cede o %s; ônibus prontos previstos passam de %d para %d",
-					u.bus.ID, in.laxityMin, d.charger.ID, cfg.SwapMoveMin, d.bus.ID, finiteLaxity(d.laxityMin), d.charger.ID, base, n),
+				Reason: fmt.Sprintf("ônibus %s (folga de %.0f min no carregador %s, contando %d min da troca) precisa de carregador; ônibus %s já atingiu o alvo e cede o %s; ônibus prontos previstos passam de %d para %d",
+					u.bus.ID, in.laxityMin, d.charger.ID, cfg.SwapMoveMin, d.bus.ID, d.charger.ID, base, n),
 			})
 			state, waiting, base = trial, trialWaiting, n
 			moved[u.bus.ID], moved[d.bus.ID] = true, true

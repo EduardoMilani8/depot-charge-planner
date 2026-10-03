@@ -20,9 +20,11 @@ type Config struct {
 	// laxity order (spec §6.4: readiness before peak flattening). A finite value, e.g.
 	// 120, flattens the peak by keeping buses with more laxity at just-in-time power;
 	// 0 gives spare power only to buses that cannot finish (negative laxity).
-	SurplusLaxityMin    float64
-	SwapUrgentLaxityMin float64       // waiting buses with less laxity than this get swap suggestions
-	SwapDonorGapMin     float64       // donor bus must have at least this much more laxity
+	SurplusLaxityMin float64
+	// SwapUrgentLaxityMin: only waiting buses with less laxity than this are offered a
+	// swap. The default (math.MaxFloat64) considers every waiting bus that needs charge;
+	// a finite value (the old default was 60) recommends fewer, later moves.
+	SwapUrgentLaxityMin float64
 	SwapMoveMin         int           // minutes a recommended swap takes before the incoming bus charges
 	LastPlanTTLMin      int           // how long the last valid plan may be reused
 	Timeout             time.Duration // max time for the normal layer
@@ -36,8 +38,7 @@ func DefaultConfig() Config {
 		UnreliablePenaltyFrac: 0.10,
 		MaxUnreliableFrac:     0.5,
 		SurplusLaxityMin:      math.MaxFloat64,
-		SwapUrgentLaxityMin:   60,
-		SwapDonorGapMin:       120,
+		SwapUrgentLaxityMin:   math.MaxFloat64,
 		SwapMoveMin:           5,
 		LastPlanTTLMin:        10,
 		Timeout:               500 * time.Millisecond,

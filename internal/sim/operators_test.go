@@ -83,3 +83,20 @@ func TestUnplugFullOnlyWhenSomeoneWaits(t *testing.T) {
 		}
 	}
 }
+
+// Operators read the same SoC as the controllers: without a reading they cannot tell
+// that B1 is charged, so they do not unplug it.
+func TestUnplugFullUsesTheObservedReading(t *testing.T) {
+	sc := oneChargerTwoBuses()
+	sc.UnplugFull = true
+	sc.Faults = []Fault{{Kind: FaultSoCMissing, Target: "B1", From: 0, To: forever}}
+	rc := &recordingController{inner: NewFIFO()}
+	Run(sc, rc, nil)
+	for _, in := range rc.ins {
+		for _, b := range in.Buses {
+			if b.ID == "B1" && b.ChargerID != "C1" {
+				t.Fatalf("minute %d: B1 unplugged although its SoC was never readable", in.Now)
+			}
+		}
+	}
+}

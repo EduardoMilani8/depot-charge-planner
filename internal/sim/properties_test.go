@@ -68,12 +68,15 @@ func TestBaselinesNeverViolateLimit(t *testing.T) {
 // Spec §12: the planner's mean ready% must be >= every baseline's under the SAME site
 // limit, for every fault profile. Checked at a loose (2000 kW), a medium (1200 kW) and
 // a tight (600 kW) limit, where before the budget-aware swaps the planner lost to FIFO.
+// Besides the spec's FIFO and EDF it is also compared with fifo-unplug (FIFO plus
+// operators unplugging charged buses), since the planner's own runs assume operators
+// follow its swaps.
 func TestPlannerNotWorseThanBaselines(t *testing.T) {
 	for _, limit := range []float64{2000, 1200, 600} {
 		for _, profile := range allProfiles {
 			t.Run(fmt.Sprintf("%.0fkW/%s", limit, profile), func(t *testing.T) {
 				t.Parallel()
-				var pl, fifo, edf []Metrics
+				var pl, fifo, edf, unplug []Metrics
 				for seed := int64(1); seed <= int64(seedCount(8, 2)); seed++ {
 					p := DefaultGenParams()
 					p.LimitKW = limit
@@ -82,11 +85,14 @@ func TestPlannerNotWorseThanBaselines(t *testing.T) {
 					pl = append(pl, Run(sc, NewPlannerController(propertyConfig(), sc), nil))
 					fifo = append(fifo, Run(sc, NewFIFO(), nil))
 					edf = append(edf, Run(sc, NewEDF(), nil))
+					manual := sc
+					manual.UnplugFull = true
+					unplug = append(unplug, Run(manual, NewFIFO(), nil))
 				}
-				a, f, e := Aggregate(pl).ReadyPct, Aggregate(fifo).ReadyPct, Aggregate(edf).ReadyPct
-				t.Logf("ready%%: planner %.1f, fifo %.1f, edf %.1f", a, f, e)
-				if a < f || a < e {
-					t.Errorf("planner ready%% %.1f is below fifo %.1f or edf %.1f", a, f, e)
+				a, f, e, u := Aggregate(pl).ReadyPct, Aggregate(fifo).ReadyPct, Aggregate(edf).ReadyPct, Aggregate(unplug).ReadyPct
+				t.Logf("ready%%: planner %.1f, fifo %.1f, edf %.1f, fifo-unplug %.1f", a, f, e, u)
+				if a < f || a < e || a < u {
+					t.Errorf("planner ready%% %.1f is below fifo %.1f, edf %.1f or fifo-unplug %.1f", a, f, e, u)
 				}
 			})
 		}
