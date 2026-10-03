@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/EduardoMilani8/depot-charge-planner/internal/planner"
+	"github.com/EduardoMilani8/depot-charge-planner/internal/sim"
 )
 
 func TestRunPrintsComparisonTable(t *testing.T) {
@@ -41,9 +45,17 @@ func TestRunWritesDecisionLog(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, errOut.String())
 	}
-	info, err := os.Stat(path)
-	if err != nil || info.Size() == 0 {
-		t.Errorf("decision log not written: %v", err)
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("decision log not written: %v", err)
+	}
+	defer f.Close()
+	h, recs, err := sim.ReadDecisionLogWithHeader(f)
+	if err != nil || h == nil || len(recs) == 0 {
+		t.Fatalf("unreadable log: header %v, %d records, err %v", h, len(recs), err)
+	}
+	if !reflect.DeepEqual(h.Config, planner.DefaultConfig()) {
+		t.Errorf("header config %+v, want the default", h.Config)
 	}
 }
 

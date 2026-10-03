@@ -1,60 +1,163 @@
 package sim
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"math"
 	"sort"
+	"time"
 
 	"github.com/EduardoMilani8/depot-charge-planner/internal/planner"
 )
 
 // DecisionRecord is one planning cycle: what the planner saw and what it decided.
 type DecisionRecord struct {
-	Minute int           `json:"minute"`
-	Input  planner.Input `json:"input"`
-	Plan   planner.Plan  `json:"plan"`
+	Minute int
+	Input  planner.Input
+	Plan   planner.Plan
+}
+
+// Decision log format (JSON lines):
+//
+//   - Version 2 (current) starts with a header line
+//     {"format":"depot-charge-planner/decision-log","version":2,"config":{...}} holding
+//     the planner Config, followed by one record per line:
+//     {"minute":..,"input":{..},"plan":{..}}.
+//   - Version 1 (older logs) has no header; its records read the same way.
+//
+// Inside records, field names are the Go field names of planner.Input and
+// planner.Plan. Floats that JSON cannot represent are written as the strings "NaN",
+// "+Inf" and "-Inf", so NaN and infinite readings round-trip exactly. Plan.Layer is
+// written by name ("normal", "last-valid", "safe"); the numeric form of version 1
+// (0 = normal, 1 = last-valid, 2 = safe) is still accepted when reading.
+const (
+	DecisionLogFormat  = "depot-charge-planner/decision-log"
+	DecisionLogVersion = 2
+)
+
+// ErrTruncatedLog means the log ends in the middle of a line (e.g. the writer was
+// killed). The records before that line are still returned.
+var ErrTruncatedLog = errors.New("registro de decisões truncado: a última linha está incompleta")
+
+// DecisionLogHeader is the first line of a version-2 log.
+type DecisionLogHeader struct {
+	Format  string
+	Version int
+	Config  planner.Config
 }
 
 // DecisionLog writes records as JSON lines and remembers the first write error.
 type DecisionLog struct {
-	enc *json.Encoder
+	w   io.Writer
 	err error
 }
 
 var _ Recorder = (*DecisionLog)(nil)
 
-// NewDecisionLog returns a Recorder that appends one JSON object per line to w.
-func NewDecisionLog(w io.Writer) *DecisionLog { return &DecisionLog{enc: json.NewEncoder(w)} }
+// NewDecisionLog returns a Recorder that appends one JSON object per line to w,
+// without a header (replaying it needs the planner Config from elsewhere).
+func NewDecisionLog(w io.Writer) *DecisionLog { return &DecisionLog{w: w} }
 
-func (l *DecisionLog) Record(minute int, in planner.Input, p planner.Plan) error {
+// NewDecisionLogWithConfig writes a header with the format version and cfg first, so
+// the log can be replayed on its own (ReplayFile). A header write error is kept in Err.
+func NewDecisionLogWithConfig(w io.Writer, cfg planner.Config) *DecisionLog {
+	l := &DecisionLog{w: w}
+	l.writeLine(logHeader{Format: DecisionLogFormat, Version: DecisionLogVersion, Config: toLogConfig(cfg)})
+	return l
+}
+
+func (l *DecisionLog) writeLine(v any) error {
 	if l.err != nil {
 		return l.err
 	}
-	l.err = l.enc.Encode(DecisionRecord{Minute: minute, Input: in, Plan: p})
-	return l.err
+	b, err := json.Marshal(v)
+	if err == nil {
+		_, err = l.w.Write(append(b, '\n'))
+	}
+	l.err = err
+	return err
+}
+
+// Record writes one cycle. Non-finite numbers never make it fail; only write errors do.
+func (l *DecisionLog) Record(minute int, in planner.Input, p planner.Plan) error {
+	return l.writeLine(logRecord{Minute: minute, Input: toLogInput(in), Plan: toLogPlan(p)})
 }
 
 // Err returns the first write error, if any. Callers must check Err() after Run:
 // Run ignores Record errors.
 func (l *DecisionLog) Err() error { return l.err }
 
-// ReadDecisionLog parses a JSON-lines decision log, in order, and stops at the first
-// malformed record.
+// ReadDecisionLog parses a decision log (any version), in order, skipping the header.
+// It stops at the first malformed line and returns the records read before it with
+// the error; a last line cut short gives an error wrapping ErrTruncatedLog.
 func ReadDecisionLog(r io.Reader) ([]DecisionRecord, error) {
-	dec := json.NewDecoder(r)
+	_, recs, err := ReadDecisionLogWithHeader(r)
+	return recs, err
+}
+
+// ReadDecisionLogWithHeader is ReadDecisionLog that also returns the header (nil for
+// version-1 logs, which have none).
+func ReadDecisionLogWithHeader(r io.Reader) (*DecisionLogHeader, []DecisionRecord, error) {
+	br := bufio.NewReader(r)
+	var header *DecisionLogHeader
 	var out []DecisionRecord
-	for {
-		var rec DecisionRecord
-		err := dec.Decode(&rec)
-		if err == io.EOF {
-			return out, nil
+	for line := 1; ; line++ {
+		raw, readErr := br.ReadBytes('\n')
+		if readErr != nil && readErr != io.EOF {
+			return header, out, readErr
 		}
-		if err != nil {
-			return nil, err
+		complete := len(raw) > 0 && raw[len(raw)-1] == '\n'
+		raw = bytes.TrimSpace(raw)
+		if len(raw) > 0 {
+			var probe struct {
+				Format string `json:"format"`
+			}
+			err := json.Unmarshal(raw, &probe)
+			switch {
+			case err != nil && !complete:
+				return header, out, fmt.Errorf("linha %d: %w", line, ErrTruncatedLog)
+			case err != nil:
+				return header, out, fmt.Errorf("linha %d: %w", line, err)
+			case probe.Format != "":
+				var h logHeader
+				if err := json.Unmarshal(raw, &h); err != nil {
+					return header, out, fmt.Errorf("linha %d (cabeçalho): %w", line, err)
+				}
+				if h.Format != DecisionLogFormat || h.Version > DecisionLogVersion {
+					return header, out, fmt.Errorf("linha %d: formato não suportado %q versão %d", line, h.Format, h.Version)
+				}
+				header = &DecisionLogHeader{Format: h.Format, Version: h.Version, Config: h.Config.toConfig()}
+			default:
+				var rec logRecord
+				if err := json.Unmarshal(raw, &rec); err != nil {
+					return header, out, fmt.Errorf("linha %d: %w", line, err)
+				}
+				out = append(out, DecisionRecord{Minute: rec.Minute, Input: rec.Input.toInput(), Plan: rec.Plan.toPlan()})
+			}
 		}
-		out = append(out, rec)
+		if readErr == io.EOF {
+			return header, out, nil
+		}
 	}
+}
+
+// ReplayFile reads a version-2 log and replays it with the Config from its header
+// (see ReplayStats). A log without header returns an error: use Replay with the
+// configuration that produced it.
+func ReplayFile(r io.Reader) (diffs []ReplayDiff, replayed, skipped int, err error) {
+	h, recs, err := ReadDecisionLogWithHeader(r)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	if h == nil {
+		return nil, 0, 0, errors.New("registro de decisões sem cabeçalho: informe a configuração (Replay)")
+	}
+	diffs, replayed, skipped = ReplayStats(h.Config, recs)
+	return diffs, replayed, skipped, nil
 }
 
 // ReplayDiff is one charger whose replayed setpoint differs from the logged one at
@@ -82,7 +185,12 @@ func Replay(cfg planner.Config, recs []DecisionRecord) []ReplayDiff {
 
 // ReplayStats is Replay plus counts: replayed is the number of normal-layer records
 // re-executed and skipped the number of records of any other layer.
+//
+// Each record is re-planned by a fresh planner.New(cfg) (so bad records are sanitized
+// exactly as in the field) with a generous timeout, so a slow machine does not turn a
+// replay into a timeout fallback.
 func ReplayStats(cfg planner.Config, recs []DecisionRecord) (diffs []ReplayDiff, replayed, skipped int) {
+	cfg.Timeout = time.Minute
 	for _, rec := range recs {
 		if rec.Plan.Layer != planner.LayerNormal {
 			skipped++
@@ -90,7 +198,7 @@ func ReplayStats(cfg planner.Config, recs []DecisionRecord) (diffs []ReplayDiff,
 		}
 		replayed++
 		got := map[string]float64{}
-		for _, s := range planner.Enforce(rec.Input, planner.PlanNormal(cfg, rec.Input)).Setpoints {
+		for _, s := range planner.New(cfg).Plan(rec.Input).Setpoints {
 			got[s.ChargerID] = s.KW
 		}
 		logged := map[string]float64{}

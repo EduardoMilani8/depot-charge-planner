@@ -118,7 +118,7 @@ func writeDecisionLog(path string, p sim.GenParams, cfg planner.Config) error {
 		return err
 	}
 	sc := sim.Generate(p, 1)
-	log := sim.NewDecisionLog(f)
+	log := sim.NewDecisionLogWithConfig(f, cfg) // header: replayable with sim.ReplayFile
 	sim.Run(sc, sim.NewPlannerController(cfg, sc), log)
 	if err := log.Err(); err != nil {
 		f.Close()

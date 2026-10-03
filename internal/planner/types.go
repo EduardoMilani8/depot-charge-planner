@@ -53,6 +53,8 @@ type Input struct {
 	Buses    []model.Bus
 }
 
+// Layer is the planner layer that produced a plan. As a number (e.g. in the golden
+// files) 0 = normal, 1 = last-valid, 2 = safe; the decision log writes the names.
 type Layer int
 
 const (
