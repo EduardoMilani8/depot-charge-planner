@@ -12,6 +12,8 @@ Status: em desenvolvimento (planejador + simulador). Design: `docs/superpowers/s
 Opções do `simrun`: `-buses`, `-chargers`, `-limit` (kW), `-profile none|mild|severe`, `-seeds`, `-log decisions.jsonl`.
 Colunas: `ready%` (principal), `plan violations` (deve ser 0), `overshoot min` (potência física acima do limite).
 
+`plan violations` conta os minutos em que a potência comandada passou do limite (deve ser 0). `overshoot min` conta os minutos em que a potência física passou do limite: pode ser diferente de zero mesmo com `plan violations` 0, porque os comandos só fazem efeito um minuto depois e uma queda repentina do limite (perfis `mild` e `severe`) pode causar excesso por cerca de um minuto mesmo com um plano correto. Os baselines estouram mais porque não reagem ao limite por meio de planejamento.
+
 ## Resultados de exemplo
 
 `ready%` médio (percentual de ônibus prontos na saída) com os parâmetros padrão e `-seeds 20`:
@@ -21,6 +23,8 @@ Colunas: `ready%` (principal), `plan violations` (deve ser 0), `overshoot min` (
 | none | 58.4 | 58.4 | 53.1 | 75.6 |
 | mild | 58.3 | 58.3 | 53.1 | 75.9 |
 | severe | 45.2 | 45.3 | 50.7 | 61.0 |
+
+Nessas execuções o planner custa cerca de 13% a 14% mais (R$ 9.203 a 9.488 contra R$ 8.130 a 8.312 de fifo/edf) e troca o plano de 1,6 a 4,3 vezes mais vezes (por exemplo, 636 contra cerca de 390 no perfil severe e 256 contra cerca de 60 sem falhas) em troca de bem mais ônibus prontos.
 
 Os cenários são sintéticos e usam premissas de dados públicos ainda não validadas com operadoras reais, então esses números mostram a comparação entre controladores, não o desempenho esperado em campo.
 

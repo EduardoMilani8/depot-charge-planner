@@ -12,6 +12,14 @@ import (
 	"github.com/EduardoMilani8/depot-charge-planner/internal/sim"
 )
 
+// Upper bounds that keep a single invocation from exhausting memory or time.
+const (
+	maxBuses    = 10000
+	maxChargers = 10000
+	maxSeeds    = 1000
+	maxLimitKW  = 1e9
+)
+
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
 func run(args []string, stdout, stderr io.Writer) int {
@@ -33,8 +41,25 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "unknown profile %q (use none, mild or severe)\n", *profile)
 		return 2
 	}
-	if *seeds < 1 || p.NumBuses < 1 || p.NumChargers < 1 || p.LimitKW <= 0 {
-		fmt.Fprintln(stderr, "seeds, buses, chargers and limit must be positive")
+	if fs.NArg() > 0 {
+		fmt.Fprintf(stderr, "unexpected argument %q\n", fs.Arg(0))
+		return 2
+	}
+	if *seeds < 1 || *seeds > maxSeeds {
+		fmt.Fprintf(stderr, "-seeds must be between 1 and %d\n", maxSeeds)
+		return 2
+	}
+	if p.NumBuses < 1 || p.NumBuses > maxBuses {
+		fmt.Fprintf(stderr, "-buses must be between 1 and %d\n", maxBuses)
+		return 2
+	}
+	if p.NumChargers < 1 || p.NumChargers > maxChargers {
+		fmt.Fprintf(stderr, "-chargers must be between 1 and %d\n", maxChargers)
+		return 2
+	}
+	// Written so that NaN and +/-Inf fail the check.
+	if !(p.LimitKW > 0 && p.LimitKW <= maxLimitKW) {
+		fmt.Fprintf(stderr, "-limit must be a finite value in (0, %g] kW\n", maxLimitKW)
 		return 2
 	}
 	p.Profile = sim.FaultProfile(*profile)
