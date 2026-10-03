@@ -12,6 +12,8 @@ jobs:
         run: test -z "$(gofmt -l .)"
       - run: go vet ./...
       - run: go test -race ./...
+      - name: long property tests
+        run: PROPERTY_SEEDS=100 go test ./internal/sim
       - name: fuzz (short)
         run: go test -run '^$' -fuzz FuzzPlannerRespectsInvariants -fuzztime 20s ./internal/planner
       - name: benchmark (smoke)
