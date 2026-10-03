@@ -55,6 +55,7 @@ func TestRunRejectsInvalidValuesBeforeSimulating(t *testing.T) {
 		{"-buses", "1000000000"},
 		{"-chargers", "1000000000"},
 		{"-seeds", "1000000000"},
+		{"-limit", "1e8"},
 		{"stray"},
 	}
 	for _, args := range cases {
@@ -68,5 +69,24 @@ func TestRunRejectsInvalidValuesBeforeSimulating(t *testing.T) {
 		if out.Len() != 0 {
 			t.Errorf("%v: unexpected stdout %q", args, out.String())
 		}
+	}
+}
+
+func TestRunFollowSwapsFlagAndUnplugBaseline(t *testing.T) {
+	var on, off, errOut bytes.Buffer
+	args := []string{"-buses", "8", "-chargers", "3", "-limit", "400", "-seeds", "2"}
+	if code := run(args, &on, &errOut); code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+	if code := run(append(args, "-follow-swaps=false"), &off, &errOut); code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+	for _, out := range []string{on.String(), off.String()} {
+		if !strings.Contains(out, "fifo-unplug") {
+			t.Errorf("missing the fifo-unplug baseline:\n%s", out)
+		}
+	}
+	if !strings.Contains(on.String(), "follow swaps: true") || !strings.Contains(off.String(), "follow swaps: false") {
+		t.Errorf("the table must say whether swaps were followed:\n%s\n%s", on.String(), off.String())
 	}
 }

@@ -32,6 +32,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	profile := fs.String("profile", "none", "fault profile: none|mild|severe")
 	seeds := fs.Int("seeds", 20, "number of random seeds")
 	logPath := fs.String("log", "", "write the planner decision log (JSON lines) for seed 1")
+	fs.BoolVar(&p.FollowSwaps, "follow-swaps", p.FollowSwaps,
+		"operators execute every swap the planner recommends (assumption; false = planner without swaps)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -72,16 +74,21 @@ func run(args []string, stdout, stderr io.Writer) int {
 	makers := []maker{
 		{"fifo", func(sim.Scenario) sim.Controller { return sim.NewFIFO() }},
 		{"edf", func(sim.Scenario) sim.Controller { return sim.NewEDF() }},
+		// FIFO plus today's manual routine: operators unplug buses that reached their
+		// target when another bus is waiting.
+		{"fifo-unplug", func(sim.Scenario) sim.Controller { return sim.NewFIFO() }},
 		{"safe", func(sim.Scenario) sim.Controller { return sim.NewSafeOnly() }},
 		{"planner", func(sc sim.Scenario) sim.Controller { return sim.NewPlannerController(cfg, sc) }},
 	}
 
+	fmt.Fprintf(stdout, "profile: %s, limit: %g kW, follow swaps: %v\n", p.Profile, p.LimitKW, p.FollowSwaps)
 	w := tabwriter.NewWriter(stdout, 0, 8, 2, ' ', 0)
 	fmt.Fprintln(w, "controller\tready%\tshortfall kWh\tpeak kW\tplan violations\tovershoot min\tcost R$\tplan changes\tp99 µs")
 	for _, mk := range makers {
 		var results []sim.Metrics
 		for seed := int64(1); seed <= int64(*seeds); seed++ {
 			sc := sim.Generate(p, seed)
+			sc.UnplugFull = mk.name == "fifo-unplug"
 			results = append(results, sim.Run(sc, mk.make(sc), nil))
 		}
 		a := sim.Aggregate(results)

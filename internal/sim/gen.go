@@ -24,6 +24,10 @@ type GenParams struct {
 	CapacityKWh           float64
 	MaxBatteryKW          float64
 	Profile               FaultProfile
+	// FollowSwaps: operators execute every swap the planner recommends. This is an
+	// assumption to validate with real depots; most of the planner's gain over the
+	// baselines depends on it (see README).
+	FollowSwaps bool
 }
 
 // DefaultGenParams uses public-data assumptions that still need validation with real operators.
@@ -32,6 +36,7 @@ func DefaultGenParams() GenParams {
 		NumBuses: 50, NumChargers: 25, LimitKW: 2000,
 		ChargerMaxKW: 150, ChargerMinKW: 5, Efficiency: 0.94,
 		CapacityKWh: 350, MaxBatteryKW: 150, Profile: ProfileNone,
+		FollowSwaps: true,
 	}
 }
 
@@ -46,7 +51,7 @@ func Generate(p GenParams, seed int64) Scenario {
 		Horizon:       800,
 		BaseLimitKW:   p.LimitKW,
 		Tariff:        Tariff{PeakFromMin: 18 * 60, PeakToMin: 21 * 60, PeakPrice: 2.70, OffPeakPrice: 0.90},
-		FollowSwaps:   true,
+		FollowSwaps:   p.FollowSwaps,
 	}
 	for i := 0; i < p.NumChargers; i++ {
 		sc.Chargers = append(sc.Chargers, model.Charger{

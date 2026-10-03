@@ -65,3 +65,14 @@ func TestGenerateDegenerateSizesDoNotPanic(t *testing.T) {
 		_ = Generate(p, 1)
 	}
 }
+
+func TestGenerateFollowSwapsComesFromParams(t *testing.T) {
+	p := DefaultGenParams()
+	if !p.FollowSwaps || !Generate(p, 1).FollowSwaps {
+		t.Error("default scenarios assume operators follow the planner's swaps")
+	}
+	p.FollowSwaps = false
+	if Generate(p, 1).FollowSwaps {
+		t.Error("FollowSwaps=false must reach the scenario")
+	}
+}

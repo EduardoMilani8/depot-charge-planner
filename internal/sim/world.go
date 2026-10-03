@@ -28,6 +28,7 @@ type busState struct {
 	present   bool
 	departed  bool
 	busyUntil int
+	parked    bool    // unplugged by operators after charging (UnplugFull): never re-plugged
 	lastGood  float64 // last observed value, used by the freeze fault
 	lastGoodT int
 }
@@ -41,6 +42,7 @@ type World struct {
 	chargers  []model.Charger
 	cmd       map[string]float64 // commands issued this step
 	applied   map[string]float64 // power in effect (commands of the previous step)
+	freed     map[string]bool    // chargers operators freed this tick (UnplugFull)
 	ready     int
 	shortfall float64
 }
@@ -178,7 +180,43 @@ func (w *World) beginTick(t int) {
 			bs.lastGood, bs.lastGoodT = bs.soc, t
 		}
 	}
+	if w.sc.UnplugFull {
+		w.unplugFull()
+	}
 	w.connectWaiting()
+}
+
+// waitingBus reports whether a bus is present and needs a (working) charger.
+func (w *World) waitingBus(bs *busState) bool {
+	if !bs.present || bs.departed || bs.parked {
+		return false
+	}
+	return bs.chargerID == "" || w.statusOf(bs.chargerID) == model.ChargerFaulted
+}
+
+// unplugFull frees one charger per waiting bus by unplugging connected buses that
+// already reached their forecast target (operators read the bus's own SoC display).
+func (w *World) unplugFull() {
+	waiting := 0
+	for _, bs := range w.buses {
+		if w.waitingBus(bs) {
+			waiting++
+		}
+	}
+	w.freed = map[string]bool{}
+	for _, bs := range w.buses { // sorted by ID: deterministic
+		if waiting == 0 {
+			return
+		}
+		if !bs.present || bs.departed || bs.chargerID == "" || w.t < bs.busyUntil ||
+			w.statusOf(bs.chargerID) != model.ChargerOK || bs.soc < bs.spec.Bus.TargetKWh-1e-6 {
+			continue
+		}
+		w.freed[bs.chargerID] = true
+		bs.chargerID = ""
+		bs.parked = true
+		waiting--
+	}
 }
 
 func (w *World) depart(bs *busState) {
@@ -201,10 +239,7 @@ func (w *World) connectWaiting() {
 	}
 	var waiting []*busState
 	for _, bs := range w.buses {
-		if !bs.present || bs.departed {
-			continue
-		}
-		if bs.chargerID == "" || w.statusOf(bs.chargerID) == model.ChargerFaulted {
+		if w.waitingBus(bs) {
 			waiting = append(waiting, bs)
 		}
 	}
@@ -215,6 +250,9 @@ func (w *World) connectWaiting() {
 			if c.Status == model.ChargerOK && !occupied[c.ID] {
 				occupied[c.ID] = true
 				bs.chargerID = c.ID
+				if w.freed[c.ID] { // operators are moving buses: same time as a swap
+					bs.busyUntil = w.t + swapDurationMin
+				}
 				break
 			}
 		}
