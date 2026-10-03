@@ -19,8 +19,16 @@ const (
 	TaperStartFrac = 0.8
 	// TaperMinFactor is the acceptance factor reached at 100% SoC.
 	TaperMinFactor = 0.2
-	// PlannerTailCostFactor is the conservative cost multiplier the planner applies
-	// to energy above TaperStartFrac (the real average factor is 1/0.6 ≈ 1.67).
+	// PlannerTailCostFactor is the time multiplier the planner applies to energy above
+	// TaperStartFrac. With acceptance falling linearly from 1 to TaperMinFactor over
+	// the last 20% of SoC, the real time multiplier for charging from the knee up to a
+	// fraction x of that band is ln(1/(1-0.8x))/(0.8x): about 1.53 at x = 0.75 (95%
+	// SoC) and ln(5)/0.8 ≈ 2.012 for the whole band (80% -> 100%). (It is the
+	// time-weighted average of 1/factor, not 1/mean(factor) = 1/0.6 ≈ 1.67.) So 2.0 is
+	// conservative for targets up to about 99.9% SoC and about 0.6% optimistic for a
+	// full 100% charge (≈ 17 s on a 24-minute tail); the simulator measures this in
+	// TestTaperExtraTimeAgainstPlannerAssumption. When the charger, not the battery,
+	// limits the power, the taper binds later and the real multiplier is smaller still.
 	PlannerTailCostFactor = 2.0
 )
 
