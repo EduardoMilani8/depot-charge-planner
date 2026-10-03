@@ -65,17 +65,24 @@ func TestPlannerTimeoutFallsBackToSafe(t *testing.T) {
 	}
 }
 
-func TestPlannerInvalidInputGivesZeroPlan(t *testing.T) {
+// Before sanitising, a duplicated charger ID rejected the whole input (safe layer,
+// every charger at 0 kW). Now only the ambiguous charger is switched off, the input
+// is still planned by the normal layer and the bus on it gets a reason. (An invalid
+// site still gives the zero plan: TestPlannerInvalidSiteGivesZeroPlan.)
+func TestPlannerDuplicateChargerSwitchesOnlyItOff(t *testing.T) {
 	in := validInput()
 	in.Chargers = append(in.Chargers, testCharger("C1")) // duplicate ID
 	p := New(testConfig()).Plan(in)
-	if p.Layer != LayerSafe {
-		t.Errorf("layer = %v", p.Layer)
+	if p.Layer != LayerNormal {
+		t.Errorf("layer = %v, want normal", p.Layer)
 	}
 	for _, s := range p.Setpoints {
 		if s.KW != 0 {
-			t.Errorf("invalid input must command 0 kW, got %+v", s)
+			t.Errorf("the duplicated charger must be at 0 kW, got %+v", s)
 		}
+	}
+	if r := statusOf(p, "B1").Reason; !strings.Contains(r, "registro inválido") {
+		t.Errorf("B1 must be told why it gets no power: %q", r)
 	}
 	if v := Violations(in, p); len(v) != 0 {
 		t.Errorf("violations: %v", v)
@@ -89,6 +96,11 @@ func TestPlannerTwoBusesOnOneChargerDoesNotPanic(t *testing.T) {
 	for _, s := range p.Setpoints {
 		if s.KW != 0 {
 			t.Errorf("unexpected power: %+v", s)
+		}
+	}
+	for _, id := range []string{"B1", "B2"} {
+		if r := statusOf(p, id).Reason; !strings.Contains(r, "registro inválido") {
+			t.Errorf("%s: missing reason: %q", id, r)
 		}
 	}
 }

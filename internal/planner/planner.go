@@ -48,29 +48,38 @@ func (p *Planner) WithLogger(l *slog.Logger) *Planner {
 	return p
 }
 
-// Plan always returns a plan that satisfies every invariant.
+// Plan always returns a plan that satisfies every invariant (checked against the
+// input exactly as given). An invalid site (limit or step) yields the last valid
+// plan or all chargers at 0 kW; bad bus or charger records are dropped or switched
+// off with a per-bus reason while the rest of the depot is planned normally.
 func (p *Planner) Plan(in Input) Plan {
-	if err := ValidateInput(in); err != nil {
-		p.log.Warn("entrada inválida", "minute", in.Now, "err", err)
-		return p.fallback(in, "entrada inválida: "+err.Error(), false)
+	if err := validateSite(in); err != nil {
+		p.log.Warn("garagem inválida", "minute", in.Now, "err", err)
+		return p.fallback(in, sanitized{}, "entrada inválida: "+err.Error(), false)
 	}
-	if tooUnreliable(p.cfg, in) {
+	s := sanitize(in)
+	if len(s.problems) > 0 {
+		p.log.Warn("registros inválidos ignorados", "minute", in.Now, "count", len(s.problems), "first", s.problems[0])
+	}
+	if tooUnreliable(p.cfg, s.in) {
 		p.log.Warn("leituras de SoC pouco confiáveis; usando perfil seguro", "minute", in.Now)
-		plan := PlanSafe(in)
+		plan := PlanSafe(s.in)
 		plan.Notes = append(plan.Notes, "leituras de SoC pouco confiáveis na maioria dos ônibus")
-		return p.finish(in, plan)
+		return s.annotate(p.finish(in, plan))
 	}
-	plan, err := p.runNormal(in)
+	plan, err := p.runNormal(s.in)
 	if err != nil {
 		p.log.Warn("camada normal falhou", "minute", in.Now, "err", err)
-		return p.fallback(in, err.Error(), true)
+		return p.fallback(in, s, err.Error(), true)
 	}
 	plan.Layer = LayerNormal
 	plan = p.finish(in, plan)
 	p.last, p.hasLast, p.lastAt = clonePlan(plan), true, in.Now
-	return plan
+	return s.annotate(plan)
 }
 
+// finish runs the verifier against the input exactly as received (not the sanitized
+// copy), so whoever computed the plan is never who guarantees it.
 func (p *Planner) finish(in Input, plan Plan) Plan {
 	out := Enforce(in, plan)
 	if len(out.Notes) > len(plan.Notes) {
@@ -79,22 +88,22 @@ func (p *Planner) finish(in Input, plan Plan) Plan {
 	return out
 }
 
-func (p *Planner) fallback(in Input, reason string, inputValid bool) Plan {
+func (p *Planner) fallback(in Input, s sanitized, reason string, siteValid bool) Plan {
 	if p.hasLast && in.Now >= p.lastAt && in.Now-p.lastAt <= p.cfg.LastPlanTTLMin {
 		plan := clonePlan(p.last)
 		plan.Layer = LayerLastValid
 		plan.Swaps = nil
 		plan.Notes = append(plan.Notes, "usando o último plano válido: "+reason)
-		return p.finish(in, plan)
+		return s.annotate(p.finish(in, plan))
 	}
 	var plan Plan
-	if inputValid {
-		plan = PlanSafe(in)
+	if siteValid {
+		plan = PlanSafe(s.in)
 	} else {
 		plan = zeroPlan(in)
 	}
 	plan.Notes = append(plan.Notes, "fallback: "+reason)
-	return p.finish(in, plan)
+	return s.annotate(p.finish(in, plan))
 }
 
 func (p *Planner) runNormal(in Input) (Plan, error) {
@@ -151,9 +160,9 @@ func tooUnreliable(cfg Config, in Input) bool {
 	return total > 0 && float64(bad)/float64(total) > cfg.MaxUnreliableFrac
 }
 
-// zeroPlan commands 0 kW on every (deduplicated) charger; used for broken input.
+// zeroPlan commands 0 kW on every (deduplicated) charger; used for an invalid site.
 func zeroPlan(in Input) Plan {
-	p := Plan{Layer: LayerSafe, Notes: []string{"entrada inválida: todos os carregadores em 0 kW"}}
+	p := Plan{Layer: LayerSafe, Notes: []string{"garagem inválida: todos os carregadores em 0 kW"}}
 	seen := map[string]bool{}
 	for _, c := range in.Chargers {
 		if seen[c.ID] {
