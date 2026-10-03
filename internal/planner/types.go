@@ -2,6 +2,7 @@
 package planner
 
 import (
+	"math"
 	"time"
 
 	"github.com/EduardoMilani8/depot-charge-planner/internal/model"
@@ -9,17 +10,22 @@ import (
 
 // Config holds the planner tunables.
 type Config struct {
-	MarginKWh             float64       // extra battery energy planned on top of the route target
-	StaleAfterMin         int           // SoC readings older than this are unreliable
-	MinConfidence         float64       // SoC readings below this confidence are unreliable
-	UnreliablePenaltyFrac float64       // fraction of capacity subtracted from unreliable SoC
-	MaxUnreliableFrac     float64       // above this fraction of unreliable buses, use the safe profile
-	SurplusLaxityMin      float64       // spare power only goes to buses with less laxity than this
-	SwapUrgentLaxityMin   float64       // waiting buses with less laxity than this get swap suggestions
-	SwapDonorGapMin       float64       // donor bus must have at least this much more laxity
-	SwapMoveMin           int           // minutes a recommended swap takes before the incoming bus charges
-	LastPlanTTLMin        int           // how long the last valid plan may be reused
-	Timeout               time.Duration // max time for the normal layer
+	MarginKWh             float64 // extra battery energy planned on top of the route target
+	StaleAfterMin         int     // SoC readings older than this are unreliable
+	MinConfidence         float64 // SoC readings below this confidence are unreliable
+	UnreliablePenaltyFrac float64 // fraction of capacity subtracted from unreliable SoC
+	MaxUnreliableFrac     float64 // above this fraction of unreliable buses, use the safe profile
+	// SurplusLaxityMin: spare power only goes to buses with less laxity than this.
+	// The default (math.MaxFloat64) spends all spare power on every connected bus in
+	// laxity order (spec §6.4: readiness before peak flattening). A finite value, e.g.
+	// 120, flattens the peak by keeping buses with more laxity at just-in-time power;
+	// 0 gives spare power only to buses that cannot finish (negative laxity).
+	SurplusLaxityMin    float64
+	SwapUrgentLaxityMin float64       // waiting buses with less laxity than this get swap suggestions
+	SwapDonorGapMin     float64       // donor bus must have at least this much more laxity
+	SwapMoveMin         int           // minutes a recommended swap takes before the incoming bus charges
+	LastPlanTTLMin      int           // how long the last valid plan may be reused
+	Timeout             time.Duration // max time for the normal layer
 }
 
 func DefaultConfig() Config {
@@ -29,7 +35,7 @@ func DefaultConfig() Config {
 		MinConfidence:         0.5,
 		UnreliablePenaltyFrac: 0.10,
 		MaxUnreliableFrac:     0.5,
-		SurplusLaxityMin:      120,
+		SurplusLaxityMin:      math.MaxFloat64,
 		SwapUrgentLaxityMin:   60,
 		SwapDonorGapMin:       120,
 		SwapMoveMin:           5,

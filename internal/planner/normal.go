@@ -80,8 +80,8 @@ func newCandidate(cfg Config, in Input, b model.Bus, c model.Charger) candidate 
 }
 
 // allocate gives each bus the power that just meets its deadline (savable buses
-// first, least laxity first; doomed buses last), then spends spare power on buses
-// whose laxity is below cfg.SurplusLaxityMin.
+// first, least laxity first; doomed buses last), then spends spare power in the same
+// order on buses whose laxity is below cfg.SurplusLaxityMin (by default all of them).
 func allocate(cfg Config, budget float64, cands []*candidate) {
 	var savable, doomed []*candidate
 	for _, c := range cands {

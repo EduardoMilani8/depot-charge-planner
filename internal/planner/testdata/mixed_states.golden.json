@@ -111,7 +111,7 @@
       },
       {
         "ChargerID": "C4",
-        "KW": 24
+        "KW": 150
       }
     ],
     "Buses": [
@@ -145,7 +145,7 @@
         "WillReachTarget": true,
         "ShortfallKWh": 0,
         "LaxityMin": 420,
-        "Reason": "folga 420 min; 24.0 kW (leitura de SoC não confiável: estimativa conservadora)"
+        "Reason": "folga 420 min; 150.0 kW (leitura de SoC não confiável: estimativa conservadora)"
       },
       {
         "BusID": "W",

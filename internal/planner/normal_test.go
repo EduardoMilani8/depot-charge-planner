@@ -9,6 +9,14 @@ import (
 	"github.com/EduardoMilani8/depot-charge-planner/internal/model"
 )
 
+// justInTimeConfig keeps spare power away from buses with laxity >= 120 min (the
+// pre-I3 default), so tests about the just-in-time requirement see it unmodified.
+func justInTimeConfig() Config {
+	c := testConfig()
+	c.SurplusLaxityMin = 120
+	return c
+}
+
 func oneBus(limit float64, b model.Bus) Input {
 	return Input{
 		Now:      0,
@@ -18,9 +26,13 @@ func oneBus(limit float64, b model.Bus) Input {
 	}
 }
 
+// With SurplusLaxityMin set (peak flattening), a bus with plenty of laxity only gets
+// the power that just meets its deadline.
 func TestNormalJustInTime(t *testing.T) {
 	// need 120 kWh, 240 min left, laxity 192 min (>= 120): no surplus, just 30 kW.
-	p := PlanNormal(testConfig(), oneBus(1000, testBus("B1", "C1", 100, 220, 240)))
+	cfg := testConfig()
+	cfg.SurplusLaxityMin = 120
+	p := PlanNormal(cfg, oneBus(1000, testBus("B1", "C1", 100, 220, 240)))
 	if !near(sp(p, "C1"), 30) {
 		t.Errorf("setpoint = %v, want 30", sp(p, "C1"))
 	}
@@ -35,9 +47,30 @@ func TestNormalJustInTime(t *testing.T) {
 
 func TestNormalSurplusForLowLaxity(t *testing.T) {
 	// 100 min left: laxity 52 min (< 120): required 72 kW, surplus raises it to the max.
-	p := PlanNormal(testConfig(), oneBus(1000, testBus("B1", "C1", 100, 220, 100)))
+	cfg := testConfig()
+	cfg.SurplusLaxityMin = 120
+	p := PlanNormal(cfg, oneBus(1000, testBus("B1", "C1", 100, 220, 100)))
 	if !near(sp(p, "C1"), 150) {
 		t.Errorf("setpoint = %v, want 150", sp(p, "C1"))
+	}
+}
+
+// Default (spec §6.4, ruling I3): all spare power is spent, least laxity first, even
+// on buses with lots of laxity: readiness first, peak flattening second.
+func TestNormalDefaultSpendsAllSparePowerInLaxityOrder(t *testing.T) {
+	in := Input{
+		Site:     model.Site{LimitKW: 200, StepMin: 1},
+		Chargers: []model.Charger{testCharger("C1"), testCharger("C2")},
+		Buses: []model.Bus{
+			testBus("A", "C1", 100, 220, 600), // laxity 552, required 12 kW
+			testBus("B", "C2", 100, 220, 400), // laxity 352, required 18 kW
+		},
+	}
+	p := PlanNormal(testConfig(), in)
+	// Both get their requirement (30 kW), the 170 kW left go to B first (up to its
+	// 150 kW max: +132), then the remaining 38 kW to A.
+	if !near(sp(p, "C2"), 150) || !near(sp(p, "C1"), 50) {
+		t.Errorf("got A=%v B=%v, want 50/150", sp(p, "C1"), sp(p, "C2"))
 	}
 }
 
@@ -99,7 +132,7 @@ func TestNormalBatteryLimitBelowChargerFloor(t *testing.T) {
 func TestNormalUnreliableSoCIsConservative(t *testing.T) {
 	b := testBus("B1", "C1", 200, 220, 300)
 	b.SoCAgeMin = 100 // stale: 200 - 10% of 300 = 170, need 50 kWh over 300 min
-	p := PlanNormal(testConfig(), oneBus(1000, b))
+	p := PlanNormal(justInTimeConfig(), oneBus(1000, b))
 	if !near(sp(p, "C1"), 10) {
 		t.Errorf("setpoint = %v, want 10", sp(p, "C1"))
 	}
@@ -111,7 +144,7 @@ func TestNormalUnreliableSoCIsConservative(t *testing.T) {
 func TestNormalAbsurdSoCReadingsAssumeEmptyBattery(t *testing.T) {
 	for _, soc := range []float64{math.NaN(), -10, 500} {
 		b := testBus("B1", "C1", soc, 150, 300) // target 150 from 0, 300 min: 30 kW
-		p := PlanNormal(testConfig(), oneBus(1000, b))
+		p := PlanNormal(justInTimeConfig(), oneBus(1000, b))
 		if !near(sp(p, "C1"), 30) {
 			t.Errorf("soc %v: setpoint = %v, want 30", soc, sp(p, "C1"))
 		}
@@ -236,7 +269,7 @@ func TestNormalLeftoverBelowChargerFloorGivesZero(t *testing.T) {
 			testBus("B", "C2", 100, 220, 300),
 		},
 	}
-	p := PlanNormal(testConfig(), in)
+	p := PlanNormal(justInTimeConfig(), in)
 	if !near(sp(p, "C1"), 24) || sp(p, "C2") != 0 {
 		t.Errorf("got A=%v B=%v, want 24/0", sp(p, "C1"), sp(p, "C2"))
 	}
@@ -251,7 +284,7 @@ func TestNormalLeftoverBelowChargerFloorGivesZero(t *testing.T) {
 func TestNormalTinyRequirementIsRaisedToChargerFloor(t *testing.T) {
 	// need 1 kWh in 300 min -> 0.2 kW, below the 5 kW floor: setpoint is exactly 5.
 	in := oneBus(1000, testBus("B1", "C1", 100, 101, 300))
-	p := PlanNormal(testConfig(), in)
+	p := PlanNormal(justInTimeConfig(), in)
 	if sp(p, "C1") != 5 {
 		t.Errorf("setpoint = %v, want exactly 5", sp(p, "C1"))
 	}

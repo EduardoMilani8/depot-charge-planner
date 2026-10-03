@@ -79,7 +79,7 @@
       },
       {
         "ChargerID": "C2",
-        "KW": 33.684210526315795
+        "KW": 41.578947368421055
       },
       {
         "ChargerID": "C3",
@@ -101,7 +101,7 @@
         "WillReachTarget": true,
         "ShortfallKWh": 0,
         "LaxityMin": 232.6315789473684,
-        "Reason": "folga 233 min; 33.7 kW"
+        "Reason": "folga 233 min; 41.6 kW"
       },
       {
         "BusID": "B3",
