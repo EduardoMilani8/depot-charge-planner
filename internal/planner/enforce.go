@@ -17,6 +17,7 @@ const eps = 1e-6
 // independent of the planner layers: whoever computes is not who guarantees.
 func Violations(in Input, p Plan) []string {
 	chargers := chargerMap(in)
+	dupIDs := duplicateChargerIDs(in)
 	var out []string
 	seen := map[string]bool{}
 	total := 0.0
@@ -37,6 +38,11 @@ func Violations(in Input, p Plan) []string {
 		}
 		if !c.Healthy() && s.KW > 0 {
 			out = append(out, fmt.Sprintf("carregador indisponível %s recebeu %.1f kW", s.ChargerID, s.KW))
+		}
+		// An ID listed twice is ambiguous: we cannot know which entry's spec or
+		// status is real, so only 0 kW is allowed on it.
+		if dupIDs[s.ChargerID] && s.KW > 0 {
+			out = append(out, fmt.Sprintf("carregador %s listado mais de uma vez recebeu %.1f kW: só 0 kW é permitido", s.ChargerID, s.KW))
 		}
 		// 0 kW is always a legal setpoint, even for a charger whose spec is broken
 		// (e.g. a negative MaxKW): switching off can never exceed a ceiling. A positive
@@ -68,6 +74,7 @@ func Enforce(in Input, p Plan) Plan {
 		return p
 	}
 	chargers := chargerMap(in)
+	dupIDs := duplicateChargerIDs(in)
 	fixed := make([]Setpoint, 0, len(p.Setpoints))
 	seen := map[string]bool{}
 	total := 0.0
@@ -78,8 +85,8 @@ func Enforce(in Input, p Plan) Plan {
 		}
 		seen[s.ChargerID] = true
 		kw := math.Min(s.KW, c.MaxKW)
-		if !finite(kw) || kw < 0 || !finite(c.MaxKW) || !finite(c.MinKW) {
-			kw = 0 // broken charger spec: the only safe command is off
+		if !finite(kw) || kw < 0 || !finite(c.MaxKW) || !finite(c.MinKW) || dupIDs[s.ChargerID] {
+			kw = 0 // broken or ambiguous (duplicated) charger spec: the only safe command is off
 		}
 		fixed = append(fixed, Setpoint{ChargerID: s.ChargerID, KW: kw})
 		total += kw

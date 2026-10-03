@@ -223,3 +223,31 @@ func TestPlannerWithNilLoggerDoesNotPanic(t *testing.T) {
 		t.Errorf("violations: %v", Violations(in, p))
 	}
 }
+
+// The reviewer's case: a plan made while C1 was listed once is replayed (last-valid
+// or any other path) after a second, contradicting C1 entry appears. The facade must
+// never command the ambiguous charger.
+func TestPlannerNeverPowersDuplicatedChargerID(t *testing.T) {
+	tiny := testCharger("C1")
+	tiny.MaxKW, tiny.MinKW = 1, 0
+	faulted := testCharger("C1")
+	faulted.Status = model.ChargerFaulted
+	for name, dup := range map[string]model.Charger{"max 1 kW": tiny, "faulted": faulted, "identical": testCharger("C1")} {
+		t.Run(name, func(t *testing.T) {
+			pl := New(testConfig())
+			in := validInput()
+			if p := pl.Plan(in); sp(p, "C1") <= 0 {
+				t.Fatalf("setup: C1 should be powered first: %+v", p)
+			}
+			in.Now = 1
+			in.Chargers = append(in.Chargers, dup)
+			p := pl.Plan(in)
+			if v := Violations(in, p); len(v) != 0 {
+				t.Errorf("violations: %v", v)
+			}
+			if kw := sp(p, "C1"); kw != 0 {
+				t.Errorf("duplicated C1 must be at 0 kW, got %v (layer %v)", kw, p.Layer)
+			}
+		})
+	}
+}

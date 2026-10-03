@@ -11,12 +11,27 @@ func finite(x float64) bool { return !math.IsNaN(x) && !math.IsInf(x, 0) }
 
 func clamp(x, lo, hi float64) float64 { return math.Max(lo, math.Min(hi, x)) }
 
+// chargerMap indexes chargers by ID. If an ID is listed more than once the last entry
+// wins here; callers that must not trust such IDs use duplicateChargerIDs.
 func chargerMap(in Input) map[string]model.Charger {
 	m := make(map[string]model.Charger, len(in.Chargers))
 	for _, c := range in.Chargers {
 		m[c.ID] = c
 	}
 	return m
+}
+
+// duplicateChargerIDs returns the IDs listed by more than one charger entry.
+func duplicateChargerIDs(in Input) map[string]bool {
+	seen := make(map[string]bool, len(in.Chargers))
+	dup := map[string]bool{}
+	for _, c := range in.Chargers {
+		if seen[c.ID] {
+			dup[c.ID] = true
+		}
+		seen[c.ID] = true
+	}
+	return dup
 }
 
 // presentBuses returns buses that have arrived, sorted by ID for determinism.

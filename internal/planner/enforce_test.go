@@ -233,3 +233,45 @@ func TestEnforceHugeLimitsSurviveRounding(t *testing.T) {
 		}
 	}
 }
+
+// A charger ID listed twice is ambiguous (which spec, which status is real?): any
+// positive setpoint on it is a violation, whatever the entries say, and Enforce
+// switches it off.
+func TestDuplicateChargerIDIsAViolation(t *testing.T) {
+	tiny := testCharger("C1")
+	tiny.MaxKW, tiny.MinKW = 1, 0
+	faulted := testCharger("C1")
+	faulted.Status = model.ChargerFaulted
+	offline := testCharger("C1")
+	offline.Status = model.ChargerOffline
+	unknown := testCharger("C1")
+	unknown.Status = model.ChargerStatus(42)
+	for name, dup := range map[string]model.Charger{
+		"identical": testCharger("C1"), "max 1 kW": tiny, "faulted": faulted,
+		"offline": offline, "unknown status": unknown,
+	} {
+		for _, order := range []string{"dup last", "dup first"} {
+			t.Run(name+"/"+order, func(t *testing.T) {
+				cs := []model.Charger{testCharger("C1"), dup, testCharger("C2")}
+				if order == "dup first" {
+					cs[0], cs[1] = cs[1], cs[0]
+				}
+				in := Input{Site: model.Site{LimitKW: 1000, StepMin: 1}, Chargers: cs}
+				p := Plan{Setpoints: []Setpoint{{"C1", 50}, {"C2", 50}}}
+				if len(Violations(in, p)) == 0 {
+					t.Fatal("50 kW on a duplicated charger ID must be a violation")
+				}
+				got := Enforce(in, p)
+				if v := Violations(in, got); len(v) != 0 {
+					t.Errorf("enforced plan still violates: %v", v)
+				}
+				if sp(got, "C1") != 0 || sp(got, "C2") != 50 {
+					t.Errorf("want C1 off and C2 untouched, got %+v", got.Setpoints)
+				}
+				if v := Violations(in, Plan{Setpoints: []Setpoint{{"C1", 0}}}); len(v) != 0 {
+					t.Errorf("0 kW must stay legal: %v", v)
+				}
+			})
+		}
+	}
+}
