@@ -168,12 +168,12 @@ func (cd *candidate) status() BusStatus {
 		st.Reason = "limite da bateria abaixo do piso do carregador: não é possível carregar"
 	case cd.allocKW == 0:
 		st.Reason = "sem potência disponível dentro do limite da garagem"
-	case cd.laxityMin < 0:
+	case cd.laxityMin < 0 && !st.WillReachTarget: // a hair below 0 that still delivers is not infeasible
 		st.Reason = fmt.Sprintf("inviável: mesmo na potência máxima faltam %.0f min; déficit previsto %.1f kWh", -cd.laxityMin, st.ShortfallKWh)
 	case !st.WillReachTarget:
 		st.Reason = fmt.Sprintf("potência insuficiente: %.1f de %.1f kW necessários; déficit previsto %.1f kWh", cd.allocKW, cd.requiredKW, st.ShortfallKWh)
 	default:
-		st.Reason = fmt.Sprintf("folga %.0f min; %.1f kW", cd.laxityMin, cd.allocKW)
+		st.Reason = fmt.Sprintf("folga %.0f min; %.1f kW", math.Max(0, cd.laxityMin), cd.allocKW)
 	}
 	if !cd.reliable && cd.need > 0 {
 		st.Reason += " (leitura de SoC não confiável: estimativa conservadora)"
@@ -216,7 +216,9 @@ func PlanNormal(cfg Config, in Input) Plan {
 			cands = append(cands, &cd)
 		}
 	}
-	allocate(cfg, AvailableKW(in), cands)
+	budget := AvailableKW(in)
+	plan.Swaps = recommendSwaps(cfg, in, budget, cands, idles) // works on copies: before allocate
+	allocate(cfg, budget, cands)
 	for _, cd := range cands {
 		plan.Setpoints = append(plan.Setpoints, Setpoint{ChargerID: cd.charger.ID, KW: cd.allocKW})
 		plan.Buses = append(plan.Buses, cd.status())
@@ -224,7 +226,6 @@ func PlanNormal(cfg Config, in Input) Plan {
 	for _, ib := range idles {
 		plan.Buses = append(plan.Buses, idleStatus(cfg, ib))
 	}
-	plan.Swaps = recommendSwaps(cfg, in, cands, idles)
 	sort.Slice(plan.Setpoints, func(i, j int) bool { return plan.Setpoints[i].ChargerID < plan.Setpoints[j].ChargerID })
 	sort.Slice(plan.Buses, func(i, j int) bool { return plan.Buses[i].BusID < plan.Buses[j].BusID })
 	return plan

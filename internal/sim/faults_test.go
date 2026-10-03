@@ -320,17 +320,20 @@ func TestFaultSoCNoiseIdenticalAcrossControllers(t *testing.T) {
 // so the second half holds by construction; uniqueness is what can break) while the
 // planner's swaps are followed and a charger fails and recovers.
 //
-// Scenario: 2 chargers (150 kW each), buses B1 (departs at 400, 150 -> 240 kWh, lots of
-// slack), B2 and B3 (depart at 200, 0 -> 240 kWh). B1 and B2 take the chargers; B3 waits.
-// A bus with 240 kWh to gain needs about 240/0.95/150 h = 101 min of full power, so B3's
-// laxity (200 - t - 101 min) drops under SwapUrgentLaxityMin (60) around t = 40, while
-// B1's laxity is above 250 min: the gap exceeds SwapDonorGapMin (120), so the planner
-// recommends B1 -> B3 on C1, and the world executes it (FollowSwaps). C1 then fails in
-// [100, 140) while it holds B3, so the failure window overlaps the swapped state.
+// Scenario: 2 chargers (150 kW each), buses B1 (departs at 400, already above its 240 kWh
+// target plus margin: it only occupies C1), B2 and B3 (depart at 200, 0 -> 240 kWh). B1 and B2 take
+// the chargers; B3 waits. A bus with 240 kWh to gain needs about 240/0.95/150 h = 101 min
+// of full power, so B3's laxity (200 - t - 101 min) drops under SwapUrgentLaxityMin (60)
+// around t = 40, while B1's laxity is above 250 min: the gap exceeds SwapDonorGapMin
+// (120) and the swap adds a ready bus (B1 stays ready, B3 becomes savable), so the
+// planner recommends B1 -> B3 on C1, and the world executes it (FollowSwaps). C1 then
+// fails in [100, 140) while it holds B3, so the failure window overlaps the swapped state.
+// (B1 used to start at 150 kWh; since swaps never strip a donor that is still on track
+// to its target, B1 starts full so the swap is a real improvement.)
 // The test requires that the swap actually happened (otherwise it checks nothing).
 func TestFaultNoChargerSharedUnderSwapsAndFailures(t *testing.T) {
 	sc := twoBusScenario()
-	sc.Buses[0].Bus.SoCKWh = 150
+	sc.Buses[0].Bus.SoCKWh = 270 // above the 240 kWh target plus the planner's 10 kWh margin
 	sc.Buses[0].Bus.DepartureMin = 400
 	sc.Buses = append(sc.Buses, BusSpec{Bus: model.Bus{
 		ID: "B3", CapacityKWh: 300, SoCKWh: 0, SoCConfidence: 1, TargetKWh: 240,

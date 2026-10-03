@@ -262,3 +262,18 @@ func TestNormalTinyRequirementIsRaisedToChargerFloor(t *testing.T) {
 		t.Errorf("plan violates invariants: %v", v)
 	}
 }
+
+// A laxity a hair below zero (float rounding) with full power still delivering the
+// need: the bus will reach its target and must not be called infeasible.
+func TestNormalEpsilonNegativeLaxityIsNotInfeasible(t *testing.T) {
+	b := testBus("B1", "C1", 100, 250+1e-9, 60)
+	b.CapacityKWh = 400 // keep the target below the taper knee
+	p := PlanNormal(testConfig(), oneBus(1000, b))
+	st := statusOf(p, "B1")
+	if !st.WillReachTarget {
+		t.Fatalf("B1 should reach its target: %+v", st)
+	}
+	if strings.Contains(st.Reason, "inviável") || strings.Contains(st.Reason, "faltam") {
+		t.Errorf("reason contradicts WillReachTarget: %q", st.Reason)
+	}
+}

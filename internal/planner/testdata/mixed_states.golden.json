@@ -161,7 +161,7 @@
         "ChargerID": "C1",
         "OutBusID": "A",
         "InBusID": "W",
-        "Reason": "ônibus W tem folga de 19 min e precisa de carregador; ônibus A tem folga de 600 min"
+        "Reason": "ônibus W (folga de 14 min no carregador C1, contando 5 min da troca) precisa de carregador; ônibus A tem folga de 600 min e cede o C1; ônibus prontos previstos passam de 2 para 3"
       }
     ],
     "Notes": null

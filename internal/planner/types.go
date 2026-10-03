@@ -17,6 +17,7 @@ type Config struct {
 	SurplusLaxityMin      float64       // spare power only goes to buses with less laxity than this
 	SwapUrgentLaxityMin   float64       // waiting buses with less laxity than this get swap suggestions
 	SwapDonorGapMin       float64       // donor bus must have at least this much more laxity
+	SwapMoveMin           int           // minutes a recommended swap takes before the incoming bus charges
 	LastPlanTTLMin        int           // how long the last valid plan may be reused
 	Timeout               time.Duration // max time for the normal layer
 }
@@ -31,6 +32,7 @@ func DefaultConfig() Config {
 		SurplusLaxityMin:      120,
 		SwapUrgentLaxityMin:   60,
 		SwapDonorGapMin:       120,
+		SwapMoveMin:           5,
 		LastPlanTTLMin:        10,
 		Timeout:               500 * time.Millisecond,
 	}

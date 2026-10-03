@@ -7,6 +7,10 @@ import (
 	"github.com/EduardoMilani8/depot-charge-planner/internal/model"
 )
 
+// maxSwapTrials bounds how many hypothetical swaps one planning cycle evaluates (each
+// one re-runs the allocation), so swap search never threatens the cycle's latency.
+const maxSwapTrials = 256
+
 // bestCharger returns the healthy charger with the highest max power (ties by ID).
 func bestCharger(in Input) (model.Charger, bool) {
 	var best model.Charger
@@ -22,7 +26,38 @@ func bestCharger(in Input) (model.Charger, bool) {
 	return best, found
 }
 
-func recommendSwaps(cfg Config, in Input, cands []*candidate, idles []idleBus) []Swap {
+// reachCount allocates budget over copies of cands (the originals are untouched) and
+// returns how many buses will reach their target: connected buses per their status,
+// waiting buses only if they already need nothing.
+func reachCount(cfg Config, budget float64, cands []candidate, waiting []model.Bus) int {
+	ptrs := make([]*candidate, len(cands))
+	for i := range cands {
+		c := cands[i]
+		c.allocKW = 0
+		ptrs[i] = &c
+	}
+	allocate(cfg, budget, ptrs)
+	n := 0
+	for _, c := range ptrs {
+		if c.status().WillReachTarget {
+			n++
+		}
+	}
+	for _, b := range waiting {
+		if idleStatus(cfg, idleBus{bus: b}).WillReachTarget {
+			n++
+		}
+	}
+	return n
+}
+
+// recommendSwaps suggests moves (executed by people) that put an urgent waiting bus
+// on the charger of a connected bus that can give way. A swap is recommended only if
+// it increases the number of buses that reach their target under the current budget,
+// re-running the allocation with the swap applied (the incoming bus starts charging
+// cfg.SwapMoveMin minutes later). Swaps are chosen greedily: each one is judged on
+// the state left by the swaps already recommended in this cycle.
+func recommendSwaps(cfg Config, in Input, budget float64, cands []*candidate, idles []idleBus) []Swap {
 	ref, ok := bestCharger(in)
 	if !ok || len(idles) == 0 || len(cands) == 0 {
 		return nil
@@ -41,6 +76,8 @@ func recommendSwaps(cfg Config, in Input, cands []*candidate, idles []idleBus) [
 			return nil // a free charger exists: the waiting bus just plugs in there
 		}
 	}
+	// Screen: waiting buses that need charge and have little laxity even on the best
+	// charger. Whether a swap really helps is decided below on the donor's charger.
 	type urgent struct {
 		bus    model.Bus
 		laxity float64
@@ -52,35 +89,84 @@ func recommendSwaps(cfg Config, in Input, cands []*candidate, idles []idleBus) [
 			urgents = append(urgents, urgent{ib.bus, cd.laxityMin})
 		}
 	}
+	if len(urgents) == 0 {
+		return nil
+	}
 	sort.Slice(urgents, func(i, j int) bool {
 		if urgents[i].laxity != urgents[j].laxity {
 			return urgents[i].laxity < urgents[j].laxity
 		}
 		return urgents[i].bus.ID < urgents[j].bus.ID
 	})
-	donors := append([]*candidate(nil), cands...)
-	sort.Slice(donors, func(i, j int) bool {
-		if donors[i].laxityMin != donors[j].laxityMin {
-			return donors[i].laxityMin > donors[j].laxityMin
-		}
-		return donors[i].bus.ID < donors[j].bus.ID
-	})
+
+	state := make([]candidate, len(cands))
+	for i, cd := range cands {
+		state[i] = *cd
+	}
+	waiting := make([]model.Bus, 0, len(idles))
+	for _, ib := range idles {
+		waiting = append(waiting, ib.bus)
+	}
+	moved := map[string]bool{} // buses already part of a recommended swap
+	base := reachCount(cfg, budget, state, waiting)
+	later := in
+	later.Now += cfg.SwapMoveMin
+	trials := 0
 	var swaps []Swap
-	for i, u := range urgents {
-		if i >= len(donors) {
-			break
+	for _, u := range urgents {
+		// Donors: connected buses, most laxity first, that would not lose a ready
+		// bus by giving way (already at target, or not reaching it anyway).
+		order := make([]int, 0, len(state))
+		for i := range state {
+			if !moved[state[i].bus.ID] {
+				order = append(order, i)
+			}
 		}
-		d := donors[i]
-		if d.laxityMin-u.laxity < cfg.SwapDonorGapMin {
-			break
-		}
-		swaps = append(swaps, Swap{
-			ChargerID: d.charger.ID,
-			OutBusID:  d.bus.ID,
-			InBusID:   u.bus.ID,
-			Reason: fmt.Sprintf("ônibus %s tem folga de %.0f min e precisa de carregador; ônibus %s tem folga de %.0f min",
-				u.bus.ID, u.laxity, d.bus.ID, finiteLaxity(d.laxityMin)),
+		sort.Slice(order, func(a, b int) bool {
+			da, db := state[order[a]], state[order[b]]
+			if da.laxityMin != db.laxityMin {
+				return da.laxityMin > db.laxityMin
+			}
+			return da.bus.ID < db.bus.ID
 		})
+		for _, i := range order {
+			if trials >= maxSwapTrials {
+				return swaps
+			}
+			d := state[i]
+			in := newCandidate(cfg, later, u.bus, d.charger)
+			if in.unusable || in.need <= 0 || d.laxityMin-in.laxityMin < cfg.SwapDonorGapMin {
+				continue
+			}
+			trials++
+			trial := append([]candidate(nil), state...)
+			trial[i] = in
+			trialWaiting := append(withoutBus(waiting, u.bus.ID), d.bus)
+			n := reachCount(cfg, budget, trial, trialWaiting)
+			if n <= base {
+				continue
+			}
+			swaps = append(swaps, Swap{
+				ChargerID: d.charger.ID,
+				OutBusID:  d.bus.ID,
+				InBusID:   u.bus.ID,
+				Reason: fmt.Sprintf("ônibus %s (folga de %.0f min no carregador %s, contando %d min da troca) precisa de carregador; ônibus %s tem folga de %.0f min e cede o %s; ônibus prontos previstos passam de %d para %d",
+					u.bus.ID, in.laxityMin, d.charger.ID, cfg.SwapMoveMin, d.bus.ID, finiteLaxity(d.laxityMin), d.charger.ID, base, n),
+			})
+			state, waiting, base = trial, trialWaiting, n
+			moved[u.bus.ID], moved[d.bus.ID] = true, true
+			break
+		}
 	}
 	return swaps
+}
+
+func withoutBus(buses []model.Bus, id string) []model.Bus {
+	out := make([]model.Bus, 0, len(buses))
+	for _, b := range buses {
+		if b.ID != id {
+			out = append(out, b)
+		}
+	}
+	return out
 }
