@@ -67,13 +67,15 @@ func TestBaselinesNeverViolateLimit(t *testing.T) {
 // investigate with `go run ./cmd/simrun -profile <p> -limit <kW>` before changing anything.
 //
 // Spec §12: the planner's mean ready% must be >= every baseline's under the SAME site
-// limit, for every fault profile. Checked at a loose (2000 kW), a medium (1200 kW) and
-// a tight (600 kW) limit, where before the budget-aware swaps the planner lost to FIFO.
+// limit, for every fault profile. Checked from a loose (2000 kW) to a very tight
+// (300 kW) limit: before the budget-aware swaps the planner lost to FIFO at 600 kW, and
+// before admission at 300-500 kW. Every subtest is deterministic (seeds 1..N through
+// Generate); the thinnest margin is at 300 kW random (17.4 vs fifo 16.8 at 20 seeds).
 // Besides the spec's FIFO and EDF it is also compared with fifo-unplug (FIFO plus
 // operators unplugging charged buses), since the planner's own runs assume operators
 // follow its swaps.
 func TestPlannerNotWorseThanBaselines(t *testing.T) {
-	for _, limit := range []float64{2000, 1200, 600, 500, 400} {
+	for _, limit := range []float64{2000, 1200, 800, 600, 500, 400, 300} {
 		for _, profile := range allProfiles {
 			t.Run(fmt.Sprintf("%.0fkW/%s", limit, profile), func(t *testing.T) {
 				t.Parallel()
