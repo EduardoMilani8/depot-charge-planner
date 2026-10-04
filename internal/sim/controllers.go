@@ -76,9 +76,10 @@ func (safeController) Plan(in planner.Input) planner.Plan {
 }
 
 // NewPlannerController wraps the real planner, injecting the scenario's planner faults
-// (panic or slowness) into its normal layer.
+// (panic, slowness or invalid output) into its normal layer.
 func NewPlannerController(cfg planner.Config, sc Scenario) Controller {
 	normal := func(c planner.Config, in planner.Input) planner.Plan {
+		garbage := -1
 		for _, f := range sc.Faults {
 			if !f.Active(in.Now) {
 				continue
@@ -88,9 +89,59 @@ func NewPlannerController(cfg planner.Config, sc Scenario) Controller {
 				panic("injected planner fault")
 			case FaultPlannerSlow:
 				time.Sleep(2 * c.Timeout)
+			case FaultPlannerGarbage:
+				garbage = in.Now + int(f.Value)
 			}
 		}
-		return planner.PlanNormal(c, in)
+		p := planner.PlanNormal(c, in)
+		if garbage >= 0 {
+			p = garbagePlan(p, in, garbage%4)
+		}
+		return p
 	}
 	return planner.New(cfg).WithNormal(normal)
+}
+
+// garbagePlan corrupts a plan the way a buggy normal layer could, so that the
+// verifier (planner.Enforce) has something to correct in simulator runs. Every kind
+// breaks at least one invariant whatever the input:
+//
+//	0: every listed charger (faulted and offline ones too) at twice its ceiling plus
+//	   1 kW, and the site limit plus 1 kW on an unknown charger;
+//	1: an unknown charger and a NaN setpoint;
+//	2: every setpoint listed twice at double power, and an unknown charger;
+//	3: +Inf and negative setpoints, and an unknown charger at +Inf.
+func garbagePlan(p planner.Plan, in planner.Input, kind int) planner.Plan {
+	ghost := planner.Setpoint{ChargerID: "GHOST", KW: in.Site.LimitKW + 1}
+	var sps []planner.Setpoint
+	switch kind {
+	case 0:
+		for _, c := range in.Chargers {
+			sps = append(sps, planner.Setpoint{ChargerID: c.ID, KW: 2*c.MaxKW + 1})
+		}
+		sps = append(sps, ghost)
+	case 1:
+		sps = append(append(sps, p.Setpoints...), ghost, planner.Setpoint{ChargerID: "NAN", KW: math.NaN()})
+		if len(p.Setpoints) > 0 {
+			sps[0].KW = math.NaN()
+		}
+	case 2:
+		for _, s := range p.Setpoints {
+			s.KW *= 2
+			sps = append(sps, s, s)
+		}
+		sps = append(sps, ghost)
+	default:
+		for i, s := range p.Setpoints {
+			if i%2 == 0 {
+				s.KW = math.Inf(1)
+			} else {
+				s.KW = -5
+			}
+			sps = append(sps, s)
+		}
+		sps = append(sps, planner.Setpoint{ChargerID: "GHOST", KW: math.Inf(1)})
+	}
+	p.Setpoints = sps
+	return p
 }

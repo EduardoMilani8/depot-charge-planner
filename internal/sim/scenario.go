@@ -22,6 +22,7 @@ const (
 	FaultEarlyDeparture FaultKind = "early_departure"  // Target: bus ID; From: when announced; Value: new departure minute
 	FaultPlannerPanic   FaultKind = "planner_panic"    // the normal layer panics while active
 	FaultPlannerSlow    FaultKind = "planner_slow"     // the normal layer exceeds its timeout while active
+	FaultPlannerGarbage FaultKind = "planner_garbage"  // the normal layer returns invalid setpoints while active (Value shifts the kind of garbage)
 )
 
 // forever is a To value for permanent faults.

@@ -134,7 +134,9 @@ func genFaults(rng *rand.Rand, profile FaultProfile, sc *Scenario) {
 }
 
 // genRandomFaults draws each fault kind with probability 1/2, with random count,
-// window and intensity. Planner slowness is kept to a few short windows because every
+// window and intensity. Planner panics sometimes overlap a limit drop, and the normal
+// layer sometimes returns invalid output (planner_garbage), so the planner's verifier
+// and fallback are exercised, not only its normal layer. Planner slowness is kept to a few short windows because every
 // slow cycle really waits for the planner timeout.
 func genRandomFaults(rng *rand.Rand, sc *Scenario, add func(Fault), charger func() string, bus func() *BusSpec) {
 	horizon := sc.Horizon
@@ -219,7 +221,20 @@ func genRandomFaults(rng *rand.Rand, sc *Scenario, add func(Fault), charger func
 	if maybe() {
 		for i := 0; i <= rng.Intn(3); i++ {
 			from := rng.Intn(horizon)
-			add(Fault{Kind: FaultPlannerPanic, From: from, To: from + 1 + rng.Intn(20)})
+			to := from + 1 + rng.Intn(20)
+			add(Fault{Kind: FaultPlannerPanic, From: from, To: to})
+			// Sometimes the limit drops while the planner is down: the last-valid
+			// plan was made for the higher limit and the verifier must scale it down.
+			if maybe() {
+				drop := from + rng.Intn(to-from)
+				add(Fault{Kind: FaultLimitDrop, From: drop, To: to + rng.Intn(60), Value: 0.2 + 0.6*rng.Float64()})
+			}
+		}
+	}
+	if maybe() {
+		for i := 0; i <= rng.Intn(3); i++ {
+			from := rng.Intn(horizon)
+			add(Fault{Kind: FaultPlannerGarbage, From: from, To: from + 1 + rng.Intn(20), Value: float64(rng.Intn(4))})
 		}
 	}
 	if maybe() {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -100,11 +101,13 @@ func TestPlannerNotWorseThanBaselines(t *testing.T) {
 }
 
 // checkingController asserts, every cycle, that the planner's plan satisfies the
-// invariants for the observation it was given (not only the commanded total).
+// invariants for the observation it was given (not only the commanded total). If
+// corrected is not nil it counts the plans the planner's verifier had to correct.
 type checkingController struct {
-	t     *testing.T
-	inner Controller
-	label string
+	t         *testing.T
+	inner     Controller
+	label     string
+	corrected *int
 }
 
 func (c checkingController) Plan(in planner.Input) planner.Plan {
@@ -112,23 +115,42 @@ func (c checkingController) Plan(in planner.Input) planner.Plan {
 	if v := planner.Violations(in, p); len(v) != 0 {
 		c.t.Fatalf("%s minute %d: invalid plan (layer %v): %v", c.label, in.Now, p.Layer, v)
 	}
+	if c.corrected != nil {
+		for _, n := range p.Notes {
+			if strings.HasPrefix(n, "verificador corrigiu") {
+				*c.corrected++
+				break
+			}
+		}
+	}
 	return p
 }
 
 // Spec §7 fuzz mode: random combinations and intensities of every fault kind. The
 // planner must return a valid plan on every cycle and never command above the limit.
+// The random profile makes the normal layer return invalid output (planner_garbage)
+// and the limit drop while the planner is down, so this test fails if the verifier
+// stops correcting plans (checked by mutation: Enforce returning its plan unchanged).
 func TestPlannerRandomFaultsKeepInvariants(t *testing.T) {
-	for seed := int64(1); seed <= int64(seedCount(20, 3)); seed++ {
+	seeds := seedCount(20, 3)
+	corrected, lastValid := 0, 0
+	for seed := int64(1); seed <= int64(seeds); seed++ {
 		p := DefaultGenParams()
 		p.Profile = ProfileRandom
 		sc := Generate(p, seed)
 		label := fmt.Sprintf("random seed %d", seed)
-		m := Run(sc, checkingController{t: t, inner: NewPlannerController(propertyConfig(), sc), label: label}, nil)
+		m := Run(sc, checkingController{t: t, inner: NewPlannerController(propertyConfig(), sc), label: label, corrected: &corrected}, nil)
 		if m.PlanViolations != 0 {
 			t.Fatalf("%s: %d plan violations (reproduce with Generate and this seed)", label, m.PlanViolations)
 		}
 		if m.LayerTicks["normal"] == 0 {
 			t.Errorf("%s: the normal layer never ran: %v", label, m.LayerTicks)
 		}
+		lastValid += m.LayerTicks["last-valid"]
+	}
+	// Not vacuous: the verifier corrected plans and the last-valid fallback ran.
+	t.Logf("%d seeds: %d corrected plans, %d last-valid ticks", seeds, corrected, lastValid)
+	if corrected == 0 || lastValid == 0 {
+		t.Errorf("the random profile did not exercise the verifier/fallback: corrected %d, last-valid ticks %d", corrected, lastValid)
 	}
 }

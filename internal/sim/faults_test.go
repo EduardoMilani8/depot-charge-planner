@@ -2,6 +2,7 @@ package sim
 
 import (
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -186,6 +187,68 @@ func TestFaultPlannerPanicFallsBackToLastValidPlan(t *testing.T) {
 	}
 	if m.Ready != 1 || m.PlanViolations != 0 {
 		t.Errorf("%+v", m)
+	}
+}
+
+// While a planner_garbage fault is active the normal layer returns bad output (above
+// charger ceilings and the site limit, unknown or unhealthy chargers, NaN, Inf or
+// negative setpoints, duplicate IDs). The verifier must correct every such plan: each
+// cycle's plan is valid for its observation, and the corrections really happened.
+func TestFaultPlannerGarbageIsCorrectedByTheVerifier(t *testing.T) {
+	sc := twoBusScenario()
+	sc.Chargers = append(sc.Chargers, model.Charger{ID: "C3", MaxKW: 150, MinKW: 5, Efficiency: 0.95, Status: model.ChargerOK})
+	sc.Faults = []Fault{
+		{Kind: FaultChargerFail, Target: "C3", From: 0, To: forever},
+		{Kind: FaultPlannerGarbage, From: 10, To: 30},
+	}
+	rc := &recordingController{inner: checkingController{t: t, inner: plannerCtrl(sc), label: "garbage"}}
+	m := Run(sc, rc, nil)
+	if m.PlanViolations != 0 {
+		t.Errorf("plan violations: %+v", m)
+	}
+	corrected := 0
+	for min := 10; min < 30; min++ {
+		for _, n := range rc.plans[min].Notes {
+			if strings.HasPrefix(n, "verificador corrigiu") {
+				corrected++
+				break
+			}
+		}
+	}
+	if corrected != 20 {
+		t.Errorf("the verifier corrected %d of the 20 garbage cycles, want all 20", corrected)
+	}
+	for min := 30; min < 40; min++ {
+		for _, n := range rc.plans[min].Notes {
+			if strings.HasPrefix(n, "verificador corrigiu") {
+				t.Errorf("minute %d: the fault is over but the verifier still corrected: %v", min, rc.plans[min].Notes)
+			}
+		}
+	}
+}
+
+// A planner panic while the site limit drops: the last-valid plan was made for the
+// higher limit and must be scaled down to the new one.
+func TestFaultPlannerPanicDuringLimitDropIsScaledDown(t *testing.T) {
+	sc := twoBusScenario()
+	sc.Faults = []Fault{
+		{Kind: FaultPlannerPanic, From: 10, To: 15},
+		{Kind: FaultLimitDrop, From: 12, To: 20, Value: 0.5},
+	}
+	rc := &recordingController{inner: checkingController{t: t, inner: plannerCtrl(sc), label: "panic+drop"}}
+	m := Run(sc, rc, nil)
+	if m.PlanViolations != 0 {
+		t.Errorf("plan violations: %+v", m)
+	}
+	for min := 12; min < 15; min++ {
+		p := rc.plans[min]
+		total := 0.0
+		for _, s := range p.Setpoints {
+			total += s.KW
+		}
+		if p.Layer != planner.LayerLastValid || total > 150+1e-6 || total <= 0 {
+			t.Errorf("minute %d: want the last-valid plan scaled to the 150 kW limit, got layer %v total %.1f", min, p.Layer, total)
+		}
 	}
 }
 

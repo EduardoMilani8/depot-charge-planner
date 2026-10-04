@@ -97,7 +97,7 @@ func TestRandomProfileCombinesEveryFaultKind(t *testing.T) {
 	}
 	for _, k := range []FaultKind{FaultChargerFail, FaultChargerOffline, FaultLimitDrop, FaultSoCNoise,
 		FaultSoCBias, FaultSoCFreeze, FaultSoCMissing, FaultConsumption, FaultLateArrival,
-		FaultEarlyDeparture, FaultPlannerPanic, FaultPlannerSlow} {
+		FaultEarlyDeparture, FaultPlannerPanic, FaultPlannerSlow, FaultPlannerGarbage} {
 		if !kinds[k] {
 			t.Errorf("random profile never injected %s in 20 seeds", k)
 		}
