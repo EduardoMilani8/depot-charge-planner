@@ -25,7 +25,18 @@ type Config struct {
 	// swap. The default (math.MaxFloat64) considers every waiting bus that needs charge;
 	// a finite value (the old default was 60) recommends fewer, later moves.
 	SwapUrgentLaxityMin float64
-	SwapMoveMin         int           // minutes a recommended swap takes before the incoming bus charges
+	SwapMoveMin         int // minutes a recommended swap takes before the incoming bus charges
+	// Anti-thrash, applied by Planner (which remembers the buses it told to give way;
+	// the pure PlanNormal sees one snapshot and never applies it). A bus told to give
+	// way that is still waiting unplugged is recommended back onto a charger only if
+	// SwapBackCooldownMin minutes have passed AND its need, computed from the MEAN of
+	// its fresh readings since it was unplugged (its SoC is constant while it waits),
+	// is above SwapBackMinNeedKWh. Defaults 30 min and 10 kWh: with the default
+	// MarginKWh of 10 the mean must be below the route target itself. Setting both to
+	// 0 turns the rule off (measured: over 1000 swaps per night at 2000 kW with noisy
+	// readings, see README).
+	SwapBackCooldownMin int
+	SwapBackMinNeedKWh  float64
 	LastPlanTTLMin      int           // how long the last valid plan may be reused
 	Timeout             time.Duration // max time for the normal layer
 }
@@ -40,6 +51,8 @@ func DefaultConfig() Config {
 		SurplusLaxityMin:      math.MaxFloat64,
 		SwapUrgentLaxityMin:   math.MaxFloat64,
 		SwapMoveMin:           5,
+		SwapBackCooldownMin:   30,
+		SwapBackMinNeedKWh:    10,
 		LastPlanTTLMin:        10,
 		Timeout:               500 * time.Millisecond,
 	}

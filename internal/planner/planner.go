@@ -21,7 +21,8 @@ import (
 type NormalFunc func(Config, Input) Plan
 
 // Planner wraps the layers with graceful degradation. It is the only stateful
-// piece: it remembers the last valid plan. Not safe for concurrent use.
+// piece: it remembers the last valid plan and the buses it told to give way (see
+// swapMemory). Not safe for concurrent use.
 type Planner struct {
 	cfg     Config
 	normal  NormalFunc
@@ -29,6 +30,7 @@ type Planner struct {
 	last    Plan
 	hasLast bool
 	lastAt  model.Minute
+	swaps   swapMemory
 }
 
 func New(cfg Config) *Planner {
@@ -77,6 +79,11 @@ func (p *Planner) Plan(in Input) Plan {
 	}
 	plan.Layer = LayerNormal
 	plan = p.finish(in, s, plan)
+	p.swaps.observe(p.cfg, s.in)
+	var notes []string
+	plan.Swaps, notes = p.swaps.filter(p.cfg, s.in, plan.Swaps)
+	plan.Notes = append(plan.Notes, notes...)
+	p.swaps.remember(p.cfg, in.Now, plan.Swaps)
 	p.last, p.hasLast, p.lastAt = clonePlan(plan), true, in.Now
 	return s.annotate(p.cfg, plan)
 }

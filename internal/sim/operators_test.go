@@ -134,3 +134,25 @@ func TestOperatorMovesCountsExecutedSwapsAndUnplugs(t *testing.T) {
 		t.Errorf("Aggregate must average the moves per run: %v", a.OperatorMoves)
 	}
 }
+
+// Swap thrash under noisy SoC readings (fix round 3): with the anti-thrash rule off,
+// the planner asked for over 1000 moves per night at 2000 kW in the mild and severe
+// profiles (a bus that gave way was swapped back whenever noise made it look short).
+// With the defaults it stays near the noise-free 25 moves per night.
+func TestPlannerSwapsDoNotThrashUnderNoisySoC(t *testing.T) {
+	for _, profile := range []FaultProfile{ProfileMild, ProfileSevere} {
+		var runs []Metrics
+		for seed := int64(1); seed <= int64(seedCount(3, 1)); seed++ {
+			p := DefaultGenParams()
+			p.LimitKW = 2000
+			p.Profile = profile
+			sc := Generate(p, seed)
+			runs = append(runs, Run(sc, NewPlannerController(propertyConfig(), sc), nil))
+		}
+		if moves := Aggregate(runs).OperatorMoves; moves > 100 {
+			t.Errorf("%s at 2000 kW: %.1f moves per night, want at most 100 (noise-free: 25)", profile, moves)
+		} else {
+			t.Logf("%s at 2000 kW: %.1f moves per night", profile, moves)
+		}
+	}
+}

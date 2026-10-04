@@ -112,6 +112,8 @@ type logConfig struct {
 	SurplusLaxityMin      logFloat
 	SwapUrgentLaxityMin   logFloat
 	SwapMoveMin           int
+	SwapBackCooldownMin   int      // absent in older logs: 0 (anti-thrash off)
+	SwapBackMinNeedKWh    logFloat // absent in older logs: 0
 	LastPlanTTLMin        int
 	Timeout               time.Duration
 }
@@ -121,7 +123,8 @@ func toLogConfig(c planner.Config) logConfig {
 		MarginKWh: logFloat(c.MarginKWh), StaleAfterMin: c.StaleAfterMin, MinConfidence: logFloat(c.MinConfidence),
 		UnreliablePenaltyFrac: logFloat(c.UnreliablePenaltyFrac), MaxUnreliableFrac: logFloat(c.MaxUnreliableFrac),
 		SurplusLaxityMin: logFloat(c.SurplusLaxityMin), SwapUrgentLaxityMin: logFloat(c.SwapUrgentLaxityMin),
-		SwapMoveMin: c.SwapMoveMin, LastPlanTTLMin: c.LastPlanTTLMin, Timeout: c.Timeout,
+		SwapMoveMin: c.SwapMoveMin, SwapBackCooldownMin: c.SwapBackCooldownMin, SwapBackMinNeedKWh: logFloat(c.SwapBackMinNeedKWh),
+		LastPlanTTLMin: c.LastPlanTTLMin, Timeout: c.Timeout,
 	}
 }
 
@@ -130,7 +133,8 @@ func (c logConfig) toConfig() planner.Config {
 		MarginKWh: float64(c.MarginKWh), StaleAfterMin: c.StaleAfterMin, MinConfidence: float64(c.MinConfidence),
 		UnreliablePenaltyFrac: float64(c.UnreliablePenaltyFrac), MaxUnreliableFrac: float64(c.MaxUnreliableFrac),
 		SurplusLaxityMin: float64(c.SurplusLaxityMin), SwapUrgentLaxityMin: float64(c.SwapUrgentLaxityMin),
-		SwapMoveMin: c.SwapMoveMin, LastPlanTTLMin: c.LastPlanTTLMin, Timeout: c.Timeout,
+		SwapMoveMin: c.SwapMoveMin, SwapBackCooldownMin: c.SwapBackCooldownMin, SwapBackMinNeedKWh: float64(c.SwapBackMinNeedKWh),
+		LastPlanTTLMin: c.LastPlanTTLMin, Timeout: c.Timeout,
 	}
 }
 
