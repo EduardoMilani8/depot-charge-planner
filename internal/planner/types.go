@@ -34,7 +34,10 @@ type Config struct {
 	// is above SwapBackMinNeedKWh. Defaults 30 min and 10 kWh: with the default
 	// MarginKWh of 10 the mean must be below the route target itself. Setting both to
 	// 0 turns the rule off (measured: over 1000 swaps per night at 2000 kW with noisy
-	// readings, see README).
+	// readings, see README); so does an invalid value (negative cooldown, or a
+	// negative, NaN or infinite need). Readings left out of the mean are those that
+	// are unreliable (isReliable) or not newer, by timestamp (Now - SoCAgeMin), than
+	// the last one counted for that bus.
 	SwapBackCooldownMin int
 	SwapBackMinNeedKWh  float64
 	LastPlanTTLMin      int           // how long the last valid plan may be reused

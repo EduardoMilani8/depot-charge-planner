@@ -35,8 +35,16 @@ type gaveWay struct {
 	lastTS model.Minute
 }
 
-// antiThrash reports whether the swap-back rule is on (either knob non-zero).
-func (c Config) antiThrash() bool { return c.SwapBackCooldownMin > 0 || c.SwapBackMinNeedKWh > 0 }
+// antiThrash reports whether the swap-back rule is on: either knob non-zero and both
+// valid. An invalid knob (negative cooldown, or a negative, NaN or infinite need)
+// turns the rule off, so a bad config degrades to the old behaviour (swaps back on a
+// single reading) and never into a silent permanent ban.
+func (c Config) antiThrash() bool {
+	if c.SwapBackCooldownMin < 0 || !finite(c.SwapBackMinNeedKWh) || c.SwapBackMinNeedKWh < 0 {
+		return false
+	}
+	return c.SwapBackCooldownMin > 0 || c.SwapBackMinNeedKWh > 0
+}
 
 // observe updates the memory with the current input. A bus is forgotten when it is no
 // longer present or, after leaving the charger it gave away, is on a healthy charger

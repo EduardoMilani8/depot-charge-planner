@@ -1,6 +1,7 @@
 package planner
 
 import (
+	"math"
 	"strings"
 	"testing"
 
@@ -260,5 +261,30 @@ func TestAntiThrashNoiseWithAgedReadingsDoesNotBringBack(t *testing.T) {
 	}
 	if g := pl.swaps.gaveWay[out]; g == nil || g.count == 0 {
 		t.Fatalf("test is vacuous: no reading was averaged: %+v", g)
+	}
+}
+
+// Invalid knobs (negative, NaN or infinite) turn the rule off instead of silently
+// banning every swap back: the bus comes back on one reading, as with the rule off.
+func TestAntiThrashInvalidKnobsTurnTheRuleOff(t *testing.T) {
+	cases := map[string]func(*Config){
+		"NaN need":          func(c *Config) { c.SwapBackMinNeedKWh = math.NaN() },
+		"+Inf need":         func(c *Config) { c.SwapBackMinNeedKWh = math.Inf(1) },
+		"negative need":     func(c *Config) { c.SwapBackMinNeedKWh = -1 },
+		"negative cooldown": func(c *Config) { c.SwapBackCooldownMin = -5 },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			cfg := testConfig()
+			mutate(&cfg)
+			pl := New(cfg)
+			in, s := swapOnce(t, pl)
+			in.Now = 1
+			setSoC(&in, s.OutBusID, 215)
+			p := pl.Plan(in)
+			if len(p.Swaps) != 1 || p.Swaps[0].InBusID != s.OutBusID {
+				t.Errorf("invalid knob must turn the rule off (swap back on one reading): %+v", p.Swaps)
+			}
+		})
 	}
 }

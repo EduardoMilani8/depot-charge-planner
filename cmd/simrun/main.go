@@ -79,9 +79,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "-swap-back-cooldown must be >= 0")
 		return 2
 	}
-	// Written so that NaN fails the check (+Inf is allowed: never swap back).
-	if !(cfg.SwapBackMinNeedKWh >= 0) {
-		fmt.Fprintln(stderr, "-swap-back-min-need must be >= 0")
+	// Written so that NaN fails the check; the planner would treat NaN, +Inf or a
+	// negative value as "rule off", so simrun rejects them instead.
+	if !(cfg.SwapBackMinNeedKWh >= 0 && cfg.SwapBackMinNeedKWh <= maxLimitKW) {
+		fmt.Fprintf(stderr, "-swap-back-min-need must be a finite value in [0, %g] kWh\n", float64(maxLimitKW))
 		return 2
 	}
 	p.Profile = sim.FaultProfile(*profile)

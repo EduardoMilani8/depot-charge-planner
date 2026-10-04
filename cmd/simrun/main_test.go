@@ -129,7 +129,7 @@ func TestRunSwapBackFlags(t *testing.T) {
 	if h.Config.SwapBackCooldownMin != 0 || h.Config.SwapBackMinNeedKWh != 0 {
 		t.Errorf("flags did not reach the planner config: %+v", h.Config)
 	}
-	for _, bad := range [][]string{{"-swap-back-cooldown", "-1"}, {"-swap-back-min-need", "NaN"}, {"-swap-back-min-need", "-3"}} {
+	for _, bad := range [][]string{{"-swap-back-cooldown", "-1"}, {"-swap-back-min-need", "NaN"}, {"-swap-back-min-need", "Inf"}, {"-swap-back-min-need", "-3"}} {
 		var o, e bytes.Buffer
 		if code := run(bad, &o, &e); code != 2 || e.Len() == 0 || o.Len() != 0 {
 			t.Errorf("%v: exit %d, stderr %q, stdout %q; want exit 2 with a message", bad, code, e.String(), o.String())
