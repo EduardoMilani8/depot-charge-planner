@@ -191,7 +191,7 @@ func fill(cfg Config, budget float64, order []*candidate) float64 {
 // 100x2), but A takes the whole budget in the first hour and B, capped at 50 kW, gets
 // only 50 kWh in the second. The planner re-runs every cycle, so such a bus turns
 // doomed once its laxity goes negative, the rest is re-admitted and it still gets the
-// leftover power: the error costs at most that bus, not the plan's validity.
+// leftover power. The error affects how many buses finish, never the plan's validity.
 func admit(budget float64, savable []*candidate) (admitted, left []*candidate) {
 	byDeadline := append([]*candidate(nil), savable...)
 	sort.SliceStable(byDeadline, func(i, j int) bool {
