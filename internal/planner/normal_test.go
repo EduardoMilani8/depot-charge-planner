@@ -361,3 +361,20 @@ func TestNormalNoOverloadKeepsEveryBus(t *testing.T) {
 		}
 	}
 }
+
+// M3: with no budget nobody is admitted, so nobody was prioritised: the reason must
+// say there is no power, not that the buses that can finish were preferred.
+func TestNormalZeroBudgetReasonDoesNotClaimPriority(t *testing.T) {
+	in := Input{
+		Site:     model.Site{LimitKW: 0, StepMin: 1},
+		Chargers: []model.Charger{testCharger("C1"), testCharger("C2")},
+		Buses:    []model.Bus{testBus("A", "C1", 100, 220, 300), testBus("B", "C2", 0, 200, 300)},
+	}
+	p := PlanNormal(testConfig(), in)
+	for _, id := range []string{"A", "B"} {
+		st := statusOf(p, id)
+		if st.WillReachTarget || !strings.Contains(st.Reason, "sem potência disponível") || strings.Contains(st.Reason, "priorizados") {
+			t.Errorf("%s: reason %q, want \"sem potência disponível\" without a priority claim", id, st.Reason)
+		}
+	}
+}

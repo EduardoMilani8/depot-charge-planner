@@ -113,8 +113,13 @@ func allocate(cfg Config, budget float64, cands []*candidate) {
 		})
 	}
 	admitted, left := admit(budget, savable)
-	for _, c := range left {
-		c.leftOut = true
+	// leftOut drives the "priorizados os que conseguem terminar" reason; when nobody
+	// was admitted (e.g. a 0 kW budget) nobody was prioritised, so it stays false and
+	// the reason is the plain "sem potência disponível" / "potência insuficiente".
+	if len(admitted) > 0 {
+		for _, c := range left {
+			c.leftOut = true
+		}
 	}
 	byLaxity(admitted)
 	byLaxity(left)
