@@ -28,8 +28,11 @@ type gaveWay struct {
 	at    model.Minute
 	from  string  // the charger it was told to give away
 	left  bool    // seen off that charger since (operators may take a while)
-	sum   float64 // sum of the fresh reliable readings since it left
+	sum   float64 // sum of the counted readings since it left
 	count int
+	// lastTS is the timestamp (minute taken: Now - SoCAgeMin) of the last counted
+	// reading; it starts at the minute the bus was told to give way.
+	lastTS model.Minute
 }
 
 // antiThrash reports whether the swap-back rule is on (either knob non-zero).
@@ -37,8 +40,13 @@ func (c Config) antiThrash() bool { return c.SwapBackCooldownMin > 0 || c.SwapBa
 
 // observe updates the memory with the current input. A bus is forgotten when it is no
 // longer present or, after leaving the charger it gave away, is on a healthy charger
-// again (it charges, so its SoC is no longer constant). While it waits, every fresh
-// (age 0) reliable reading is added to its mean; until it leaves, nothing is added.
+// again (it charges, so its SoC is no longer constant). While it waits, a reading is
+// added to its mean only if it is reliable (isReliable: valid, confident, at most
+// StaleAfterMin old) AND its timestamp (Now - SoCAgeMin) is newer than the last
+// counted one (initially the minute it was told to give way). So the same reading is
+// counted once, whether Plan runs twice in a minute, the gateway reports every reading
+// a few minutes old, or the reading is frozen (same timestamp, growing age). Until the
+// bus is seen off its charger, nothing is added.
 func (m *swapMemory) observe(cfg Config, in Input) {
 	if len(m.gaveWay) == 0 {
 		return
@@ -64,9 +72,10 @@ func (m *swapMemory) observe(cfg Config, in Input) {
 			delete(m.gaveWay, id)
 			continue
 		}
-		if isReliable(cfg, b) && b.SoCAgeMin <= 0 {
+		if ts := in.Now - max(b.SoCAgeMin, 0); isReliable(cfg, b) && ts > g.lastTS {
 			g.sum += b.SoCKWh
 			g.count++
+			g.lastTS = ts
 		}
 	}
 }
@@ -124,6 +133,6 @@ func (m *swapMemory) remember(cfg Config, now model.Minute, swaps []Swap) {
 		if m.gaveWay == nil {
 			m.gaveWay = map[string]*gaveWay{}
 		}
-		m.gaveWay[s.OutBusID] = &gaveWay{at: now, from: s.ChargerID}
+		m.gaveWay[s.OutBusID] = &gaveWay{at: now, from: s.ChargerID, lastTS: now}
 	}
 }

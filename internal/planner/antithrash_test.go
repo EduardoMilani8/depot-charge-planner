@@ -177,3 +177,88 @@ func TestAntiThrashWaitsForTheOperatorsToUnplug(t *testing.T) {
 		t.Errorf("%s has not been unplugged yet: memory %+v (present %v)", out, g, ok)
 	}
 }
+
+func setAge(in *Input, id string, age int) {
+	for i := range in.Buses {
+		if in.Buses[i].ID == id {
+			in.Buses[i].SoCAgeMin = age
+		}
+	}
+}
+
+// Round 4: a gateway may report every reading with an age of a few minutes (still
+// reliable up to StaleAfterMin). Readings are counted by their timestamp (Now minus
+// age), so a needy bus still comes back right after the cooldown.
+func TestAntiThrashNeedyBusComesBackWithAgedReadings(t *testing.T) {
+	for _, age := range []int{1, 5} {
+		cfg := testConfig()
+		pl := New(cfg)
+		in, s := swapOnce(t, pl)
+		out := s.OutBusID
+		back := -1
+		for k := 1; k <= 300 && back < 0; k++ {
+			in.Now = k
+			setSoC(&in, out, 180+float64(k%3))
+			setAge(&in, out, age)
+			for _, sw := range pl.Plan(in).Swaps {
+				if sw.InBusID == out {
+					back = k
+				}
+			}
+		}
+		if back != cfg.SwapBackCooldownMin {
+			t.Errorf("age %d: %s swapped back at minute %d, want %d", age, out, back, cfg.SwapBackCooldownMin)
+		}
+	}
+}
+
+// Calling Plan several times in the same minute (same reading) counts it once.
+func TestAntiThrashSameReadingCountsOnce(t *testing.T) {
+	pl := New(testConfig())
+	in, s := swapOnce(t, pl)
+	in.Now = 1
+	setSoC(&in, s.OutBusID, 200)
+	for i := 0; i < 3; i++ {
+		pl.Plan(in)
+	}
+	if g := pl.swaps.gaveWay[s.OutBusID]; g == nil || g.count != 1 {
+		t.Errorf("3 calls at minute 1 with one reading: memory %+v, want count 1", g)
+	}
+}
+
+// A frozen reading (same value, same timestamp, age growing each minute) is one
+// reading, not one per minute.
+func TestAntiThrashFrozenReadingIsNotRecounted(t *testing.T) {
+	pl := New(testConfig())
+	in, s := swapOnce(t, pl)
+	setSoC(&in, s.OutBusID, 200)
+	for k := 1; k <= 10; k++ {
+		in.Now = k
+		setAge(&in, s.OutBusID, k-1) // taken at minute 1, then frozen
+		pl.Plan(in)
+	}
+	if g := pl.swaps.gaveWay[s.OutBusID]; g == nil || g.count != 1 {
+		t.Errorf("a reading frozen since minute 1: memory %+v, want count 1", g)
+	}
+}
+
+// With aged readings, noise alone still does not bring back a bus that gave way.
+func TestAntiThrashNoiseWithAgedReadingsDoesNotBringBack(t *testing.T) {
+	pl := New(testConfig())
+	in, s := swapOnce(t, pl)
+	out := s.OutBusID
+	noise := []float64{2, -14, 12, -3, 3, -13, 13, 0}
+	for k := 1; k <= 120; k++ {
+		in.Now = k
+		setSoC(&in, out, 220+noise[k%len(noise)])
+		setAge(&in, out, 1)
+		for _, sw := range pl.Plan(in).Swaps {
+			if sw.InBusID == out {
+				t.Fatalf("minute %d: %s swapped back on noise alone: %+v", k, out, sw)
+			}
+		}
+	}
+	if g := pl.swaps.gaveWay[out]; g == nil || g.count == 0 {
+		t.Fatalf("test is vacuous: no reading was averaged: %+v", g)
+	}
+}
