@@ -31,6 +31,10 @@ type GenParams struct {
 	// assumption to validate with real depots; most of the planner's gain over the
 	// baselines depends on it (see README).
 	FollowSwaps bool
+	// ReadingAgeMin: age in minutes the SoC sensor reports for a fresh reading (0 by
+	// default). It models a gateway that reports readings a little old; values up to
+	// the planner's StaleAfterMin are still reliable. Only the reported age changes.
+	ReadingAgeMin int
 }
 
 // DefaultGenParams uses public-data assumptions that still need validation with real operators.
@@ -55,6 +59,7 @@ func Generate(p GenParams, seed int64) Scenario {
 		BaseLimitKW:   p.LimitKW,
 		Tariff:        Tariff{PeakFromMin: 18 * 60, PeakToMin: 21 * 60, PeakPrice: 2.70, OffPeakPrice: 0.90},
 		FollowSwaps:   p.FollowSwaps,
+		ReadingAgeMin: p.ReadingAgeMin,
 	}
 	for i := 0; i < p.NumChargers; i++ {
 		sc.Chargers = append(sc.Chargers, model.Charger{

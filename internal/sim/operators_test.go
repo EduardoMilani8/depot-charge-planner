@@ -156,3 +156,50 @@ func TestPlannerSwapsDoNotThrashUnderNoisySoC(t *testing.T) {
 		}
 	}
 }
+
+// Round 4: with a gateway that reports every reading 1 minute old (still reliable),
+// the anti-thrash rule once never counted a reading and never let a bus that gave way
+// back (1200 kW severe, 20 seeds: 60.9 vs 70.9 ready% with the rule off). With
+// readings counted by timestamp it must not lose readiness against the rule off.
+func TestAntiThrashKeepsReadinessWithAgedReadings(t *testing.T) {
+	off := propertyConfig()
+	off.SwapBackCooldownMin, off.SwapBackMinNeedKWh = 0, 0
+	var on, base []Metrics
+	for seed := int64(1); seed <= int64(seedCount(4, 2)); seed++ {
+		p := DefaultGenParams()
+		p.LimitKW = 1200
+		p.Profile = ProfileSevere
+		p.ReadingAgeMin = 1
+		sc := Generate(p, seed)
+		on = append(on, Run(sc, NewPlannerController(propertyConfig(), sc), nil))
+		base = append(base, Run(sc, NewPlannerController(off, sc), nil))
+	}
+	a, b := Aggregate(on), Aggregate(base)
+	t.Logf("1200 kW severe, readings 1 min old: ready%% %.1f with the rule, %.1f without; moves %.1f vs %.1f", a.ReadyPct, b.ReadyPct, a.OperatorMoves, b.OperatorMoves)
+	if a.ReadyPct < b.ReadyPct-0.5 {
+		t.Errorf("the anti-thrash rule loses readiness with aged readings: %.1f vs %.1f without it", a.ReadyPct, b.ReadyPct)
+	}
+}
+
+func TestReadingAgeMinIsReportedAsTheReadingAge(t *testing.T) {
+	p := DefaultGenParams()
+	p.ReadingAgeMin = 3
+	sc := Generate(p, 1)
+	if sc.ReadingAgeMin != 3 {
+		t.Fatalf("Generate must copy ReadingAgeMin: %d", sc.ReadingAgeMin)
+	}
+	rc := &recordingController{inner: NewFIFO()}
+	Run(sc, rc, nil)
+	seen := false
+	for _, in := range rc.ins {
+		for _, b := range in.Buses {
+			seen = true
+			if b.SoCAgeMin != 3 {
+				t.Fatalf("minute %d bus %s: age %d, want 3", in.Now, b.ID, b.SoCAgeMin)
+			}
+		}
+	}
+	if !seen {
+		t.Fatal("no bus observed")
+	}
+}

@@ -68,6 +68,7 @@ func TestRunRejectsInvalidValuesBeforeSimulating(t *testing.T) {
 		{"-chargers", "1000000000"},
 		{"-seeds", "1000000000"},
 		{"-limit", "1e8"},
+		{"-reading-age", "-1"},
 		{"stray"},
 	}
 	for _, args := range cases {
@@ -133,5 +134,15 @@ func TestRunSwapBackFlags(t *testing.T) {
 		if code := run(bad, &o, &e); code != 2 || e.Len() == 0 || o.Len() != 0 {
 			t.Errorf("%v: exit %d, stderr %q, stdout %q; want exit 2 with a message", bad, code, e.String(), o.String())
 		}
+	}
+}
+
+func TestRunReadingAgeFlag(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := run([]string{"-buses", "4", "-chargers", "2", "-limit", "200", "-seeds", "1", "-reading-age", "1"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "reading age: 1 min") {
+		t.Errorf("the header must state the reading age:\n%s", out.String())
 	}
 }

@@ -74,4 +74,7 @@ type Scenario struct {
 	// controllers get, faults included) already reached its forecast route target and
 	// park it; the waiting bus takes the charger after the same move time as a swap.
 	UnplugFull bool
+	// ReadingAgeMin is added to the age the SoC sensor reports (fresh readings report
+	// it instead of 0); the reported value is unchanged. See GenParams.ReadingAgeMin.
+	ReadingAgeMin int
 }

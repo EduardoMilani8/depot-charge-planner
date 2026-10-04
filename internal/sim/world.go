@@ -288,10 +288,10 @@ func (w *World) sense(bs *busState) (soc float64, ageMin int, conf float64) {
 	case missing:
 		return 0, 10000, 0
 	case frozen:
-		return bs.lastGood, w.t - bs.lastGoodT, 1
+		return bs.lastGood, w.t - bs.lastGoodT + w.sc.ReadingAgeMin, 1
 	}
 	bs.lastGood, bs.lastGoodT = soc, w.t
-	return soc, 0, 1
+	return soc, w.sc.ReadingAgeMin, 1
 }
 
 // observe builds the planner input from sensors and schedules (never from the truth).

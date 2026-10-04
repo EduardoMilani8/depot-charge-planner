@@ -34,6 +34,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	logPath := fs.String("log", "", "write the planner decision log (JSON lines) for seed 1")
 	fs.BoolVar(&p.FollowSwaps, "follow-swaps", p.FollowSwaps,
 		"operators execute every swap the planner recommends (assumption; false = planner without swaps)")
+	fs.IntVar(&p.ReadingAgeMin, "reading-age", p.ReadingAgeMin,
+		"minutes of age the SoC sensor reports for a fresh reading (models a gateway with delayed readings)")
 	cfg := planner.DefaultConfig()
 	fs.IntVar(&cfg.SwapBackCooldownMin, "swap-back-cooldown", cfg.SwapBackCooldownMin,
 		"anti-thrash: minutes before a bus that gave way may be swapped back (0 and -swap-back-min-need 0: rule off)")
@@ -69,6 +71,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "-limit must be a finite value in (0, %g] kW\n", maxLimitKW)
 		return 2
 	}
+	if p.ReadingAgeMin < 0 || p.ReadingAgeMin > 10000 {
+		fmt.Fprintln(stderr, "-reading-age must be between 0 and 10000")
+		return 2
+	}
 	if cfg.SwapBackCooldownMin < 0 {
 		fmt.Fprintln(stderr, "-swap-back-cooldown must be >= 0")
 		return 2
@@ -94,8 +100,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		{"planner", func(sc sim.Scenario) sim.Controller { return sim.NewPlannerController(cfg, sc) }},
 	}
 
-	fmt.Fprintf(stdout, "profile: %s, limit: %g kW, follow swaps: %v, swap back: after %d min, need > %g kWh\n",
+	fmt.Fprintf(stdout, "profile: %s, limit: %g kW, follow swaps: %v, swap back: after %d min, need > %g kWh",
 		p.Profile, p.LimitKW, p.FollowSwaps, cfg.SwapBackCooldownMin, cfg.SwapBackMinNeedKWh)
+	if p.ReadingAgeMin != 0 {
+		fmt.Fprintf(stdout, ", reading age: %d min", p.ReadingAgeMin)
+	}
+	fmt.Fprintln(stdout)
 	w := tabwriter.NewWriter(stdout, 0, 8, 2, ' ', 0)
 	// energy kWh: grid energy delivered per run (mean). moves/run: swaps executed
 	// (planner, when operators follow them) or buses unplugged (fifo-unplug).
