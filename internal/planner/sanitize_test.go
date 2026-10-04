@@ -267,3 +267,43 @@ func TestLastValidNeverPowersAChargerSanitizeSwitchedOff(t *testing.T) {
 		}
 	}
 }
+
+// M1: the sanitized check runs before the raw one. Checking the raw input first scaled
+// every setpoint down to the limit and only then switched the bad charger off, which
+// wasted the power that charger had been given.
+func TestLastValidDropsTheBadChargerBeforeScalingToTheLimit(t *testing.T) {
+	calls := 0
+	pl := New(testConfig()).WithNormal(func(c Config, in Input) Plan {
+		calls++
+		if calls > 1 {
+			panic("boom")
+		}
+		return PlanNormal(c, in)
+	})
+	in := Input{
+		Site:     model.Site{LimitKW: 300, StepMin: 1},
+		Chargers: []model.Charger{testCharger("C1"), testCharger("C2")},
+		Buses:    []model.Bus{testBus("B1", "C1", 0, 290, 200), testBus("B2", "C2", 0, 290, 200)},
+	}
+	first := pl.Plan(in)
+	if !near(sp(first, "C1"), 150) || !near(sp(first, "C2"), 150) {
+		t.Fatalf("call 1 must give both chargers 150 kW: %+v", first.Setpoints)
+	}
+	in.Now = 1
+	in.Site.LimitKW = 150
+	in.Chargers = append([]model.Charger(nil), in.Chargers...)
+	in.Chargers[0].Efficiency = math.NaN()
+	second := pl.Plan(in)
+	if second.Layer != LayerLastValid {
+		t.Fatalf("call 2 layer = %v, want last-valid", second.Layer)
+	}
+	if v := Violations(in, second); len(v) != 0 {
+		t.Errorf("violations: %v", v)
+	}
+	if kw := sp(second, "C1"); kw != 0 {
+		t.Errorf("C1 = %v, want 0 (sanitize switched it off)", kw)
+	}
+	if kw := sp(second, "C2"); !near(kw, 150) {
+		t.Errorf("C2 = %v, want 150 (the whole limit; C1's share must not be wasted)", kw)
+	}
+}

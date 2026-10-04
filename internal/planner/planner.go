@@ -81,12 +81,16 @@ func (p *Planner) Plan(in Input) Plan {
 	return s.annotate(p.cfg, plan)
 }
 
-// finish runs the verifier against the input exactly as received, so whoever computed
-// the plan is never who guarantees it, and then against the sanitized copy as well: a
-// plan not computed from s.in (the cached last-valid plan, or garbage from the normal
-// layer) must not power a charger that sanitize switched off on this input.
+// finish runs the verifier against the sanitized copy and then against the input
+// exactly as received, so whoever computed the plan is never who guarantees it. The
+// sanitized check matters for a plan not computed from s.in (the cached last-valid
+// plan, or garbage from the normal layer): it must not power a charger that sanitize
+// switched off on this input. It runs first so that a bad charger is dropped before
+// any proportional scale-down to the limit, which would otherwise waste its share
+// (M1). The raw check is then a no-op (both copies have the same budget and sanitize
+// only switches chargers off), kept as the independent guarantee on the real input.
 func (p *Planner) finish(in Input, s sanitized, plan Plan) Plan {
-	out := Enforce(s.in, Enforce(in, plan))
+	out := Enforce(in, Enforce(s.in, plan))
 	if len(out.Notes) > len(plan.Notes) {
 		p.log.Warn("verificador corrigiu o plano", "minute", in.Now, "layer", plan.Layer.String())
 	}
