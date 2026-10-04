@@ -147,17 +147,19 @@ func ReadDecisionLogWithHeader(r io.Reader) (*DecisionLogHeader, []DecisionRecor
 
 // ReplayFile reads a version-2 log and replays it with the Config from its header
 // (see ReplayStats). A log without header returns an error: use Replay with the
-// configuration that produced it.
+// configuration that produced it. If the last line was cut short, every complete
+// record is still replayed and the error (wrapping ErrTruncatedLog) is returned with
+// the results; any other read error returns no results.
 func ReplayFile(r io.Reader) (diffs []ReplayDiff, replayed, skipped int, err error) {
 	h, recs, err := ReadDecisionLogWithHeader(r)
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrTruncatedLog) {
 		return nil, 0, 0, err
 	}
 	if h == nil {
-		return nil, 0, 0, errors.New("registro de decisões sem cabeçalho: informe a configuração (Replay)")
+		return nil, 0, 0, errors.Join(errors.New("registro de decisões sem cabeçalho: informe a configuração (Replay)"), err)
 	}
 	diffs, replayed, skipped = ReplayStats(h.Config, recs)
-	return diffs, replayed, skipped, nil
+	return diffs, replayed, skipped, err
 }
 
 // ReplayDiff is one charger whose replayed setpoint differs from the logged one at

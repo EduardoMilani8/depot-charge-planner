@@ -195,3 +195,25 @@ func TestReplayFileUsesTheLoggedConfig(t *testing.T) {
 		t.Error("a log without header cannot be replayed without a config")
 	}
 }
+
+// A log whose last line was cut (e.g. the process died mid-write) still replays every
+// complete record, and the truncation is reported.
+func TestReplayFileReplaysTheCompleteRecordsOfATruncatedLog(t *testing.T) {
+	sc := baseScenario()
+	cfg := planner.DefaultConfig()
+	cfg.Timeout = time.Second
+	var buf bytes.Buffer
+	log := NewDecisionLogWithConfig(&buf, cfg)
+	Run(sc, NewPlannerController(cfg, sc), log)
+	data := buf.Bytes()
+	cut := data[:len(data)-15]
+	_, recs, _ := ReadDecisionLogWithHeader(bytes.NewReader(cut))
+	_, want, _ := ReplayStats(cfg, recs)
+	diffs, replayed, _, err := ReplayFile(bytes.NewReader(cut))
+	if !errors.Is(err, ErrTruncatedLog) {
+		t.Errorf("want ErrTruncatedLog, got %v", err)
+	}
+	if want == 0 || replayed != want || len(diffs) != 0 {
+		t.Errorf("replayed %d records (want %d > 0), %d diffs", replayed, want, len(diffs))
+	}
+}
