@@ -60,3 +60,48 @@ func BenchmarkPlanNormalSwapSearch200(b *testing.B) {
 		PlanNormal(cfg, in)
 	}
 }
+
+// swapHeavyDistinctInput is swapHeavyInput with a different MaxKW on every charger.
+// The swap search skips donor chargers whose spec already failed for a waiting bus;
+// with all specs distinct nothing can be skipped, so this is the worst case of the
+// trial cap (maxSwapTrials allocations per cycle).
+func swapHeavyDistinctInput() Input {
+	in := swapHeavyInput()
+	for i := range in.Chargers {
+		in.Chargers[i].MaxKW = 100 + 0.5*float64(i)
+	}
+	return in
+}
+
+func BenchmarkPlanNormalSwapSearch200Distinct(b *testing.B) {
+	in, cfg := swapHeavyDistinctInput(), DefaultConfig()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		PlanNormal(cfg, in)
+	}
+}
+
+// The facade adds sanitize, the goroutine and timeout, and two verifier passes.
+func BenchmarkPlannerPlanSwapSearch200Distinct(b *testing.B) {
+	in := swapHeavyDistinctInput()
+	cfg := DefaultConfig()
+	cfg.Timeout = time.Minute // measure the work, not a fallback
+	pl := New(cfg)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if p := pl.Plan(in); p.Layer != LayerNormal {
+			b.Fatalf("layer %v", p.Layer)
+		}
+	}
+}
+
+func BenchmarkPlannerPlan200(b *testing.B) {
+	in := bigInput(200)
+	cfg := DefaultConfig()
+	cfg.Timeout = time.Minute
+	pl := New(cfg)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		pl.Plan(in)
+	}
+}
