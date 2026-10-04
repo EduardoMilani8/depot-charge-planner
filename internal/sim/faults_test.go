@@ -384,15 +384,15 @@ func TestFaultSoCNoiseIdenticalAcrossControllers(t *testing.T) {
 // planner's swaps are followed and a charger fails and recovers.
 //
 // Scenario: 2 chargers (150 kW each), buses B1 (departs at 400, already above its 240 kWh
-// target plus margin: it only occupies C1), B2 and B3 (depart at 200, 0 -> 240 kWh). B1 and B2 take
-// the chargers; B3 waits. A bus with 240 kWh to gain needs about 240/0.95/150 h = 101 min
-// of full power, so B3's laxity (200 - t - 101 min) drops under SwapUrgentLaxityMin (60)
-// around t = 40, while B1's laxity is above 250 min: the gap exceeds SwapDonorGapMin
-// (120) and the swap adds a ready bus (B1 stays ready, B3 becomes savable), so the
-// planner recommends B1 -> B3 on C1, and the world executes it (FollowSwaps). C1 then
-// fails in [100, 140) while it holds B3, so the failure window overlaps the swapped state.
-// (B1 used to start at 150 kWh; since swaps never strip a donor that is still on track
-// to its target, B1 starts full so the swap is a real improvement.)
+// target plus the planner's 10 kWh margin: it only occupies C1), B2 and B3 (depart at
+// 200, 0 -> 240 kWh). B1 and B2 take the chargers; B3 waits. B1 is full, so it may give
+// way, and with B3 on C1 (about 101 min of full power plus the 5-min move, 200 min left)
+// the predicted number of ready buses goes from 2 to 3 within the 300 kW limit: the
+// planner recommends B1 -> B3 on C1 at minute 0 and the world executes it (FollowSwaps).
+// C1 then fails in [100, 140) while it holds B3, so the failure window overlaps the
+// swapped state; at minute 107 the planner moves B3 from the failed C1 to C2, which
+// B2 (full by then) gives up, and B1 is plugged into C1 again when it recovers.
+// (Measured when this comment was written; the swap rule itself is in planner/swaps.go.)
 // The test requires that the swap actually happened (otherwise it checks nothing).
 func TestFaultNoChargerSharedUnderSwapsAndFailures(t *testing.T) {
 	sc := twoBusScenario()
