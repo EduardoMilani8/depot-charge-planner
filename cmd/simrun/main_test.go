@@ -18,7 +18,7 @@ func TestRunPrintsComparisonTable(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, errOut.String())
 	}
-	for _, name := range []string{"fifo", "edf", "safe", "planner", "ready%"} {
+	for _, name := range []string{"fifo", "edf", "safe", "planner", "ready%", "energy kWh", "moves/run"} {
 		if !strings.Contains(out.String(), name) {
 			t.Errorf("output is missing %q:\n%s", name, out.String())
 		}

@@ -83,7 +83,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	fmt.Fprintf(stdout, "profile: %s, limit: %g kW, follow swaps: %v\n", p.Profile, p.LimitKW, p.FollowSwaps)
 	w := tabwriter.NewWriter(stdout, 0, 8, 2, ' ', 0)
-	fmt.Fprintln(w, "controller\tready%\tshortfall kWh\tpeak kW\tplan violations\tovershoot min\tcost R$\tplan changes\tp99 µs")
+	// energy kWh: grid energy delivered per run (mean). moves/run: swaps executed
+	// (planner, when operators follow them) or buses unplugged (fifo-unplug).
+	fmt.Fprintln(w, "controller\tready%\tshortfall kWh\tpeak kW\tplan violations\tovershoot min\tenergy kWh\tcost R$\tplan changes\tmoves/run\tp99 µs")
 	for _, mk := range makers {
 		var results []sim.Metrics
 		for seed := int64(1); seed <= int64(*seeds); seed++ {
@@ -92,8 +94,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 			results = append(results, sim.Run(sc, mk.make(sc), nil))
 		}
 		a := sim.Aggregate(results)
-		fmt.Fprintf(w, "%s\t%.1f\t%.1f\t%.0f\t%d\t%d\t%.0f\t%d\t%d\n",
-			mk.name, a.ReadyPct, a.ShortfallKWh, a.PeakKW, a.PlanViolations, a.OvershootMin, a.CostBRL, a.PlanChanges, a.PlanP99Micros)
+		fmt.Fprintf(w, "%s\t%.1f\t%.1f\t%.0f\t%d\t%d\t%.0f\t%.0f\t%d\t%.1f\t%d\n",
+			mk.name, a.ReadyPct, a.ShortfallKWh, a.PeakKW, a.PlanViolations, a.OvershootMin, a.EnergyKWh, a.CostBRL, a.PlanChanges, a.OperatorMoves, a.PlanP99Micros)
 	}
 	if err := w.Flush(); err != nil {
 		fmt.Fprintln(stderr, err)
