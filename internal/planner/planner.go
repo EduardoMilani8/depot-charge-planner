@@ -48,24 +48,27 @@ func (p *Planner) WithLogger(l *slog.Logger) *Planner {
 	return p
 }
 
-// Plan always returns a plan that satisfies every invariant (checked against the
-// input exactly as given). An invalid site (limit or step) yields the last valid
-// plan or all chargers at 0 kW; bad bus or charger records are dropped or switched
-// off with a per-bus reason while the rest of the depot is planned normally.
+// Plan always returns a plan that satisfies every invariant, checked against the
+// input exactly as given and against its sanitized copy. An invalid site (limit or
+// step) yields the last valid plan (still within its TTL) or all chargers at 0 kW;
+// bad bus or charger records are dropped or switched off with a per-bus reason while
+// the rest of the depot is planned normally.
 func (p *Planner) Plan(in Input) Plan {
-	if err := validateSite(in); err != nil {
-		p.log.Warn("garagem inválida", "minute", in.Now, "err", err)
-		return p.fallback(in, sanitized{}, "entrada inválida: "+err.Error(), false)
-	}
+	// sanitize never reads the site, so it runs even when the site is invalid: a
+	// replayed last-valid plan must not power a charger it switches off (I1).
 	s := sanitize(in)
 	if len(s.problems) > 0 {
 		p.log.Warn("registros inválidos ignorados", "minute", in.Now, "count", len(s.problems), "first", s.problems[0])
+	}
+	if err := validateSite(in); err != nil {
+		p.log.Warn("garagem inválida", "minute", in.Now, "err", err)
+		return p.fallback(in, s, "entrada inválida: "+err.Error(), false)
 	}
 	if tooUnreliable(p.cfg, s.in) {
 		p.log.Warn("leituras de SoC pouco confiáveis; usando perfil seguro", "minute", in.Now)
 		plan := PlanSafe(s.in)
 		plan.Notes = append(plan.Notes, "leituras de SoC pouco confiáveis na maioria dos ônibus")
-		return s.annotate(p.cfg, p.finish(in, &s, plan))
+		return s.annotate(p.cfg, p.finish(in, s, plan))
 	}
 	plan, err := p.runNormal(s.in)
 	if err != nil {
@@ -73,37 +76,35 @@ func (p *Planner) Plan(in Input) Plan {
 		return p.fallback(in, s, err.Error(), true)
 	}
 	plan.Layer = LayerNormal
-	plan = p.finish(in, &s, plan)
+	plan = p.finish(in, s, plan)
 	p.last, p.hasLast, p.lastAt = clonePlan(plan), true, in.Now
 	return s.annotate(p.cfg, plan)
 }
 
 // finish runs the verifier against the input exactly as received, so whoever computed
-// the plan is never who guarantees it, and then (when the site is valid, s != nil)
-// against the sanitized copy as well: a plan not computed from s.in, i.e. the cached
-// last-valid plan, must not power a charger that sanitize switched off on this input.
-func (p *Planner) finish(in Input, s *sanitized, plan Plan) Plan {
-	out := Enforce(in, plan)
-	if s != nil {
-		out = Enforce(s.in, out)
-	}
+// the plan is never who guarantees it, and then against the sanitized copy as well: a
+// plan not computed from s.in (the cached last-valid plan, or garbage from the normal
+// layer) must not power a charger that sanitize switched off on this input.
+func (p *Planner) finish(in Input, s sanitized, plan Plan) Plan {
+	out := Enforce(s.in, Enforce(in, plan))
 	if len(out.Notes) > len(plan.Notes) {
 		p.log.Warn("verificador corrigiu o plano", "minute", in.Now, "layer", plan.Layer.String())
 	}
 	return out
 }
 
+// fallback replays the last valid plan while it is within LastPlanTTLMin, otherwise
+// it uses the safe profile (valid site) or all chargers at 0 kW (invalid site). On an
+// invalid site whose limit is still valid (e.g. only StepMin is broken) the replay
+// keeps the depot charging within the limit instead of stopping it; with an invalid
+// limit the budget is 0 and the replay is scaled to 0 kW.
 func (p *Planner) fallback(in Input, s sanitized, reason string, siteValid bool) Plan {
-	var cleaned *sanitized // nil for an invalid site: s.in is then empty
-	if siteValid {
-		cleaned = &s
-	}
 	if p.hasLast && in.Now >= p.lastAt && in.Now-p.lastAt <= p.cfg.LastPlanTTLMin {
 		plan := clonePlan(p.last)
 		plan.Layer = LayerLastValid
 		plan.Swaps = nil
 		plan.Notes = append(plan.Notes, "usando o último plano válido: "+reason)
-		return s.annotate(p.cfg, p.finish(in, cleaned, plan))
+		return s.annotate(p.cfg, p.finish(in, s, plan))
 	}
 	var plan Plan
 	if siteValid {
@@ -112,7 +113,7 @@ func (p *Planner) fallback(in Input, s sanitized, reason string, siteValid bool)
 		plan = zeroPlan(in)
 	}
 	plan.Notes = append(plan.Notes, "fallback: "+reason)
-	return s.annotate(p.cfg, p.finish(in, cleaned, plan))
+	return s.annotate(p.cfg, p.finish(in, s, plan))
 }
 
 func (p *Planner) runNormal(in Input) (Plan, error) {

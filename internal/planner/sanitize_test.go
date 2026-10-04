@@ -195,6 +195,10 @@ func TestPlannerInvalidSiteGivesZeroPlan(t *testing.T) {
 // not power a charger that sanitize switched off on the current input, and a dropped
 // bus must appear once in Plan.Buses (its "registro inválido" entry), not also with
 // its stale status from the cached plan.
+//
+// I1 (fix round 3): the same holds when the site is invalid but the limit is not (here
+// StepMin 0): the budget is then the full limit, so a replayed plan is not scaled to 0
+// and only the sanitized check can switch the bad charger off.
 func TestLastValidNeverPowersAChargerSanitizeSwitchedOff(t *testing.T) {
 	// c1Off: sanitize switches C1 off on the current input. When B1 merely points at an
 	// unknown charger, B1 is dropped but C1 itself is a good, free charger.
@@ -210,46 +214,56 @@ func TestLastValidNeverPowersAChargerSanitizeSwitchedOff(t *testing.T) {
 		"B1 duplicated with C2":   {func(in *Input) { in.Buses = append(in.Buses, testBus("B1", "C2", 100, 200, 300)) }, true},
 		"B1 on unknown charger X": {func(in *Input) { in.Buses[0].ChargerID = "X" }, false},
 	}
-	for name, c := range cases {
-		t.Run(name, func(t *testing.T) {
-			calls := 0
-			pl := New(testConfig()).WithNormal(func(c Config, in Input) Plan {
-				calls++
-				if calls > 1 {
-					panic("boom")
+	sites := map[string]func(*Input){
+		"valid site":  func(*Input) {},
+		"step 0 site": func(in *Input) { in.Site.StepMin = 0 },
+	}
+	for siteName, site := range sites {
+		for name, c := range cases {
+			t.Run(siteName+"/"+name, func(t *testing.T) {
+				calls := 0
+				pl := New(testConfig()).WithNormal(func(c Config, in Input) Plan {
+					calls++
+					if calls > 1 {
+						panic("boom")
+					}
+					return PlanNormal(c, in)
+				})
+				in := depotWithGoodBus()
+				first := pl.Plan(in)
+				if first.Layer != LayerNormal || sp(first, "C1") <= 0 {
+					t.Fatalf("call 1 must power C1 through the normal layer: %+v", first)
 				}
-				return PlanNormal(c, in)
+				in.Now = 1
+				in.Chargers = append([]model.Charger(nil), in.Chargers...)
+				in.Buses = append([]model.Bus(nil), in.Buses...)
+				c.mutate(&in)
+				site(&in)
+				second := pl.Plan(in)
+				if second.Layer != LayerLastValid {
+					t.Fatalf("call 2 layer = %v, want last-valid", second.Layer)
+				}
+				if v := Violations(in, second); len(v) != 0 {
+					t.Errorf("violations: %v", v)
+				}
+				if v := Violations(sanitize(in).in, second); len(v) != 0 {
+					t.Errorf("violations against the sanitized input: %v", v)
+				}
+				if kw := sp(second, "C1"); c.c1Off && kw != 0 {
+					t.Errorf("C1 was switched off by sanitize but the last-valid plan gives it %.1f kW; buses %+v", kw, second.Buses)
+				}
+				// B1 still needs 120 kWh and gets nothing: the cached "will reach" is stale.
+				if st := statusOf(second, "B1"); c.c1Off && st.WillReachTarget {
+					t.Errorf("B1 gets no power but its status still says it will reach its target: %+v", st)
+				}
+				ids := map[string]int{}
+				for _, st := range second.Buses {
+					ids[st.BusID]++
+					if ids[st.BusID] > 1 {
+						t.Errorf("bus %q listed more than once: %+v", st.BusID, second.Buses)
+					}
+				}
 			})
-			in := depotWithGoodBus()
-			first := pl.Plan(in)
-			if first.Layer != LayerNormal || sp(first, "C1") <= 0 {
-				t.Fatalf("call 1 must power C1 through the normal layer: %+v", first)
-			}
-			in.Now = 1
-			in.Chargers = append([]model.Charger(nil), in.Chargers...)
-			in.Buses = append([]model.Bus(nil), in.Buses...)
-			c.mutate(&in)
-			second := pl.Plan(in)
-			if second.Layer != LayerLastValid {
-				t.Fatalf("call 2 layer = %v, want last-valid", second.Layer)
-			}
-			if v := Violations(in, second); len(v) != 0 {
-				t.Errorf("violations: %v", v)
-			}
-			if kw := sp(second, "C1"); c.c1Off && kw != 0 {
-				t.Errorf("C1 was switched off by sanitize but the last-valid plan gives it %.1f kW; buses %+v", kw, second.Buses)
-			}
-			// B1 still needs 120 kWh and gets nothing: the cached "will reach" is stale.
-			if st := statusOf(second, "B1"); c.c1Off && st.WillReachTarget {
-				t.Errorf("B1 gets no power but its status still says it will reach its target: %+v", st)
-			}
-			ids := map[string]int{}
-			for _, st := range second.Buses {
-				ids[st.BusID]++
-				if ids[st.BusID] > 1 {
-					t.Errorf("bus %q listed more than once: %+v", st.BusID, second.Buses)
-				}
-			}
-		})
+		}
 	}
 }

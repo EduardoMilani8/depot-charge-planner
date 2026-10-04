@@ -76,10 +76,13 @@ func randomGarbagePlan(r *rand.Rand) Plan {
 }
 
 // One Planner lives through consecutive cycles with hostile, changing inputs (non-finite
-// and huge values, duplicate IDs, unknown statuses, perturbed specs, clock jumps) and
-// a normal layer that alternately works, returns garbage and panics. Every plan must
-// satisfy the invariants (against the raw input and against the sanitized copy), list
-// each bus once, and Plan must never panic.
+// and huge values, duplicate IDs, unknown statuses, perturbed specs, clock jumps, an
+// invalid step while the limit stays valid) and a normal layer that alternately works,
+// returns garbage and panics. Some steps corrupt the record of a charger the previous
+// plan powered, so a replayed last-valid plan meets a charger that sanitize switches
+// off, on a valid and on an invalid site. Every plan must satisfy the invariants
+// (against the raw input and against the sanitized copy), list each bus once, and Plan
+// must never panic.
 func TestPlannerMultiStepHostileInputs(t *testing.T) {
 	seeds := 2000
 	if testing.Short() {
@@ -108,7 +111,8 @@ func TestPlannerMultiStepHostileInputs(t *testing.T) {
 		for i := 0; i < r.Intn(11); i++ {
 			in.Buses = append(in.Buses, randomBus(r, now))
 		}
-		for step := 0; step < 6; step++ {
+		var prev Plan
+		for step := 0; step < 8; step++ {
 			switch r.Intn(5) { // clock: forward, backwards, big jump
 			case 0:
 				in.Now -= r.Intn(20)
@@ -123,7 +127,7 @@ func TestPlannerMultiStepHostileInputs(t *testing.T) {
 				in.Site.LimitKW = 800 * r.Float64()
 			}
 			in.Site.StepMin = 1
-			if r.Intn(10) == 0 {
+			if r.Intn(4) == 0 { // invalid step (0 or -1) about 1 step in 6; the limit may stay valid
 				in.Site.StepMin = r.Intn(3) - 1
 			}
 			// Mutate copies: the planner may keep goroutines reading earlier inputs.
@@ -141,6 +145,9 @@ func TestPlannerMultiStepHostileInputs(t *testing.T) {
 					in.Buses = append(in.Buses, randomBus(r, in.Now))
 				}
 			}
+			if r.Intn(3) == 0 {
+				corruptPoweredCharger(r, &in, prev)
+			}
 			plan, panicked := safePlan(pl, in)
 			if panicked != nil {
 				t.Fatalf("seed %d step %d: Plan panicked: %v\ninput: %+v", seed, step, panicked, in)
@@ -151,10 +158,9 @@ func TestPlannerMultiStepHostileInputs(t *testing.T) {
 			// Whatever layer produced the plan (including a cached last-valid plan made
 			// from an older input), no charger that sanitize switches off on THIS input
 			// may receive power, and each bus is listed at most once.
-			if validateSite(in) == nil {
-				if v := Violations(sanitize(in).in, plan); len(v) != 0 {
-					t.Fatalf("seed %d step %d (layer %v): a charger sanitize switched off is powered: %v\ninput: %+v\nplan: %+v", seed, step, plan.Layer, v, in, plan.Setpoints)
-				}
+			// This holds on an invalid site too (I1).
+			if v := Violations(sanitize(in).in, plan); len(v) != 0 {
+				t.Fatalf("seed %d step %d (layer %v, site %+v): a charger sanitize switched off is powered: %v\ninput: %+v\nplan: %+v", seed, step, plan.Layer, in.Site, v, in, plan.Setpoints)
 			}
 			listed := map[string]bool{}
 			for _, st := range plan.Buses {
@@ -163,6 +169,7 @@ func TestPlannerMultiStepHostileInputs(t *testing.T) {
 				}
 				listed[st.BusID] = true
 			}
+			prev = plan
 			layers[plan.Layer]++
 			for _, s := range plan.Setpoints {
 				if s.KW > 0 {
@@ -183,6 +190,37 @@ func TestPlannerMultiStepHostileInputs(t *testing.T) {
 	t.Logf("layers %v, plans with power %d, verifier corrections %d", layers, powered, corrected)
 	if layers[LayerNormal] == 0 || layers[LayerLastValid] == 0 || layers[LayerSafe] == 0 || powered*4 < seeds || corrected == 0 {
 		t.Errorf("the hostile run did not exercise every path: layers %v, powered %d, corrected %d", layers, powered, corrected)
+	}
+}
+
+// corruptPoweredCharger breaks the record of one charger that prev powered (if any) in a
+// way sanitize catches: a bad efficiency or last command, or a second bus claiming it.
+func corruptPoweredCharger(r *rand.Rand, in *Input, prev Plan) {
+	var ids []string
+	for _, s := range prev.Setpoints {
+		if s.KW > 0 {
+			ids = append(ids, s.ChargerID)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	id := ids[r.Intn(len(ids))]
+	for i := range in.Chargers {
+		if in.Chargers[i].ID != id {
+			continue
+		}
+		switch r.Intn(3) {
+		case 0:
+			in.Chargers[i].Efficiency = math.NaN()
+		case 1:
+			in.Chargers[i].LastCommandedKW = math.NaN()
+		default:
+			b := randomBus(r, in.Now)
+			b.ID, b.ChargerID = "B-intruder", id
+			in.Buses = append(in.Buses, b)
+		}
+		return
 	}
 }
 
