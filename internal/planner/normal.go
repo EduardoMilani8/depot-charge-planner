@@ -1,6 +1,7 @@
 package planner
 
 import (
+	"container/heap"
 	"fmt"
 	"math"
 	"sort"
@@ -20,6 +21,7 @@ type candidate struct {
 	requiredKW float64 // power that just meets the deadline
 	allocKW    float64
 	unusable   bool // battery limit is below the charger floor: cannot charge at all
+	leftOut    bool // left out by admission under overload: only gets leftover power
 	reliable   bool
 }
 
@@ -79,12 +81,20 @@ func newCandidate(cfg Config, in Input, b model.Bus, c model.Charger) candidate 
 	return cd
 }
 
-// allocate gives each bus the power that just meets its deadline (savable buses
-// first, least laxity first; doomed buses last), then spends spare power in the same
-// order on buses whose laxity is below cfg.SurplusLaxityMin (by default all of them).
+// allocate gives each bus the power that just meets its deadline, then spends spare
+// power in the same order on buses whose laxity is below cfg.SurplusLaxityMin (by
+// default all of them): savable buses least laxity first, doomed buses last.
+//
+// Under overload (spec §6.5: readiness first) admit picks the largest set of savable
+// buses the budget can finish. Those are served first (requirement, then spare power);
+// the buses it leaves out and the doomed ones only get what the admitted buses cannot
+// use. Spreading power over every bus by laxity instead finishes fewer buses: it was
+// measured below FIFO at 300-500 kW. Without overload nobody is left out and the
+// allocation is the plain one above.
 func allocate(cfg Config, budget float64, cands []*candidate) {
 	var savable, doomed []*candidate
 	for _, c := range cands {
+		c.leftOut = false
 		if c.need <= 0 || c.unusable {
 			continue
 		}
@@ -94,19 +104,36 @@ func allocate(cfg Config, budget float64, cands []*candidate) {
 			doomed = append(doomed, c)
 		}
 	}
-	sort.SliceStable(savable, func(i, j int) bool {
-		if savable[i].laxityMin != savable[j].laxityMin {
-			return savable[i].laxityMin < savable[j].laxityMin
-		}
-		return savable[i].bus.ID < savable[j].bus.ID
-	})
+	byLaxity := func(cs []*candidate) {
+		sort.SliceStable(cs, func(i, j int) bool {
+			if cs[i].laxityMin != cs[j].laxityMin {
+				return cs[i].laxityMin < cs[j].laxityMin
+			}
+			return cs[i].bus.ID < cs[j].bus.ID
+		})
+	}
+	admitted, left := admit(budget, savable)
+	for _, c := range left {
+		c.leftOut = true
+	}
+	byLaxity(admitted)
+	byLaxity(left)
 	sort.SliceStable(doomed, func(i, j int) bool {
 		if doomed[i].laxityMin != doomed[j].laxityMin {
 			return doomed[i].laxityMin > doomed[j].laxityMin
 		}
 		return doomed[i].bus.ID < doomed[j].bus.ID
 	})
-	order := append(append([]*candidate(nil), savable...), doomed...)
+	if len(left) == 0 {
+		fill(cfg, budget, append(admitted, doomed...))
+		return
+	}
+	budget = fill(cfg, budget, admitted)
+	fill(cfg, budget, append(left, doomed...))
+}
+
+// fill allocates budget over buses in the given order and returns what is left.
+func fill(cfg Config, budget float64, order []*candidate) float64 {
 	// Pass A: buses whose full requirement still fits get it. A bus whose requirement
 	// exceeds what is left cannot be saved by this budget, so it is deferred and must
 	// not consume power that a bus further down the order could still use to finish.
@@ -142,6 +169,59 @@ func allocate(cfg Config, budget float64, cands []*candidate) {
 			budget -= extra
 		}
 	}
+	return budget
+}
+
+// admit splits savable buses into the largest set the budget can finish and the rest
+// (Moore-Hodgson on the site budget, spec §6.5): buses are taken by deadline; whenever
+// the grid energy of the buses taken so far exceeds what the budget delivers by the
+// current deadline, the bus needing the most energy is left out. Without overload
+// every bus is admitted. It assumes the current budget for the rest of the night and
+// ignores buses not yet arrived; per-bus power limits are covered by laxity >= 0.
+func admit(budget float64, savable []*candidate) (admitted, left []*candidate) {
+	byDeadline := append([]*candidate(nil), savable...)
+	sort.SliceStable(byDeadline, func(i, j int) bool {
+		a, b := byDeadline[i], byDeadline[j]
+		if a.availMin != b.availMin {
+			return a.availMin < b.availMin
+		}
+		if a.gridNeed != b.gridNeed {
+			return a.gridNeed < b.gridNeed
+		}
+		return a.bus.ID < b.bus.ID
+	})
+	h := &needHeap{}
+	total := 0.0
+	for _, c := range byDeadline {
+		heap.Push(h, c)
+		total += c.gridNeed
+		if total > budget*c.availMin/60+1e-9 {
+			out := heap.Pop(h).(*candidate)
+			total -= out.gridNeed
+			left = append(left, out)
+		}
+	}
+	return []*candidate(*h), left
+}
+
+// needHeap is a max-heap of candidates by grid energy needed (ties: larger ID first,
+// so the bus left out is deterministic).
+type needHeap []*candidate
+
+func (h needHeap) Len() int { return len(h) }
+func (h needHeap) Less(i, j int) bool {
+	if h[i].gridNeed != h[j].gridNeed {
+		return h[i].gridNeed > h[j].gridNeed
+	}
+	return h[i].bus.ID > h[j].bus.ID
+}
+func (h needHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+func (h *needHeap) Push(x any)   { *h = append(*h, x.(*candidate)) }
+func (h *needHeap) Pop() any {
+	old := *h
+	x := old[len(old)-1]
+	*h = old[:len(old)-1]
+	return x
 }
 
 func finiteLaxity(x float64) float64 {
@@ -166,6 +246,10 @@ func (cd *candidate) status() BusStatus {
 		st.Reason = "alvo atingido"
 	case cd.unusable:
 		st.Reason = "limite da bateria abaixo do piso do carregador: não é possível carregar"
+	case cd.leftOut && cd.allocKW == 0:
+		st.Reason = fmt.Sprintf("sem potência disponível dentro do limite da garagem: priorizados os ônibus que conseguem terminar; déficit previsto %.1f kWh", st.ShortfallKWh)
+	case cd.leftOut && !st.WillReachTarget:
+		st.Reason = fmt.Sprintf("potência insuficiente: o limite da garagem não termina todos os ônibus; priorizados os que conseguem terminar, este recebe a sobra (%.1f kW); déficit previsto %.1f kWh", cd.allocKW, st.ShortfallKWh)
 	case cd.allocKW == 0:
 		st.Reason = "sem potência disponível dentro do limite da garagem"
 	case cd.laxityMin < 0 && !st.WillReachTarget: // a hair below 0 that still delivers is not infeasible

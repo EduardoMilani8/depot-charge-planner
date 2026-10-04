@@ -73,7 +73,7 @@ func TestBaselinesNeverViolateLimit(t *testing.T) {
 // operators unplugging charged buses), since the planner's own runs assume operators
 // follow its swaps.
 func TestPlannerNotWorseThanBaselines(t *testing.T) {
-	for _, limit := range []float64{2000, 1200, 600} {
+	for _, limit := range []float64{2000, 1200, 600, 500, 400} {
 		for _, profile := range allProfiles {
 			t.Run(fmt.Sprintf("%.0fkW/%s", limit, profile), func(t *testing.T) {
 				t.Parallel()

@@ -100,3 +100,37 @@ func TestUnplugFullUsesTheObservedReading(t *testing.T) {
 		}
 	}
 }
+
+// OperatorMoves counts the manual moves operators made in a run: swaps executed for
+// the planner (only when they follow them) and buses unplugged for fifo-unplug.
+func TestOperatorMovesCountsExecutedSwapsAndUnplugs(t *testing.T) {
+	sc := oneChargerTwoBuses()
+	if m := Run(sc, NewFIFO(), nil); m.OperatorMoves != 0 {
+		t.Errorf("fifo without operators: %v moves, want 0", m.OperatorMoves)
+	}
+	sc.UnplugFull = true
+	if m := Run(sc, NewFIFO(), nil); m.OperatorMoves != 1 {
+		t.Errorf("fifo-unplug: %v moves, want 1 (B1 unplugged once)", m.OperatorMoves)
+	}
+
+	sc = twoBusScenario()
+	sc.Buses[0].Bus.SoCKWh = 270
+	sc.Buses[0].Bus.DepartureMin = 400
+	sc.Buses = append(sc.Buses, BusSpec{Bus: model.Bus{
+		ID: "B3", CapacityKWh: 300, SoCKWh: 0, SoCConfidence: 1, TargetKWh: 240,
+		ArrivalMin: 0, DepartureMin: 200, MaxBatteryKW: 150,
+	}})
+	sc.FollowSwaps = true
+	rc := &recordingController{inner: plannerCtrl(sc)}
+	m := Run(sc, rc, nil)
+	if rc.swaps == 0 || m.OperatorMoves < 1 || m.OperatorMoves > float64(rc.swaps) {
+		t.Errorf("planner with swaps followed: %v moves for %d recommended swaps", m.OperatorMoves, rc.swaps)
+	}
+	sc.FollowSwaps = false
+	if m := Run(sc, plannerCtrl(sc), nil); m.OperatorMoves != 0 {
+		t.Errorf("swaps not followed: %v moves, want 0", m.OperatorMoves)
+	}
+	if a := Aggregate([]Metrics{{OperatorMoves: 1}, {OperatorMoves: 2}}); a.OperatorMoves != 1.5 {
+		t.Errorf("Aggregate must average the moves per run: %v", a.OperatorMoves)
+	}
+}

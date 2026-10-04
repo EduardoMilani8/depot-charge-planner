@@ -227,10 +227,11 @@ func TestNormalIsDeterministicAndPure(t *testing.T) {
 }
 
 func TestNormalUnsavableBusDoesNotStarveSavableOne(t *testing.T) {
-	// limit 100. A: need 120 kWh in 60 min -> required 120 kW (> 100, cannot be saved
-	// by this budget); laxity 60 - 120/150*60 = 12. B: need 120 kWh in 300 min ->
-	// required 24 kW, laxity 252. Order A, B. A's requirement exceeds the budget, so it
-	// is deferred; B takes 24, leaving 76 for A (deficit 120-76 = 44 kWh).
+	// limit 100. A: need 120 kWh in 60 min (laxity 12) but 100 kW for 60 min deliver
+	// only 100 kWh: the budget cannot finish it. B: need 120 kWh in 300 min, required
+	// 24 kW. Admission (R1) leaves A out, so B is served first: its 24 kW plus the
+	// spare power up to the budget (100 kW), and A gets only what B cannot use (none).
+	// (Before R1, B got exactly 24 kW and A the other 76 kW.)
 	in := Input{
 		Site:     model.Site{LimitKW: 100, StepMin: 1},
 		Chargers: []model.Charger{testCharger("C1"), testCharger("C2")},
@@ -240,18 +241,18 @@ func TestNormalUnsavableBusDoesNotStarveSavableOne(t *testing.T) {
 		},
 	}
 	p := PlanNormal(testConfig(), in)
-	if !near(sp(p, "C2"), 24) || !near(sp(p, "C1"), 76) {
-		t.Errorf("got A=%v B=%v, want 76/24", sp(p, "C1"), sp(p, "C2"))
+	if !near(sp(p, "C2"), 100) || sp(p, "C1") != 0 {
+		t.Errorf("got A=%v B=%v, want 0/100", sp(p, "C1"), sp(p, "C2"))
 	}
 	if !statusOf(p, "B").WillReachTarget {
 		t.Errorf("B must reach its target: %+v", statusOf(p, "B"))
 	}
 	a := statusOf(p, "A")
-	if a.WillReachTarget || !near(a.ShortfallKWh, 44) {
-		t.Errorf("A must miss its target by 44 kWh: %+v", a)
+	if a.WillReachTarget || !near(a.ShortfallKWh, 120) {
+		t.Errorf("A must miss its target by 120 kWh: %+v", a)
 	}
-	if !strings.Contains(a.Reason, "insuficiente") || strings.Contains(a.Reason, "folga") {
-		t.Errorf("A's reason must report insufficient power, not slack: %q", a.Reason)
+	if !strings.Contains(a.Reason, "priorizados") || strings.Contains(a.Reason, "folga") {
+		t.Errorf("A's reason must say the buses that can finish come first, not slack: %q", a.Reason)
 	}
 	if v := Violations(in, p); len(v) != 0 {
 		t.Errorf("plan violates invariants: %v", v)
@@ -308,5 +309,55 @@ func TestNormalEpsilonNegativeLaxityIsNotInfeasible(t *testing.T) {
 	}
 	if strings.Contains(st.Reason, "inviável") || strings.Contains(st.Reason, "faltam") {
 		t.Errorf("reason contradicts WillReachTarget: %q", st.Reason)
+	}
+}
+
+// R1, spec §6.5/§12: under overload the planner must maximise the number of buses
+// that reach their target, not spread power by laxity. 150 kW for 2 h is 300 kWh; A
+// needs 200 kWh (least laxity), B and C 120 kWh each. Least laxity first finishes only
+// A; admitting the buses that fit (B and C) finishes two.
+func TestNormalOverloadAdmitsTheBusesThatCanFinish(t *testing.T) {
+	in := Input{
+		Site:     model.Site{LimitKW: 150, StepMin: 1},
+		Chargers: []model.Charger{testCharger("C1"), testCharger("C2"), testCharger("C3")},
+		Buses: []model.Bus{
+			testBus("A", "C1", 0, 200, 120),   // 200 kWh, laxity 40 min
+			testBus("B", "C2", 100, 220, 120), // 120 kWh, laxity 72 min
+			testBus("C", "C3", 100, 220, 120), // 120 kWh, laxity 72 min
+		},
+	}
+	p := PlanNormal(testConfig(), in)
+	if v := Violations(in, p); len(v) != 0 {
+		t.Fatalf("violations: %v", v)
+	}
+	for _, id := range []string{"B", "C"} {
+		if st := statusOf(p, id); !st.WillReachTarget {
+			t.Errorf("%s fits in the budget with the other short job and must be planned to finish: %+v", id, st)
+		}
+	}
+	if st := statusOf(p, "A"); st.WillReachTarget || sp(p, "C1") != 0 || !strings.Contains(st.Reason, "priorizados") {
+		t.Errorf("A cannot finish together with B and C and must not take their power: A=%.1f kW %+v", sp(p, "C1"), st)
+	}
+	if !near(sp(p, "C2")+sp(p, "C3"), 150) {
+		t.Errorf("all the budget must still be spent: B=%v C=%v", sp(p, "C2"), sp(p, "C3"))
+	}
+}
+
+// Admission only matters under overload: when every bus fits, nobody is starved.
+func TestNormalNoOverloadKeepsEveryBus(t *testing.T) {
+	in := Input{
+		Site:     model.Site{LimitKW: 300, StepMin: 1},
+		Chargers: []model.Charger{testCharger("C1"), testCharger("C2"), testCharger("C3")},
+		Buses: []model.Bus{
+			testBus("A", "C1", 0, 200, 120),
+			testBus("B", "C2", 100, 220, 120),
+			testBus("C", "C3", 100, 220, 300),
+		},
+	}
+	p := PlanNormal(testConfig(), in)
+	for _, id := range []string{"A", "B", "C"} {
+		if st := statusOf(p, id); !st.WillReachTarget {
+			t.Errorf("%s must reach its target: %+v", id, st)
+		}
 	}
 }

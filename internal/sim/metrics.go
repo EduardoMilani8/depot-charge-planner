@@ -19,6 +19,10 @@ type Metrics struct {
 	PlanChanges    int            `json:"plan_changes"`
 	LayerTicks     map[string]int `json:"layer_ticks"`
 	PlanP99Micros  int64          `json:"plan_p99_micros"`
+	// OperatorMoves is the manual work asked of operators: planner swaps executed (only
+	// when they follow them) plus buses unplugged by the fifo-unplug routine. Per run;
+	// Aggregate gives the mean per run.
+	OperatorMoves float64 `json:"operator_moves"`
 }
 
 func p99Micros(d []time.Duration) int64 {
@@ -52,6 +56,7 @@ func Aggregate(ms []Metrics) Metrics {
 		a.EnergyKWh += m.EnergyKWh / n
 		a.CostBRL += m.CostBRL / n
 		a.PlanChanges += m.PlanChanges
+		a.OperatorMoves += m.OperatorMoves / n
 		if m.PlanP99Micros > a.PlanP99Micros {
 			a.PlanP99Micros = m.PlanP99Micros
 		}

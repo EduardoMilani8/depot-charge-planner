@@ -45,6 +45,7 @@ type World struct {
 	cmd       map[string]float64 // commands issued this step
 	applied   map[string]float64 // power in effect (commands of the previous step)
 	freed     map[string]bool    // chargers operators freed this tick (UnplugFull)
+	moves     int                // manual moves: swaps executed and buses unplugged
 	ready     int
 	shortfall float64
 }
@@ -220,6 +221,7 @@ func (w *World) unplugFull() {
 		bs.chargerID = ""
 		bs.parked = true
 		waiting--
+		w.moves++
 	}
 }
 
@@ -346,6 +348,7 @@ func (w *World) applySwaps(swaps []planner.Swap) {
 		}
 		in.busyUntil = w.t + swapDurationMin
 		out.busyUntil = w.t + swapDurationMin
+		w.moves++
 	}
 }
 
@@ -404,6 +407,7 @@ func (w *World) finish(m *Metrics) {
 	}
 	m.Ready = w.ready
 	m.ShortfallKWh = w.shortfall
+	m.OperatorMoves = float64(w.moves)
 	if m.Buses > 0 {
 		m.ReadyPct = 100 * float64(m.Ready) / float64(m.Buses)
 	}

@@ -33,7 +33,7 @@ func reachCount(cfg Config, budget float64, cands []candidate, waiting []model.B
 	ptrs := make([]*candidate, len(cands))
 	for i := range cands {
 		c := cands[i]
-		c.allocKW = 0
+		c.allocKW, c.leftOut = 0, false
 		ptrs[i] = &c
 	}
 	allocate(cfg, budget, ptrs)
