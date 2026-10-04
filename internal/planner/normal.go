@@ -182,7 +182,16 @@ func fill(cfg Config, budget float64, order []*candidate) float64 {
 // the grid energy of the buses taken so far exceeds what the budget delivers by the
 // current deadline, the bus needing the most energy is left out. Without overload
 // every bus is admitted. It assumes the current budget for the rest of the night and
-// ignores buses not yet arrived; per-bus power limits are covered by laxity >= 0.
+// ignores buses not yet arrived.
+//
+// It checks only the cumulative site budget, so the admitted set is not guaranteed
+// feasible: each bus's own power cap (laxity >= 0) is checked alone, not together with
+// the others. Example: budget 100 kW; A needs 100 kWh by minute 60 with a 100 kW cap,
+// B needs 100 kWh by minute 120 with a 50 kW cap. Both pass (100 <= 100x1, 200 <=
+// 100x2), but A takes the whole budget in the first hour and B, capped at 50 kW, gets
+// only 50 kWh in the second. The planner re-runs every cycle, so such a bus turns
+// doomed once its laxity goes negative, the rest is re-admitted and it still gets the
+// leftover power: the error costs at most that bus, not the plan's validity.
 func admit(budget float64, savable []*candidate) (admitted, left []*candidate) {
 	byDeadline := append([]*candidate(nil), savable...)
 	sort.SliceStable(byDeadline, func(i, j int) bool {
