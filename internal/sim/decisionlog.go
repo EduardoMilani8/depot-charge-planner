@@ -29,6 +29,11 @@ type DecisionRecord struct {
 //     {"minute":..,"input":{..},"plan":{..}}.
 //   - Version 1 (older logs) has no header; its records read the same way.
 //
+// Config fields added later are additive and keep version 2: a header written before
+// them reads them as 0. In particular SwapBackCooldownMin and SwapBackMinNeedKWh read
+// as 0 from older logs, which means the anti-thrash rule off (setpoints, the only
+// thing Replay compares, do not depend on it).
+//
 // Inside records, field names are the Go field names of planner.Input and
 // planner.Plan. Floats that JSON cannot represent are written as the strings "NaN",
 // "+Inf" and "-Inf", so NaN and infinite readings round-trip exactly. Plan.Layer is
@@ -190,7 +195,10 @@ func Replay(cfg planner.Config, recs []DecisionRecord) []ReplayDiff {
 //
 // Each record is re-planned by a fresh planner.New(cfg) (so bad records are sanitized
 // exactly as in the field) with a generous timeout, so a slow machine does not turn a
-// replay into a timeout fallback.
+// replay into a timeout fallback. Only setpoints are compared. They depend on the
+// record's input alone; the swap recommendations also depend on the Planner's memory
+// of earlier cycles (anti-thrash: the buses it told to give way and their readings
+// since), which a fresh Planner does not have, so swaps are not reproduced from a log.
 func ReplayStats(cfg planner.Config, recs []DecisionRecord) (diffs []ReplayDiff, replayed, skipped int) {
 	cfg.Timeout = time.Minute
 	for _, rec := range recs {

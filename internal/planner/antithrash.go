@@ -92,9 +92,16 @@ func (m *swapMemory) observe(cfg Config, in Input) {
 // waiting, unless at least cfg.SwapBackCooldownMin minutes passed and its need by the
 // mean of its readings since it left is above cfg.SwapBackMinNeedKWh (a bus without
 // any fresh reliable reading since then is not brought back). It returns the kept
-// swaps and one note per dropped swap. It runs after PlanNormal's greedy search, so a
-// kept swap judged after a dropped one keeps its reason, whose predicted ready counts
-// assumed the dropped swap; the donor of a dropped swap is offered again next cycle.
+// swaps and one note per dropped swap.
+//
+// It runs after PlanNormal's greedy search (recommendSwaps), which does not know which
+// buses are blocked. So a blocked bus still takes part in the search: if it is the
+// most urgent, it can take the only full donor, its swap is then dropped here, and no
+// other waiting bus gets that donor in this cycle, nor in later cycles while the same
+// blocked bus keeps winning the search. A kept swap judged after a dropped one also
+// keeps its reason, whose predicted ready counts assumed the dropped swap. Re-running
+// the search without the blocked buses was measured in review (not committed) and
+// was worse: ready% 72.0 -> 66.6 at 1200 kW severe and 88.5 -> 83.0 at 2000 kW severe.
 func (m *swapMemory) filter(cfg Config, in Input, swaps []Swap) (kept []Swap, notes []string) {
 	if len(swaps) == 0 || len(m.gaveWay) == 0 || !cfg.antiThrash() {
 		return swaps, nil

@@ -67,7 +67,8 @@ type sanitized struct {
 
 // sanitize drops bad bus records and disables bad charger records instead of
 // rejecting the whole input, so one corrupt record never switches the depot off.
-// The site itself must already be valid (validateSite).
+// It never reads the site, so Plan runs it before validateSite: even on an invalid
+// site its result is used to verify and annotate the fallback plan.
 //
 //   - A bad charger (bad spec, unknown status, empty or duplicated ID) is kept but
 //     marked faulted (offline ones stay offline so their draw is still reserved): it
