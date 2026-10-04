@@ -78,7 +78,8 @@ func randomGarbagePlan(r *rand.Rand) Plan {
 // One Planner lives through consecutive cycles with hostile, changing inputs (non-finite
 // and huge values, duplicate IDs, unknown statuses, perturbed specs, clock jumps) and
 // a normal layer that alternately works, returns garbage and panics. Every plan must
-// satisfy the invariants and Plan must never panic.
+// satisfy the invariants (against the raw input and against the sanitized copy), list
+// each bus once, and Plan must never panic.
 func TestPlannerMultiStepHostileInputs(t *testing.T) {
 	seeds := 2000
 	if testing.Short() {
@@ -146,6 +147,21 @@ func TestPlannerMultiStepHostileInputs(t *testing.T) {
 			}
 			if v := Violations(in, plan); len(v) != 0 {
 				t.Fatalf("seed %d step %d (layer %v): %v\ninput: %+v\nplan: %+v", seed, step, plan.Layer, v, in, plan.Setpoints)
+			}
+			// Whatever layer produced the plan (including a cached last-valid plan made
+			// from an older input), no charger that sanitize switches off on THIS input
+			// may receive power, and each bus is listed at most once.
+			if validateSite(in) == nil {
+				if v := Violations(sanitize(in).in, plan); len(v) != 0 {
+					t.Fatalf("seed %d step %d (layer %v): a charger sanitize switched off is powered: %v\ninput: %+v\nplan: %+v", seed, step, plan.Layer, v, in, plan.Setpoints)
+				}
+			}
+			listed := map[string]bool{}
+			for _, st := range plan.Buses {
+				if listed[st.BusID] {
+					t.Fatalf("seed %d step %d (layer %v): bus %q listed twice in Plan.Buses: %+v", seed, step, plan.Layer, st.BusID, plan.Buses)
+				}
+				listed[st.BusID] = true
 			}
 			layers[plan.Layer]++
 			for _, s := range plan.Setpoints {

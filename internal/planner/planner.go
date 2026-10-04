@@ -65,7 +65,7 @@ func (p *Planner) Plan(in Input) Plan {
 		p.log.Warn("leituras de SoC pouco confiáveis; usando perfil seguro", "minute", in.Now)
 		plan := PlanSafe(s.in)
 		plan.Notes = append(plan.Notes, "leituras de SoC pouco confiáveis na maioria dos ônibus")
-		return s.annotate(p.finish(in, plan))
+		return s.annotate(p.cfg, p.finish(in, &s, plan))
 	}
 	plan, err := p.runNormal(s.in)
 	if err != nil {
@@ -73,15 +73,20 @@ func (p *Planner) Plan(in Input) Plan {
 		return p.fallback(in, s, err.Error(), true)
 	}
 	plan.Layer = LayerNormal
-	plan = p.finish(in, plan)
+	plan = p.finish(in, &s, plan)
 	p.last, p.hasLast, p.lastAt = clonePlan(plan), true, in.Now
-	return s.annotate(plan)
+	return s.annotate(p.cfg, plan)
 }
 
-// finish runs the verifier against the input exactly as received (not the sanitized
-// copy), so whoever computed the plan is never who guarantees it.
-func (p *Planner) finish(in Input, plan Plan) Plan {
+// finish runs the verifier against the input exactly as received, so whoever computed
+// the plan is never who guarantees it, and then (when the site is valid, s != nil)
+// against the sanitized copy as well: a plan not computed from s.in, i.e. the cached
+// last-valid plan, must not power a charger that sanitize switched off on this input.
+func (p *Planner) finish(in Input, s *sanitized, plan Plan) Plan {
 	out := Enforce(in, plan)
+	if s != nil {
+		out = Enforce(s.in, out)
+	}
 	if len(out.Notes) > len(plan.Notes) {
 		p.log.Warn("verificador corrigiu o plano", "minute", in.Now, "layer", plan.Layer.String())
 	}
@@ -89,12 +94,16 @@ func (p *Planner) finish(in Input, plan Plan) Plan {
 }
 
 func (p *Planner) fallback(in Input, s sanitized, reason string, siteValid bool) Plan {
+	var cleaned *sanitized // nil for an invalid site: s.in is then empty
+	if siteValid {
+		cleaned = &s
+	}
 	if p.hasLast && in.Now >= p.lastAt && in.Now-p.lastAt <= p.cfg.LastPlanTTLMin {
 		plan := clonePlan(p.last)
 		plan.Layer = LayerLastValid
 		plan.Swaps = nil
 		plan.Notes = append(plan.Notes, "usando o último plano válido: "+reason)
-		return s.annotate(p.finish(in, plan))
+		return s.annotate(p.cfg, p.finish(in, cleaned, plan))
 	}
 	var plan Plan
 	if siteValid {
@@ -103,7 +112,7 @@ func (p *Planner) fallback(in Input, s sanitized, reason string, siteValid bool)
 		plan = zeroPlan(in)
 	}
 	plan.Notes = append(plan.Notes, "fallback: "+reason)
-	return s.annotate(p.finish(in, plan))
+	return s.annotate(p.cfg, p.finish(in, cleaned, plan))
 }
 
 func (p *Planner) runNormal(in Input) (Plan, error) {

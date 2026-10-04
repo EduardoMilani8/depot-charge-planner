@@ -190,3 +190,66 @@ func TestPlannerInvalidSiteGivesZeroPlan(t *testing.T) {
 		})
 	}
 }
+
+// R2: the last-valid fallback replays a plan made before a record went bad. It must
+// not power a charger that sanitize switched off on the current input, and a dropped
+// bus must appear once in Plan.Buses (its "registro inválido" entry), not also with
+// its stale status from the cached plan.
+func TestLastValidNeverPowersAChargerSanitizeSwitchedOff(t *testing.T) {
+	// c1Off: sanitize switches C1 off on the current input. When B1 merely points at an
+	// unknown charger, B1 is dropped but C1 itself is a good, free charger.
+	cases := map[string]struct {
+		mutate func(*Input)
+		c1Off  bool
+	}{
+		"C1 efficiency NaN":       {func(in *Input) { in.Chargers[0].Efficiency = math.NaN() }, true},
+		"C1 efficiency 1.5":       {func(in *Input) { in.Chargers[0].Efficiency = 1.5 }, true},
+		"C1 last commanded NaN":   {func(in *Input) { in.Chargers[0].LastCommandedKW = math.NaN() }, true},
+		"second bus claims C1":    {func(in *Input) { in.Buses = append(in.Buses, testBus("B9", "C1", 100, 200, 300)) }, true},
+		"B1 capacity NaN":         {func(in *Input) { in.Buses[0].CapacityKWh = math.NaN() }, true},
+		"B1 duplicated with C2":   {func(in *Input) { in.Buses = append(in.Buses, testBus("B1", "C2", 100, 200, 300)) }, true},
+		"B1 on unknown charger X": {func(in *Input) { in.Buses[0].ChargerID = "X" }, false},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			calls := 0
+			pl := New(testConfig()).WithNormal(func(c Config, in Input) Plan {
+				calls++
+				if calls > 1 {
+					panic("boom")
+				}
+				return PlanNormal(c, in)
+			})
+			in := depotWithGoodBus()
+			first := pl.Plan(in)
+			if first.Layer != LayerNormal || sp(first, "C1") <= 0 {
+				t.Fatalf("call 1 must power C1 through the normal layer: %+v", first)
+			}
+			in.Now = 1
+			in.Chargers = append([]model.Charger(nil), in.Chargers...)
+			in.Buses = append([]model.Bus(nil), in.Buses...)
+			c.mutate(&in)
+			second := pl.Plan(in)
+			if second.Layer != LayerLastValid {
+				t.Fatalf("call 2 layer = %v, want last-valid", second.Layer)
+			}
+			if v := Violations(in, second); len(v) != 0 {
+				t.Errorf("violations: %v", v)
+			}
+			if kw := sp(second, "C1"); c.c1Off && kw != 0 {
+				t.Errorf("C1 was switched off by sanitize but the last-valid plan gives it %.1f kW; buses %+v", kw, second.Buses)
+			}
+			// B1 still needs 120 kWh and gets nothing: the cached "will reach" is stale.
+			if st := statusOf(second, "B1"); c.c1Off && st.WillReachTarget {
+				t.Errorf("B1 gets no power but its status still says it will reach its target: %+v", st)
+			}
+			ids := map[string]int{}
+			for _, st := range second.Buses {
+				ids[st.BusID]++
+				if ids[st.BusID] > 1 {
+					t.Errorf("bus %q listed more than once: %+v", st.BusID, second.Buses)
+				}
+			}
+		})
+	}
+}

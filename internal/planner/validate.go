@@ -151,24 +151,36 @@ func sanitize(in Input) sanitized {
 	return s
 }
 
-// annotate explains, on a plan made from s.in, what sanitize removed: buses on
-// disabled chargers get a reason naming the charger, dropped buses are listed.
-func (s sanitized) annotate(p Plan) Plan {
+// annotate explains what sanitize removed: buses on disabled chargers get a status
+// (recomputed from the current record: no power) whose reason names the charger, and
+// dropped buses are listed. The plan may also be the cached last-valid one, made from
+// an older input, so its statuses for those buses are stale and are replaced, and a
+// status for a bus dropped now gives way to the dropped entry (each bus is listed once).
+func (s sanitized) annotate(cfg Config, p Plan) Plan {
 	if len(s.problems) == 0 {
 		return p
 	}
-	onCharger := map[string]string{}
-	for _, b := range s.in.Buses {
-		onCharger[b.ID] = b.ChargerID
+	present := map[string]model.Bus{}
+	for _, b := range presentBuses(s.in) {
+		present[b.ID] = b
 	}
-	p.Buses = append([]BusStatus(nil), p.Buses...)
-	for i, st := range p.Buses {
-		cid := onCharger[st.BusID]
-		if prob, bad := s.badChargers[cid]; bad && cid != "" {
-			p.Buses[i].Reason = fmt.Sprintf("carregador %s com registro inválido (%s): sem potência", cid, prob)
+	isDropped := make(map[string]bool, len(s.dropped))
+	for _, d := range s.dropped {
+		isDropped[d.BusID] = true
+	}
+	kept := make([]BusStatus, 0, len(p.Buses)+len(s.dropped))
+	for _, st := range p.Buses {
+		if isDropped[st.BusID] {
+			continue
 		}
+		if b, ok := present[st.BusID]; ok && b.ChargerID != "" {
+			if prob, bad := s.badChargers[b.ChargerID]; bad {
+				st = idleStatus(cfg, idleBus{bus: b, reason: fmt.Sprintf("carregador %s com registro inválido (%s): sem potência", b.ChargerID, prob)})
+			}
+		}
+		kept = append(kept, st)
 	}
-	p.Buses = append(p.Buses, s.dropped...)
+	p.Buses = append(kept, s.dropped...)
 	sort.SliceStable(p.Buses, func(i, j int) bool { return p.Buses[i].BusID < p.Buses[j].BusID })
 	p.Notes = append(append([]string(nil), p.Notes...),
 		fmt.Sprintf("registros inválidos ignorados (%d): %v", len(s.problems), s.problems))
