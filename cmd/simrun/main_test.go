@@ -102,3 +102,36 @@ func TestRunFollowSwapsFlagAndUnplugBaseline(t *testing.T) {
 		t.Errorf("the table must say whether swaps were followed:\n%s\n%s", on.String(), off.String())
 	}
 }
+
+// The anti-thrash knobs are flags, so the README's "rule off" numbers are reproducible;
+// they reach the planner (decision log header) and bad values are rejected.
+func TestRunSwapBackFlags(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "decisions.jsonl")
+	var out, errOut bytes.Buffer
+	args := []string{"-buses", "4", "-chargers", "2", "-limit", "200", "-seeds", "1", "-log", path,
+		"-swap-back-cooldown", "0", "-swap-back-min-need", "0"}
+	if code := run(args, &out, &errOut); code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "swap back: after 0 min, need > 0 kWh") {
+		t.Errorf("the table must state the anti-thrash settings:\n%s", out.String())
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	h, _, err := sim.ReadDecisionLogWithHeader(f)
+	if err != nil || h == nil {
+		t.Fatalf("unreadable log: %v", err)
+	}
+	if h.Config.SwapBackCooldownMin != 0 || h.Config.SwapBackMinNeedKWh != 0 {
+		t.Errorf("flags did not reach the planner config: %+v", h.Config)
+	}
+	for _, bad := range [][]string{{"-swap-back-cooldown", "-1"}, {"-swap-back-min-need", "NaN"}, {"-swap-back-min-need", "-3"}} {
+		var o, e bytes.Buffer
+		if code := run(bad, &o, &e); code != 2 || e.Len() == 0 || o.Len() != 0 {
+			t.Errorf("%v: exit %d, stderr %q, stdout %q; want exit 2 with a message", bad, code, e.String(), o.String())
+		}
+	}
+}

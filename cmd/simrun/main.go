@@ -34,6 +34,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 	logPath := fs.String("log", "", "write the planner decision log (JSON lines) for seed 1")
 	fs.BoolVar(&p.FollowSwaps, "follow-swaps", p.FollowSwaps,
 		"operators execute every swap the planner recommends (assumption; false = planner without swaps)")
+	cfg := planner.DefaultConfig()
+	fs.IntVar(&cfg.SwapBackCooldownMin, "swap-back-cooldown", cfg.SwapBackCooldownMin,
+		"anti-thrash: minutes before a bus that gave way may be swapped back (0 and -swap-back-min-need 0: rule off)")
+	fs.Float64Var(&cfg.SwapBackMinNeedKWh, "swap-back-min-need", cfg.SwapBackMinNeedKWh,
+		"anti-thrash: kWh a bus that gave way must need, by the mean of its readings while it waits, to be swapped back")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -64,8 +69,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "-limit must be a finite value in (0, %g] kW\n", maxLimitKW)
 		return 2
 	}
+	if cfg.SwapBackCooldownMin < 0 {
+		fmt.Fprintln(stderr, "-swap-back-cooldown must be >= 0")
+		return 2
+	}
+	// Written so that NaN fails the check (+Inf is allowed: never swap back).
+	if !(cfg.SwapBackMinNeedKWh >= 0) {
+		fmt.Fprintln(stderr, "-swap-back-min-need must be >= 0")
+		return 2
+	}
 	p.Profile = sim.FaultProfile(*profile)
-	cfg := planner.DefaultConfig()
 
 	type maker struct {
 		name string
@@ -81,7 +94,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		{"planner", func(sc sim.Scenario) sim.Controller { return sim.NewPlannerController(cfg, sc) }},
 	}
 
-	fmt.Fprintf(stdout, "profile: %s, limit: %g kW, follow swaps: %v\n", p.Profile, p.LimitKW, p.FollowSwaps)
+	fmt.Fprintf(stdout, "profile: %s, limit: %g kW, follow swaps: %v, swap back: after %d min, need > %g kWh\n",
+		p.Profile, p.LimitKW, p.FollowSwaps, cfg.SwapBackCooldownMin, cfg.SwapBackMinNeedKWh)
 	w := tabwriter.NewWriter(stdout, 0, 8, 2, ' ', 0)
 	// energy kWh: grid energy delivered per run (mean). moves/run: swaps executed
 	// (planner, when operators follow them) or buses unplugged (fifo-unplug).
