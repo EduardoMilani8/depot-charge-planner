@@ -53,6 +53,16 @@ Seletor para trocar o controlador no mesmo cenário e semente. Os parâmetros fi
 
 Erros e estados: carregando, vazio, falha de rede, erro do servidor com mensagem em português; nova execução cancela a anterior; campo inválido marcado com o texto do servidor. Informação nunca só pela cor; cores seguras para daltonismo.
 
+## 5b. Animações (acrescentado em 2026-10-05 a pedido do autor)
+
+Movimento que ajuda a entender, não enfeite. Tudo em CSS e JavaScript simples, sem dependências; respeita `prefers-reduced-motion` e um interruptor "Animações" (preferência guardada no navegador); desligadas, nenhuma informação se perde.
+
+- **Reproduzir o dia** na aba Execução: botão reproduzir/pausar (e tecla Espaço), velocidade de 30 min/s a 10 h/s, repetir e "do começo". Durante a reprodução o gráfico de potência mostra o passado nítido e o futuro esmaecido.
+- **Vida nas linhas do tempo:** ônibus que estão carregando pulsam; nos carregadores ocupados corre um fluxo tracejado; carregador em falha pisca; as marcas de saída (● / ✗) e de rodízio estouram quando o cursor passa.
+- **Feed de acontecimentos** em tempo real: saídas (prontos ou não), rodízios recomendados, mudanças de camada do planejador (último plano válido, perfil seguro) e quedas do limite ou falhas de carregador.
+- **Transições:** painéis sobem ao trocar de aba; na Comparação as linhas entram em sequência, o percentual de prontos conta até o valor, a barra da média cresce e os pontos das sementes aparecem em cascata; o resumo da execução também conta.
+- **Desempenho:** a reprodução move o cursor uma vez por quadro; o painel de decisão é atualizado no máximo 10 vezes por segundo.
+
 ## 6. API
 
 Rotas JSON; requisições POST com corpo JSON.

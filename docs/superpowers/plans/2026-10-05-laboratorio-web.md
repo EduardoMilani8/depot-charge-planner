@@ -22,6 +22,7 @@
 - Limites de validação (compartilhados com o `simrun`): ônibus e carregadores até 10000, sementes até 1000, limite finito em (0, 1e7] kW, idade de leitura de 0 a 10000 minutos.
 - Limites de trabalho do laboratório: ônibus × sementes ≤ 20000 em `/api/compare`; ônibus ≤ 1000 em `/api/run`; prazo de 60 s por requisição.
 - Informação nunca só pela cor; cores seguras para daltonismo (paleta Okabe-Ito).
+- Animações (Tarefa 8) só com CSS e JavaScript simples, sem dependências; respeitam `prefers-reduced-motion` e o interruptor "Animações" (preferência guardada em `localStorage`, com `try/catch`); com animações desligadas nada perde informação.
 - Cada tarefa termina com commit direto no `main` e `git push` (autorização permanente do usuário; sem force-push, sem apagar branches, sem reescrever histórico). Mensagens de commit terminam com a linha `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`.
 - Antes de cada push: `gofmt -l .` sem saída, `go vet ./...`, `go test -race ./...` (e `node --test web/test` a partir da Tarefa 4).
 
@@ -4849,6 +4850,577 @@ Em `docs/superpowers/specs/2026-10-05-laboratorio-web-design.md`, troque a linha
 gofmt -l . ; go vet ./... && go test -race ./... && node --test web/test/
 git add web README.md docs/superpowers/specs/2026-10-05-laboratorio-web-design.md
 git commit -m "feat(lab): copy-link button, reading help and README section
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
+git push
+```
+
+---
+
+### Task 8: Animações — reprodução do dia, feed de eventos e transições
+
+Acrescentada em 2026-10-05 a pedido do autor ("algo com animações bem legais"). Vem depois das telas das tarefas 4 a 6 e só adiciona movimento por cima delas; nada nas tarefas 1 a 3 muda. Detalhe do desenho na seção 5b da spec.
+
+**Files:**
+- Create: `web/static/js/motion.js`, `web/static/js/events.js`, `web/static/js/feed.js`; testes `web/test/motion.test.mjs`, `web/test/events.test.mjs`
+- Modify: `web/static/index.html`, `web/static/app.css`, `web/static/js/main.js`, `web/static/js/compare.js`, `web/static/js/run.js`, `web/static/js/decisionPanel.js`, `web/static/js/charts/power.js`, `web/static/js/charts/gantt.js`
+
+**Interfaces:**
+- Consumes: `createCursor` (`cursor.value`, `cursor.max`, `cursor.set`, `cursor.onChange`), os dados de `/api/run` (`series.layer`, `series.buses[].{state,charger}`, `series.chargers[].physical_kw`, `decisions`, `outcomes`, `scenario.faults`), `POWER_FAULTS`, `describeFault`, `LAYER_LABEL`, `fmtPct`, `clock`.
+- Produces:
+  - `motion.js`: `easeOutCubic(t)`, `lerp(a, b, t)`, `animationsEnabled()`, `setAnimations(on)`, `applyMotionClass()`, `countUp(el, to, fmt, ms, from)`, `throttle(fn, ms)`, `createPlayer(cursor, deps)` → `{ play, pause, toggle, restart, setSpeed(v), setLoop(v), onChange(fn) → unsubscribe, state }` onde `state = { playing, speed, loop }` (`speed` = minutos simulados por segundo real).
+  - `events.js`: `eventsBetween(data, from, to, maxSpan = 30)` → `[{minute, type: 'depart'|'swap'|'layer'|'fault', ok?, bus?, text}]` com `from < minute <= to`, ordenados por minuto; devolve `[]` quando `to - from > maxSpan` (salto do cursor, não reprodução).
+  - `feed.js`: `createFeed(root)` → `{ push(events), clear() }`.
+  - `charts/power.js` e `charts/gantt.js`: `renderPowerChart`, `renderBusTimeline` e `renderChargerTimeline` passam a aceitar um último parâmetro opcional `player` (o de `createPlayer`) e animam conforme o cursor e o estado de reprodução; sem `player` continuam funcionando como antes.
+
+- [ ] **Step 1: Escrever os testes (Node) que falham**
+
+`web/test/motion.test.mjs`:
+
+```js
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { easeOutCubic, lerp, createPlayer } from '../static/js/motion.js';
+import { createCursor } from '../static/js/cursor.js';
+
+test('easing and interpolation', () => {
+  assert.equal(easeOutCubic(0), 0);
+  assert.equal(easeOutCubic(1), 1);
+  assert.ok(easeOutCubic(0.5) > 0.5);
+  assert.equal(lerp(10, 20, 0.5), 15);
+});
+
+// a controllable clock and frame scheduler
+function fakeClock() {
+  let t = 0;
+  let next = 1;
+  const pending = new Map();
+  return {
+    deps: { now: () => t, raf: (f) => { const id = next++; pending.set(id, f); return id; }, caf: (id) => pending.delete(id) },
+    advance(ms) {
+      t += ms;
+      const frames = [...pending.values()];
+      pending.clear();
+      frames.forEach((f) => f());
+    },
+    pendingFrames: () => pending.size,
+  };
+}
+
+test('playing advances the cursor by speed minutes per second', () => {
+  const clock = fakeClock();
+  const cursor = createCursor(1000);
+  const p = createPlayer(cursor, clock.deps);
+  p.setSpeed(60);
+  p.play();
+  clock.advance(1000);
+  assert.equal(cursor.value, 60);
+  clock.advance(500);
+  assert.equal(cursor.value, 90);
+  assert.equal(p.state.playing, true);
+});
+
+test('fractions of a minute accumulate instead of being lost', () => {
+  const clock = fakeClock();
+  const cursor = createCursor(1000);
+  const p = createPlayer(cursor, clock.deps);
+  p.setSpeed(30);
+  p.play();
+  for (let i = 0; i < 10; i++) clock.advance(100); // 1 s in ten frames
+  assert.equal(cursor.value, 30);
+});
+
+test('pause stops the cursor and play resumes from there', () => {
+  const clock = fakeClock();
+  const cursor = createCursor(1000);
+  const p = createPlayer(cursor, clock.deps);
+  p.setSpeed(60);
+  p.play();
+  clock.advance(1000);
+  p.pause();
+  clock.advance(5000);
+  assert.equal(cursor.value, 60);
+  assert.equal(clock.pendingFrames(), 0);
+  p.play();
+  clock.advance(1000);
+  assert.equal(cursor.value, 120);
+});
+
+test('reaching the end pauses, and play at the end restarts from zero', () => {
+  const clock = fakeClock();
+  const cursor = createCursor(100);
+  const p = createPlayer(cursor, clock.deps);
+  p.setSpeed(600);
+  p.play();
+  clock.advance(1000);
+  assert.equal(cursor.value, 100);
+  assert.equal(p.state.playing, false);
+  p.play();
+  assert.equal(cursor.value, 0);
+  assert.equal(p.state.playing, true);
+});
+
+test('loop wraps around instead of stopping', () => {
+  const clock = fakeClock();
+  const cursor = createCursor(100);
+  const p = createPlayer(cursor, clock.deps);
+  p.setSpeed(60);
+  p.setLoop(true);
+  p.play();
+  clock.advance(2000); // 120 minutes of a 100-minute day
+  assert.equal(p.state.playing, true);
+  assert.ok(cursor.value < 100);
+});
+
+test('invalid speeds are ignored and listeners are told about changes', () => {
+  const clock = fakeClock();
+  const cursor = createCursor(100);
+  const p = createPlayer(cursor, clock.deps);
+  const seen = [];
+  const off = p.onChange((s) => seen.push({ ...s }));
+  p.setSpeed(0);
+  p.setSpeed(NaN);
+  p.setSpeed(-5);
+  assert.equal(p.state.speed, 60);
+  p.setSpeed(120);
+  p.play();
+  p.toggle();
+  off();
+  p.toggle();
+  assert.deepEqual(seen.map((s) => [s.playing, s.speed]), [[false, 120], [true, 120], [false, 120]]);
+});
+
+test('restart goes back to minute 0 and plays', () => {
+  const clock = fakeClock();
+  const cursor = createCursor(100);
+  cursor.set(50);
+  const p = createPlayer(cursor, clock.deps);
+  p.restart();
+  assert.equal(cursor.value, 0);
+  assert.equal(p.state.playing, true);
+});
+```
+
+`web/test/events.test.mjs`:
+
+```js
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { eventsBetween } from '../static/js/events.js';
+
+const data = {
+  scenario: {
+    start_clock_min: 1080,
+    faults: [
+      { kind: 'limit_drop', target: '', from: 20, to: 40, value: 0.5 },
+      { kind: 'soc_noise', target: '*', from: 22, to: 30, value: 3 },
+      { kind: 'charger_fail', target: 'C2', from: 50, to: 60, value: 0 },
+    ],
+  },
+  series: { layer: ['normal', 'normal', 'normal', 'normal', 'normal', 'normal', 'last-valid', 'last-valid', 'normal', 'normal'] },
+  decisions: [
+    { minute: 0, swaps: [] },
+    { minute: 4, swaps: [{ charger: 'C1', out: 'B1', in: 'B2', reason: 'troca' }] },
+  ],
+  outcomes: [
+    { id: 'B1', departed: true, ready: true, departure: 7 },
+    { id: 'B2', departed: true, ready: false, departure: 8 },
+    { id: 'B3', departed: false, ready: false, departure: 9 },
+  ],
+};
+
+test('events in (from, to] are returned in minute order', () => {
+  const ev = eventsBetween(data, 0, 9);
+  assert.deepEqual(ev.map((e) => [e.minute, e.type]), [[4, 'swap'], [6, 'layer'], [7, 'depart'], [8, 'layer'], [8, 'depart']]);
+});
+
+test('departures say whether the bus was ready; buses that never left do not depart', () => {
+  const dep = eventsBetween(data, 0, 9).filter((e) => e.type === 'depart');
+  assert.deepEqual(dep.map((e) => [e.bus, e.ok]), [['B1', true], ['B2', false]]);
+});
+
+test('layer events name the layer and only transitions count', () => {
+  const layers = eventsBetween(data, 0, 9).filter((e) => e.type === 'layer');
+  assert.equal(layers.length, 2);
+  assert.match(layers[0].text, /último plano válido/);
+  assert.match(layers[1].text, /normal/);
+});
+
+test('only power-related faults are events', () => {
+  const ev = eventsBetween(data, 15, 25);
+  assert.deepEqual(ev.map((e) => e.type), ['fault']);
+  assert.match(ev[0].text, /queda do limite da rede/);
+});
+
+test('the window is open at the start and closed at the end', () => {
+  assert.equal(eventsBetween(data, 4, 5).length, 0);
+  assert.equal(eventsBetween(data, 3, 4).length, 1);
+});
+
+test('a jump of the cursor produces no events', () => {
+  assert.deepEqual(eventsBetween(data, 0, 100), []);
+  assert.deepEqual(eventsBetween(data, 0, 100, 200).length > 0, true);
+  assert.deepEqual(eventsBetween(data, 9, 3), []);
+});
+```
+
+- [ ] **Step 2: Rodar e ver falhar**
+
+Run: `node --test web/test/`
+Expected: FAIL (`motion.js` e `events.js` inexistentes).
+
+- [ ] **Step 3: `motion.js`**
+
+```js
+export const easeOutCubic = (t) => 1 - (1 - t) ** 3;
+export const lerp = (a, b, t) => a + (b - a) * t;
+
+const KEY = 'lab-animations';
+
+// animationsEnabled: the user's switch ('on'/'off') wins; otherwise follow the
+// system's "reduce motion" preference.
+export function animationsEnabled() {
+  let stored = null;
+  try { stored = localStorage.getItem(KEY); } catch { /* storage blocked */ }
+  if (stored === 'on') return true;
+  if (stored === 'off') return false;
+  return !(typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches);
+}
+
+export function applyMotionClass() {
+  document.documentElement.classList.toggle('no-motion', !animationsEnabled());
+}
+
+export function setAnimations(on) {
+  try { localStorage.setItem(KEY, on ? 'on' : 'off'); } catch { /* storage blocked */ }
+  applyMotionClass();
+}
+
+// countUp animates the text of el from `from` to `to` (instantly when animations are off).
+export function countUp(el, to, fmt, ms = 700, from = 0) {
+  if (!animationsEnabled() || !Number.isFinite(to)) { el.textContent = fmt(to); return; }
+  const t0 = performance.now();
+  const step = (now) => {
+    const t = Math.min(1, (now - t0) / ms);
+    el.textContent = fmt(lerp(from, to, easeOutCubic(t)));
+    if (t < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+// throttle runs fn at most once per `ms`, with a trailing call so the last value is never lost.
+export function throttle(fn, ms) {
+  let last = -Infinity;
+  let timer = null;
+  let pendingArgs = null;
+  return (...args) => {
+    const now = Date.now();
+    if (now - last >= ms) { last = now; fn(...args); return; }
+    pendingArgs = args;
+    if (timer === null) {
+      timer = setTimeout(() => { timer = null; last = Date.now(); fn(...pendingArgs); }, ms - (now - last));
+    }
+  };
+}
+
+// createPlayer plays the day: it moves the cursor `speed` simulated minutes per real
+// second. deps (now, raf, caf) can be replaced to test it without a browser.
+export function createPlayer(cursor, deps = {}) {
+  const now = deps.now || (() => performance.now());
+  const raf = deps.raf || ((f) => requestAnimationFrame(f));
+  const caf = deps.caf || ((id) => cancelAnimationFrame(id));
+  const state = { playing: false, speed: 60, loop: false };
+  const subs = new Set();
+  let frameId = null;
+  let last = 0;
+  let acc = 0;
+  const emit = () => subs.forEach((fn) => fn({ ...state }));
+
+  function frame() {
+    if (!state.playing) return;
+    const t = now();
+    acc += ((t - last) / 1000) * state.speed;
+    last = t;
+    const whole = Math.floor(acc);
+    if (whole > 0) {
+      acc -= whole;
+      const next = cursor.value + whole;
+      if (next >= cursor.max) {
+        if (state.loop) cursor.set(next % (cursor.max + 1));
+        else { cursor.set(cursor.max); pause(); return; }
+      } else cursor.set(next);
+    }
+    frameId = raf(frame);
+  }
+
+  function play() {
+    if (state.playing) return;
+    if (cursor.value >= cursor.max) cursor.set(0);
+    state.playing = true;
+    last = now();
+    acc = 0;
+    emit();
+    frameId = raf(frame);
+  }
+  function pause() {
+    if (!state.playing) return;
+    state.playing = false;
+    if (frameId !== null) caf(frameId);
+    frameId = null;
+    emit();
+  }
+  return {
+    play, pause,
+    toggle() { state.playing ? pause() : play(); },
+    restart() { pause(); cursor.set(0); play(); },
+    setSpeed(v) { if (Number.isFinite(v) && v > 0) { state.speed = v; emit(); } },
+    setLoop(v) { state.loop = Boolean(v); emit(); },
+    onChange(fn) { subs.add(fn); return () => subs.delete(fn); },
+    get state() { return { ...state }; },
+  };
+}
+```
+
+`web/static/js/events.js`:
+
+```js
+import { POWER_FAULTS, LAYER_LABEL, describeFault } from './glossary.js';
+
+// Order of events inside one minute.
+const RANK = { fault: 0, layer: 1, swap: 2, depart: 3 };
+
+// eventsBetween lists what happened in the minutes (from, to]: departures, recommended
+// swaps, layer changes and power faults. A jump longer than maxSpan is a scrub, not a
+// playback, and yields nothing.
+export function eventsBetween(data, from, to, maxSpan = 30) {
+  if (!(to > from) || to - from > maxSpan) return [];
+  const inRange = (m) => m > from && m <= to;
+  const out = [];
+  for (const o of data.outcomes) {
+    if (o.departed && inRange(o.departure)) {
+      out.push({ minute: o.departure, type: 'depart', ok: o.ready, bus: o.id,
+        text: o.ready ? `${o.id} saiu pronto` : `${o.id} saiu sem a carga` });
+    }
+  }
+  for (const d of data.decisions) {
+    if (!inRange(d.minute)) continue;
+    for (const sw of d.swaps) {
+      out.push({ minute: d.minute, type: 'swap', bus: sw.in, text: `rodízio recomendado: ${sw.in} assume ${sw.charger} no lugar de ${sw.out}` });
+    }
+  }
+  const layers = data.series.layer;
+  for (let i = Math.max(1, from + 1); i <= to && i < layers.length; i++) {
+    if (layers[i] !== layers[i - 1]) {
+      out.push({ minute: i, type: 'layer', layer: layers[i], text: `o planejador passou para: ${LAYER_LABEL[layers[i]] || layers[i]}` });
+    }
+  }
+  for (const f of data.scenario.faults) {
+    if (POWER_FAULTS.has(f.kind) && inRange(f.from)) out.push({ minute: f.from, type: 'fault', text: describeFault(f) });
+  }
+  return out.sort((a, b) => a.minute - b.minute || RANK[a.type] - RANK[b.type]);
+}
+```
+
+`web/static/js/feed.js`:
+
+```js
+import { h } from './dom.js';
+
+const ICON = { depart_ok: '●', depart_fail: '✗', swap: '⇄', layer: '⚙', fault: '⚠' };
+
+// createFeed is the list of the latest events (newest first); items slide in via CSS.
+export function createFeed(root, max = 6) {
+  const list = h('ul', { class: 'feed', 'aria-live': 'off' });
+  root.replaceChildren(h('h3', {}, 'Acontecimentos'), list);
+  return {
+    push(events) {
+      for (const e of events) {
+        const kind = e.type === 'depart' ? (e.ok ? 'depart_ok' : 'depart_fail') : e.type;
+        list.prepend(h('li', { class: `feed-item feed-${kind}` }, h('span', { class: 'feed-icon', 'aria-hidden': 'true' }, ICON[kind]), e.text));
+      }
+      while (list.children.length > max) list.lastElementChild.remove();
+    },
+    clear() { list.replaceChildren(); },
+  };
+}
+```
+
+- [ ] **Step 4: Rodar e ver passar**
+
+Run: `node --test web/test/`
+Expected: PASS (inclui todos os testes das tarefas anteriores).
+
+- [ ] **Step 5: Transições e chegada da Comparação (`main.js`, `compare.js`, `app.css`, `index.html`)**
+
+1. `index.html`: dentro de `.top-actions` (Tarefa 7), ao lado do botão de copiar link, acrescente:
+
+```html
+    <button id="motion-toggle" type="button" class="chip" aria-pressed="true">Animações: ligadas</button>
+```
+
+2. `main.js`: importe `{ applyMotionClass, setAnimations, animationsEnabled }` de `./motion.js`; em `init()`, antes de criar o formulário, chame `applyMotionClass();` e ligue o interruptor:
+
+```js
+  const motionBtn = $('motion-toggle');
+  const paintMotion = () => {
+    const on = animationsEnabled();
+    motionBtn.setAttribute('aria-pressed', String(on));
+    motionBtn.textContent = `Animações: ${on ? 'ligadas' : 'desligadas'}`;
+  };
+  motionBtn.addEventListener('click', () => { setAnimations(!animationsEnabled()); paintMotion(); });
+  paintMotion();
+```
+
+3. `compare.js`: importe `{ countUp }` de `./motion.js`. Na linha de cada controlador (`table`), dê a cada `<tr>` o atraso de entrada: acrescente aos atributos do `h('tr', ...)` `style: `--i:${index}`` e a classe `reveal` (use `data.controllers.map((c, index) => ...)`). Na célula de `ready_pct`, em vez do texto pronto, crie `const num = h('span', {}, text)` e chame `countUp(num, c.aggregate.ready_pct, fmtPct)` depois de a tabela entrar no DOM (por exemplo `queueMicrotask(() => countUp(...))`); importe `fmtPct` de `./format.js`. Em `seedsPanel`, dê a cada ponto `style: `--i:${i}`` (índice dentro do controlador) e a classe `dot pop`, e à barra de média a classe `bar grow`.
+
+4. `app.css` (acrescentar):
+
+```css
+@keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes pop { 0% { transform: scale(0); } 70% { transform: scale(1.25); } 100% { transform: scale(1); } }
+@keyframes pulse-stroke { 0%, 100% { stroke-width: .8; } 50% { stroke-width: 2.4; } }
+@keyframes flow { to { stroke-dashoffset: -12; } }
+@keyframes flicker { 0%, 100% { opacity: 1; } 40% { opacity: .35; } 60% { opacity: .9; } 80% { opacity: .5; } }
+@keyframes flash { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--limit) 60%, transparent); } 100% { box-shadow: 0 0 0 14px transparent; } }
+section[role=tabpanel]:not([hidden]) { animation: rise .25s ease-out; }
+.reveal { animation: rise .4s ease-out both; animation-delay: calc(var(--i, 0) * 70ms); }
+.dot.pop { transform-box: fill-box; transform-origin: center; animation: pop .35s ease-out both; animation-delay: calc(var(--i, 0) * 25ms + 250ms); }
+.strip .bar.grow { transform-box: fill-box; transform-origin: left center; animation: grow .7s cubic-bezier(.2,.8,.2,1) both; }
+@keyframes grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+.no-motion *, .no-motion *::before, .no-motion *::after { animation: none !important; transition: none !important; }
+@media (prefers-reduced-motion: reduce) { :root:not(.motion-on) * { animation: none !important; transition: none !important; } }
+```
+
+(A última regra cobre quem tem "reduzir movimento" no sistema sem ter usado o interruptor; `applyMotionClass()` já põe `no-motion` nesse caso, então as duas regras concordam.)
+
+- [ ] **Step 6: Reprodução na aba Execução (`run.js`, `decisionPanel.js`)**
+
+Em `run.js`:
+1. Importe `{ createPlayer, countUp, animationsEnabled, throttle }` de `./motion.js`, `{ eventsBetween }` de `./events.js` e `{ createFeed }` de `./feed.js`.
+2. Mantenha `let player = null;` no escopo de `createRunView`; no início de `load` e antes de cada `render`, chame `player?.pause();`.
+3. Crie a linha de reprodução (acima do controle de tempo):
+
+```js
+  function playerRow(player) {
+    const play = h('button', { type: 'button', class: 'primary play', 'aria-label': 'Reproduzir' }, '▶ Reproduzir');
+    const restart = h('button', { type: 'button', class: 'chip', 'aria-label': 'Reiniciar do começo' }, '⏮ Do começo');
+    const speed = h('select', { 'aria-label': 'Velocidade da reprodução' },
+      [[30, '30 min/s'], [60, '1 h/s'], [120, '2 h/s'], [300, '5 h/s'], [600, '10 h/s']].map(([v, l]) => h('option', { value: v, selected: v === 60 }, l)));
+    const loop = h('input', { type: 'checkbox', id: 'loop' });
+    play.addEventListener('click', () => player.toggle());
+    restart.addEventListener('click', () => player.restart());
+    speed.addEventListener('change', () => player.setSpeed(Number(speed.value)));
+    loop.addEventListener('change', () => player.setLoop(loop.checked));
+    player.onChange((s) => {
+      play.textContent = s.playing ? '⏸ Pausar' : '▶ Reproduzir';
+      play.setAttribute('aria-label', s.playing ? 'Pausar' : 'Reproduzir');
+      root.classList.toggle('playing', s.playing);
+    });
+    return h('div', { class: 'player-row' }, play, restart, h('label', {}, 'Velocidade ', speed), h('label', {}, loop, ' repetir'));
+  }
+```
+
+4. Em `render(data)`, depois de criar `cursor` e `selection`: `player = createPlayer(cursor);`, acrescente `playerRow(player)` antes de `cursorRow(...)`, crie `const feedPanel = h('div', { class: 'panel', id: 'panel-feed' });` (acrescentado depois de `powerPanel`) e `const feed = createFeed(feedPanel);`; passe `player` como último argumento de `renderPowerChart`, `renderBusTimeline` e `renderChargerTimeline`. Alimente o feed durante a reprodução:
+
+```js
+    let lastMinute = 0;
+    cursor.onChange((m) => {
+      if (player.state.playing) feed.push(eventsBetween(data, lastMinute, m));
+      lastMinute = m;
+    });
+    player.onChange((s) => { if (s.playing && cursor.value === 0) feed.clear(); });
+```
+
+(Se o cursor foi movido à mão, `lastMinute` apenas acompanha; `eventsBetween` já ignora saltos grandes.)
+
+5. A tecla Espaço reproduz/pausa quando o foco não está num campo:
+
+```js
+    root.addEventListener('keydown', (e) => {
+      if (e.code === 'Space' && !['INPUT', 'SELECT', 'BUTTON', 'TEXTAREA'].includes(e.target.tagName)) { e.preventDefault(); player.toggle(); }
+    });
+```
+
+6. O resumo anima o percentual de prontos: em `summaryLine`, troque o texto corrido por nós: crie `const pct = h('span', { class: 'num' }, fmtPct(m.ready_pct)); countUp(pct, m.ready_pct, fmtPct, 800);` e monte o `<p class="summary">` com `h('p', {class:'summary'}, `${m.ready} de ${m.buses} ônibus saíram prontos (`, pct, `) · ...resto do texto`)` (ajuste `summaryLine` para devolver um nó em vez de string).
+
+Em `decisionPanel.js`: importe `{ throttle }` de `./motion.js` e troque `cursor.onChange(update);` por `cursor.onChange(throttle(update, 100));` (a tabela de 50 linhas não precisa ser refeita 60 vezes por segundo durante a reprodução; o último minuto nunca se perde por causa do disparo final do `throttle`).
+
+- [ ] **Step 7: Movimento nos gráficos (`charts/power.js`, `charts/gantt.js`)**
+
+`charts/power.js` — o passado fica nítido e o futuro esmaecido enquanto o dia toca:
+1. Assinatura: `export function renderPowerChart(root, data, cursor, player)`.
+2. Troque o bloco "stacked areas ... linhas comandado/limite" por duas camadas com o mesmo conteúdo, a do futuro esmaecida e a do passado recortada até o cursor:
+
+```js
+  const clipRect = s('rect', { x: 0, y: 0, width: W, height: totalH });
+  parts.push(s('clipPath', { id: 'clip-power-past' }, clipRect));
+  const drawLayer = (extra) => {
+    const g = s('g', extra);
+    stacked.forEach((layer, i) => {
+      g.append(s('path', { d: areaPath(layer.lower, layer.upper, x, y), class: i % 2 ? 'area area-b' : 'area area-a' },
+        s('title', {}, `${series.chargers[i].id}: potência física`)));
+    });
+    g.append(s('path', { d: linePath(series.commanded_kw, x, y, false), class: 'line-commanded' }),
+      s('path', { d: linePath(series.limit_kw, x, y, true), class: 'line-limit' }));
+    return g;
+  };
+  const dim = drawLayer({ class: 'future', opacity: 0.28 });
+  const past = drawLayer({ 'clip-path': 'url(#clip-power-past)' });
+  dim.setAttribute('display', 'none'); // shown only while the day plays
+  parts.push(dim, past);
+```
+
+3. Em `update(m)`, acrescente (e chame também quando o `player` mudar):
+
+```js
+    const playing = player && player.state.playing;
+    clipRect.setAttribute('width', playing ? x(m) : W);
+    dim.setAttribute('display', playing ? 'inline' : 'none');
+```
+
+e `player?.onChange(() => update(cursor.value));`.
+
+`charts/gantt.js` (parâmetro `player` opcional em `renderBusTimeline` e `renderChargerTimeline`):
+- **Ônibus carregando brilham:** guarde as barras (`barNodes = new Map()` com `bar` por ônibus ao criar o `rect.bus-bar`) e, em cada mudança do cursor, alterne a classe `charging` em quem está ligado e recebendo potência (`b.state[m] === 1 && b.charger[m] >= 0 && data.series.chargers[b.charger[m]].physical_kw[m] > 0`).
+- **Preenchimento que se revela:** dê ao `path.soc-fill` o atributo `clip-path="url(#clip-bus-past)"`, crie `const busClip = s('rect', {x:0, y:0, width:W, height:bottom+26})` dentro de um `<clipPath id="clip-bus-past">` e, em cada mudança do cursor ou da reprodução, ajuste `busClip.setAttribute('width', player && player.state.playing ? x(m) : W)`.
+- **Marcas que estouram:** nas marcas de saída (`mark-ready`/`mark-fail`) e nos triângulos de rodízio, guarde `{node, minute}`; quando `player` está tocando e `Math.abs(m - minute) <= 1` (saída) ou `<= 3` (rodízio), adicione a classe `hit` (CSS abaixo) e remova-a quando o cursor se afastar.
+- **Carregadores com fluxo:** em `renderChargerTimeline`, para cada trecho ocupado crie, além do `rect.occ`, uma `line.flow-line` ao longo da base do trecho (`x1=x(r.from)`, `x2=x(r.to+1)`, `y1=y2=y0+ROW-3`) escondida; em cada mudança do cursor mostre (`classList.add('on')`) só a do trecho que contém `m` com `physical_kw[m] > 0`. Trechos de carregadores em falha no minuto `m` recebem a classe `flicker`.
+
+`app.css` (acrescentar):
+
+```css
+.bus-bar.charging { stroke: var(--ok); animation: pulse-stroke 1.2s ease-in-out infinite; }
+.hit { transform-box: fill-box; transform-origin: center; animation: pop .45s ease-out; }
+.flow-line { display: none; stroke: var(--limit); stroke-width: 2; stroke-linecap: round; stroke-dasharray: 6 6; }
+.flow-line.on { display: inline; animation: flow .6s linear infinite; }
+.status-fail.flicker { animation: flicker 1s linear infinite; }
+.player-row { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin: 8px 0; }
+.player-row select { padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); font: inherit; }
+.player-row label { color: var(--muted); font-size: .9rem; }
+.feed { list-style: none; margin: 0; padding: 0; min-height: 3.2rem; }
+.feed-item { display: flex; gap: 8px; padding: 4px 8px; border-left: 3px solid var(--border); margin: 3px 0; animation: rise .3s ease-out; }
+.feed-icon { width: 1.2em; text-align: center; }
+.feed-depart_ok { border-left-color: var(--ok); } .feed-depart_fail, .feed-fault { border-left-color: var(--bad); } .feed-swap { border-left-color: var(--amber); } .feed-layer { border-left-color: var(--purple); }
+.playing .cursor-row { animation: flash 1.6s ease-out infinite; border-radius: 6px; }
+```
+
+- [ ] **Step 8: Verificar no navegador de verdade**
+
+Run: `go run ./cmd/lab`, abra `http://127.0.0.1:8080` e verifique (com capturas ou, se não houver ferramenta de navegador, registre "verificação visual pendente"):
+1. Ao trocar de aba, o painel sobe suavemente; na Comparação as linhas da tabela entram em sequência, o percentual de prontos "conta" até o valor, a barra de média cresce da esquerda e os pontos das sementes aparecem em cascata.
+2. Em Execução, "Reproduzir" faz o dia rodar: o cursor anda, o gráfico de potência mostra o passado nítido e o futuro esmaecido, os ônibus que estão carregando pulsam em verde, os trechos dos carregadores com ônibus ligado mostram um fluxo tracejado em movimento, as marcas de saída e de rodízio estouram quando o cursor passa e o feed "Acontecimentos" recebe, em tempo real, saídas (● / ✗), rodízios, mudanças de camada e quedas do limite.
+3. Pausar, trocar a velocidade (30 min/s a 10 h/s), "repetir", "Do começo" e a tecla Espaço funcionam; ao chegar ao fim a reprodução para (ou volta ao início com "repetir"). Pausada, o gráfico volta a mostrar o dia inteiro. A reprodução a 10 h/s continua fluida (sem travar) com 50 ônibus.
+4. "Animações: desligadas" (e a preferência do sistema "reduzir movimento") deixa tudo estático e instantâneo, sem perder nenhuma informação.
+5. Tema escuro e mobile (largura de 375 px) continuam legíveis; nenhum erro no console.
+
+- [ ] **Step 9: README e commit**
+
+No `README.md`, na lista da seção "Laboratório web", acrescente: `- **Animações:** "Reproduzir" toca o dia (30 min/s a 10 h/s) com o passado nítido e o futuro esmaecido, ônibus carregando pulsando, fluxo nos carregadores ocupados e um feed de acontecimentos (saídas, rodízios, mudanças de camada, quedas do limite). O interruptor "Animações" e a preferência de sistema "reduzir movimento" desligam todo o movimento.`
+
+```bash
+gofmt -l . ; go vet ./... && go test -race -short ./... && node --test web/test/
+git add web README.md
+git commit -m "feat(lab): day playback, event feed and motion across the interface
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
 git push
