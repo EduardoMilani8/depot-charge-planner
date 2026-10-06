@@ -67,8 +67,9 @@ td.bad { background: var(--bad-bg); color: var(--bad); font-weight: 600; }
 .run-controls input[type=number] { width: 6rem; }
 .summary { font-weight: 600; margin: 4px 0; }
 .faults summary { cursor: pointer; color: var(--muted); } .faults ul { margin: 4px 0 8px; padding-left: 20px; }
-.cursor-row { display: flex; align-items: center; gap: 12px; margin: 8px 0; position: sticky; top: 0; background: var(--bg); padding: 6px 0; z-index: 2; }
-.time-slider { flex: 1; } .time-label { min-width: 12rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.transport { position: sticky; top: 0; z-index: 2; background: var(--bg); }
+.cursor-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 0; padding: 4px 0 6px; }
+.time-slider { flex: 1 1 140px; } .time-label { min-width: 12rem; color: var(--muted); font-variant-numeric: tabular-nums; }
 .panel { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; margin: 10px 0; }
 .chart-wrap { outline-offset: 2px; }
 .chart { width: 100%; height: auto; display: block; touch-action: none; }
@@ -80,7 +81,8 @@ td.bad { background: var(--bad-bg); color: var(--bad); font-weight: 600; }
 .pat-lv-bg { fill: color-mix(in srgb, var(--amber) 30%, var(--card)); } .pat-safe-bg { fill: color-mix(in srgb, var(--bad) 25%, var(--card)); }
 .pat-line { stroke: var(--amber); } .pat-dot { fill: var(--bad); }
 .fault { fill: color-mix(in srgb, var(--bad) 35%, transparent); stroke: var(--bad); stroke-width: 1; stroke-dasharray: 3 2; }
-.cursor { stroke: var(--fg); stroke-width: 1.5; pointer-events: none; } .overlay { fill: transparent; cursor: ew-resize; }
+.cursor { stroke: var(--fg); stroke-width: 1.5; pointer-events: none; }
+.chart.power { cursor: ew-resize; }
 .readout { font-variant-numeric: tabular-nums; color: var(--muted); font-size: .9rem; margin: 4px 0; }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: .8rem; color: var(--muted); margin-top: 6px; }
 .legend-item { display: inline-flex; align-items: center; gap: 6px; }
@@ -108,7 +110,53 @@ button.link { background: none; border: 0; padding: 0; font: inherit; color: var
 table.metrics.small th, table.metrics.small td { padding: 4px 8px; font-size: .85rem; text-align: left; white-space: normal; }
 table.metrics.small td.reason { max-width: 60ch; } table.metrics tr.selected { background: color-mix(in srgb, var(--accent) 16%, transparent); } table.metrics tr[data-bus] { cursor: pointer; }
 .decision-body h4 { margin: 14px 0 4px; font-size: .95rem; }
-.top-actions { margin: 8px 0; }
+.top-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
 .howto { margin: 8px 0; color: var(--muted); } .howto summary { cursor: pointer; } .howto ul { margin: 6px 0 0; padding-left: 20px; } .howto li { margin: 3px 0; }
 .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--fg); color: var(--bg); padding: 8px 16px; border-radius: 6px; opacity: 0; pointer-events: none; transition: opacity .2s; }
 .toast.show { opacity: 1; }
+
+/* Motion. Everything below is decoration or emphasis: the same information is on screen without it.
+   Looping animations run only while the day plays (the run view carries the `playing` class). */
+@keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes pop { 0% { transform: scale(0); } 70% { transform: scale(1.25); } 100% { transform: scale(1); } }
+@keyframes pulse-stroke { 0%, 100% { stroke-width: .8; } 50% { stroke-width: 2.4; } }
+@keyframes flow { to { stroke-dashoffset: -12; } }
+@keyframes flicker { 0%, 100% { opacity: 1; } 40% { opacity: .35; } 60% { opacity: .9; } 80% { opacity: .5; } }
+@keyframes grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+@keyframes reveal-x { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
+@keyframes live { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+section[role=tabpanel]:not([hidden]) { animation: rise .25s ease-out; }
+.reveal { animation: rise .4s ease-out both; animation-delay: calc(var(--i, 0) * 70ms); }
+.dot.pop { transform-box: fill-box; transform-origin: center; animation: pop .35s ease-out both; animation-delay: calc(var(--i, 0) * 25ms + 250ms); }
+.strip .bar.grow { transform-box: fill-box; transform-origin: left center; animation: grow .7s cubic-bezier(.2, .8, .2, 1) both; }
+.plot-reveal { animation: reveal-x 1.1s cubic-bezier(.2, .8, .2, 1) both; }
+.future-veil { fill: var(--card); opacity: .72; pointer-events: none; }
+
+.bus-bar.charging { stroke: var(--ok); stroke-width: 1.6; }
+.playing .bus-bar.charging { animation: pulse-stroke 1.2s ease-in-out infinite; }
+.hit { transform-box: fill-box; transform-origin: center; animation: pop .45s ease-out; }
+.flow-line { display: none; stroke: var(--limit); stroke-width: 2; stroke-linecap: round; stroke-dasharray: 6 6; pointer-events: none; }
+.flow-line.on { display: inline; }
+.playing .flow-line.on { animation: flow .6s linear infinite; }
+.playing .status-fail.flicker { animation: flicker 1s linear infinite; }
+
+.player-row { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin: 8px 0 0; }
+.player-row select { padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); font: inherit; }
+.player-row label { color: var(--muted); font-size: .9rem; }
+button.play { min-width: 9.5rem; }
+.live-dot { display: none; width: .7em; height: .7em; border-radius: 50%; background: var(--bad); }
+.playing .live-dot { display: inline-block; animation: live 1.4s ease-in-out infinite; }
+.chip[aria-pressed=false] { color: var(--muted); }
+
+.feed { list-style: none; margin: 0; padding: 0; min-height: 3.2rem; }
+.feed-count { color: var(--muted); font-weight: 400; font-size: .85rem; }
+.feed-empty { color: var(--muted); padding: 4px 8px; }
+.feed-item { display: flex; gap: 8px; padding: 4px 8px; border-left: 3px solid var(--border); margin: 3px 0; animation: rise .3s ease-out; }
+.feed-icon { width: 1.2em; text-align: center; }
+.feed-time { color: var(--muted); font-variant-numeric: tabular-nums; }
+.feed-depart_ok { border-left-color: var(--ok); } .feed-depart_fail, .feed-fault { border-left-color: var(--bad); } .feed-swap { border-left-color: var(--amber); } .feed-layer { border-left-color: var(--purple); }
+@media (max-width: 640px) { .transport { position: static; } }
+
+/* "Animações: desligadas" (class set by motion.js) and the system's "reduce motion" end all movement. */
+.no-motion *, .no-motion *::before, .no-motion *::after { animation: none !important; transition: none !important; }
+@media (prefers-reduced-motion: reduce) { :root:not(.motion-on) *, :root:not(.motion-on) *::before, :root:not(.motion-on) *::after { animation: none !important; transition: none !important; } }

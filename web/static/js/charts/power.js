@@ -5,6 +5,7 @@ import { MARGIN, stackLayers, areaPath, linePath, runs, assignLanes, valuesAt } 
 import { clock, fmtNum } from '../format.js';
 import { LAYER_LABEL, POWER_FAULTS, describeFault } from '../glossary.js';
 import { bindCursorKeys } from '../cursor.js';
+import { bindPlotPointer } from './pointer.js';
 
 const W = 1000;
 const PLOT_H = 300;
@@ -13,8 +14,9 @@ const LANE_H = 12;
 const MAX_LANES = 4;
 
 // renderPowerChart draws stacked charger power against the site limit, the layer that
-// decided each minute and the power-related faults, with a shared time cursor.
-export function renderPowerChart(root, data, cursor) {
+// decided each minute and the power-related faults, with a shared time cursor. While `player`
+// is playing, what is still to come is veiled. Returns { dispose }.
+export function renderPowerChart(root, data, cursor, player) {
   const { scenario, series } = data;
   const n = scenario.horizon_min;
   const x = linear(0, n, MARGIN.left, W - MARGIN.right);
@@ -55,13 +57,19 @@ export function renderPowerChart(root, data, cursor) {
   }
   parts.push(s('line', { x1: MARGIN.left, x2: W - MARGIN.right, y1: plotBottom, y2: plotBottom, class: 'axis' }));
 
-  // stacked areas, one per charger (two alternating tints, separated by a thin line)
+  // stacked areas, one per charger (two alternating tints, separated by a thin line), then the
+  // commanded power and the limit; the group is what the entrance animation wipes in
+  const plot = s('g', { class: 'plot-reveal' });
   stacked.forEach((layer, i) => {
-    parts.push(s('path', { d: areaPath(layer.lower, layer.upper, x, y), class: i % 2 ? 'area area-b' : 'area area-a' },
+    plot.append(s('path', { d: areaPath(layer.lower, layer.upper, x, y), class: i % 2 ? 'area area-b' : 'area area-a' },
       s('title', {}, `${series.chargers[i].id}: potência física`)));
   });
-  parts.push(s('path', { d: linePath(series.commanded_kw, x, y, false), class: 'line-commanded' }),
+  plot.append(s('path', { d: linePath(series.commanded_kw, x, y, false), class: 'line-commanded' }),
     s('path', { d: linePath(series.limit_kw, x, y, true), class: 'line-limit' }));
+  parts.push(plot);
+  // The veil dims the future while the day plays; it never takes the pointer.
+  const veil = s('rect', { y: plotTop, height: PLOT_H, class: 'future-veil', display: 'none' });
+  parts.push(veil);
 
   // layer ribbon
   parts.push(s('text', { x: MARGIN.left - 8, y: ribbonY + 11, class: 'tick', 'text-anchor': 'end' }, 'camada'));
@@ -77,19 +85,13 @@ export function renderPowerChart(root, data, cursor) {
       s('title', {}, describeFault(f))));
   });
 
-  // cursor and pointer capture
+  // cursor line and pointer handling (on the svg: see bindPlotPointer)
   const cursorLine = s('line', { y1: plotTop, y2: totalH - 6, class: 'cursor' });
-  const overlay = s('rect', { x: MARGIN.left, y: plotTop, width: W - MARGIN.left - MARGIN.right, height: totalH - plotTop, class: 'overlay' });
-  parts.push(cursorLine, overlay);
+  parts.push(cursorLine);
 
   const svg = s('svg', { viewBox: `0 0 ${W} ${totalH}`, class: 'chart power', role: 'img',
     'aria-label': 'Potência por carregador ao longo do tempo, contra o limite da garagem' }, parts);
-  const toMinute = (clientX) => {
-    const r = svg.getBoundingClientRect();
-    return x.invert(((clientX - r.left) * W) / r.width);
-  };
-  overlay.addEventListener('pointerdown', (e) => { overlay.setPointerCapture(e.pointerId); cursor.set(toMinute(e.clientX)); });
-  overlay.addEventListener('pointermove', (e) => { if (e.buttons) cursor.set(toMinute(e.clientX)); });
+  const stopPointer = bindPlotPointer(svg, x, W, cursor, null);
 
   const readout = h('div', { class: 'readout', 'aria-live': 'off' });
   const wrap = h('div', { class: 'chart-wrap', tabindex: 0, role: 'slider', 'aria-label': 'Cursor de tempo',
@@ -114,7 +116,14 @@ export function renderPowerChart(root, data, cursor) {
     const kw = (val) => (val === null ? '—' : `${fmtNum(val, 0)} kW`);
     wrap.setAttribute('aria-valuetext', `minuto ${m}, ${clock(scenario.start_clock_min, m)}`);
     readout.textContent = `minuto ${m} · ${clock(scenario.start_clock_min, m)} — físico ${kw(v.physical)} · comandado ${kw(v.commanded)} · limite ${kw(v.limit)} · decidiu: ${LAYER_LABEL[v.layer] || v.layer}`;
+    if (player && player.state.playing) {
+      veil.setAttribute('x', px);
+      veil.setAttribute('width', Math.max(0, W - MARGIN.right - px));
+      veil.removeAttribute('display');
+    } else veil.setAttribute('display', 'none');
   }
-  cursor.onChange(update);
+  const offs = [cursor.onChange(update)];
+  if (player) offs.push(player.onChange(() => update(cursor.value)));
   update(cursor.value);
+  return { dispose() { offs.forEach((off) => off()); stopPointer(); } };
 }

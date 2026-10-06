@@ -34,6 +34,7 @@ Abra `http://127.0.0.1:8080`. Não precisa de Node: a interface vai dentro do pr
 - **Cenário:** ônibus, carregadores, limite (kW), perfil de falhas, sementes, operadores seguem rodízios, idade da leitura e, em "Avançado", a regra anti-vaivém do rodízio. Há cenários prontos.
 - **Comparação:** a mesma tabela do `simrun` (os números são idênticos para os mesmos parâmetros) e um ponto por semente; clicar num ponto abre aquela execução.
 - **Execução:** gráfico de potência, linha do tempo de ônibus e de carregadores e painel de decisão, com um cursor de tempo. Clicar num ônibus explica por que ele saiu pronto ou não. "Copiar link desta tela" gera um endereço (o estado fica no `#` do endereço) que reproduz a execução; colar um link novo na mesma aba também atualiza a tela. O simulador é determinístico: a mesma semente e os mesmos parâmetros dão sempre a mesma execução, e nada é gravado em disco.
+- **Animações:** "Reproduzir" toca o dia (30 min/s a 10 h/s) com o passado nítido e o futuro esmaecido, ônibus carregando pulsando, fluxo nos carregadores ocupados e um feed de acontecimentos (saídas, rodízios, mudanças de camada, quedas do limite). O interruptor "Animações" e a preferência de sistema "reduzir movimento" desligam todo o movimento.
 
 Limites para a tela não travar: ônibus × sementes até 20000 na comparação e até 500 ônibus e 500 carregadores numa execução detalhada (e sementes de 1 a 1000).
 

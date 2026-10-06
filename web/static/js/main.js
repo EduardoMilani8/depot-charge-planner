@@ -4,12 +4,14 @@ import { createForm } from './form.js';
 import { renderCompare } from './compare.js';
 import { createRunView } from './run.js';
 import { h } from './dom.js';
+import { applyMotionClass, setAnimations, animationsEnabled } from './motion.js';
 
 const latest = createLatest();
 let state;
 let defaultParams; // the flat `params` of the /api/defaults reply
 let form;
 let runView;
+let compareView = null; // { dispose } of the comparison on screen
 const $ = (id) => document.getElementById(id);
 
 function syncHash() {
@@ -18,6 +20,7 @@ function syncHash() {
 
 export function showTab(name) {
   state.tab = name;
+  if (name !== 'run') runView?.pause(); // a day left playing in a hidden tab would keep the frame loop busy
   for (const t of TABS) {
     $(`tab-${t}`).hidden = t !== name;
     const b = document.querySelector(`[data-tab="${t}"]`);
@@ -41,18 +44,26 @@ function reportError(e) {
   banner(msg);
 }
 
+// setCompare puts new content in the Comparação tab, stopping the counters of the old one.
+function setCompare(...nodes) {
+  compareView?.dispose();
+  compareView = null;
+  $('compare-out').replaceChildren(...nodes);
+}
+
 async function runCompare(params) {
   banner('');
   state.params = params;
   form.setBusy(true);
-  $('compare-out').replaceChildren(h('p', { class: 'loading' }, 'Rodando as simulações…'));
+  setCompare(h('p', { class: 'loading' }, 'Rodando as simulações…'));
   showTab('compare');
   try {
     const r = await latest((signal) => compare(params, signal));
     if (r.stale) return;
-    renderCompare($('compare-out'), r.value, openRun);
+    setCompare();
+    compareView = renderCompare($('compare-out'), r.value, openRun);
   } catch (e) {
-    $('compare-out').replaceChildren(h('p', { class: 'note' }, 'Nenhuma comparação: corrija o cenário e rode de novo.'));
+    setCompare(h('p', { class: 'note' }, 'Nenhuma comparação: corrija o cenário e rode de novo.'));
     reportError(e);
   } finally {
     if (!latest.busy()) form.setBusy(false);
@@ -90,7 +101,7 @@ async function copyLink() {
 function applyState(next) {
   // Whatever is still loading belongs to the previous link: drop it so it cannot render into a
   // tab that is now hidden or send its error to showTab('scenario').
-  if (latest.busy()) $('compare-out').replaceChildren(h('p', { class: 'note' }, 'Rode um cenário para ver a comparação.'));
+  if (latest.busy()) setCompare(h('p', { class: 'note' }, 'Rode um cenário para ver a comparação.'));
   latest.cancel();
   runView.cancel();
   form.setBusy(false);
@@ -111,7 +122,25 @@ function onHashChange() {
   if (next) applyState(next);
 }
 
+// The switch in the header; the page also follows the system's "reduce motion" setting while the
+// user has not chosen.
+function bindMotionToggle() {
+  const btn = $('motion-toggle');
+  const paint = () => {
+    const on = animationsEnabled();
+    btn.setAttribute('aria-pressed', String(on));
+    btn.textContent = `Animações: ${on ? 'ligadas' : 'desligadas'}`;
+  };
+  btn.addEventListener('click', () => { setAnimations(!animationsEnabled()); paint(); });
+  if (typeof matchMedia === 'function') {
+    matchMedia('(prefers-reduced-motion: reduce)').addEventListener?.('change', () => { applyMotionClass(); paint(); });
+  }
+  paint();
+}
+
 async function init() {
+  applyMotionClass();
+  bindMotionToggle();
   let defaults;
   try {
     defaults = await getDefaults();
