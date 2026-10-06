@@ -2,6 +2,7 @@ package lab
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"io"
@@ -309,8 +310,22 @@ func TestRunIsDeterministic(t *testing.T) {
 	}
 }
 
-// Every preset of the UI, with the planner, must fit in 2 MiB at 50 buses.
-func TestRunSizeUnder2MiBForEveryPreset(t *testing.T) {
+func gunzip(t *testing.T, b []byte) []byte {
+	t.Helper()
+	zr, err := gzip.NewReader(bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("not gzip: %v", err)
+	}
+	out, err := io.ReadAll(zr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// Every preset of the UI, with the planner, at 50 buses: under 3 MiB raw and under 1 MiB
+// gzipped, and the gzipped body decodes to exactly the plain one.
+func TestRunSizeForEveryPreset(t *testing.T) {
 	s := New()
 	var d struct {
 		Presets []struct {
@@ -322,11 +337,6 @@ func TestRunSizeUnder2MiBForEveryPreset(t *testing.T) {
 	if len(d.Presets) != 4 {
 		t.Fatalf("%d presets, want 4 (default, tight, severe, aged)", len(d.Presets))
 	}
-	// Presets that, after every lossless reduction (deltas, note table, no setpoints), still
-	// go over 2 MiB on some seeds. They are logged, not hidden, and capped at hardCap so a
-	// regression still fails. Remove the entry when the response gets smaller.
-	knownOver := map[string]bool{"tight": true, "severe": true, "aged": true}
-	const hardCap = 3 << 20
 	seeds := 5
 	if testing.Short() {
 		seeds = 2
@@ -335,24 +345,74 @@ func TestRunSizeUnder2MiBForEveryPreset(t *testing.T) {
 		if pr.Params.Buses != 50 {
 			t.Fatalf("preset %s has %d buses, want 50", pr.ID, pr.Params.Buses)
 		}
-		var sizes []int
+		var raw, zipped []int
 		for seed := 1; seed <= seeds; seed++ {
 			body, _ := json.Marshal(runRequest{Params: pr.Params, Seed: int64(seed), Controller: "planner"})
-			rec := do(s, newReq("POST", "/api/run", string(body)))
-			if rec.Code != 200 {
-				t.Fatalf("%s seed %d: status %d: %.200s", pr.ID, seed, rec.Code, rec.Body)
+			plain := do(s, newReq("POST", "/api/run", string(body)))
+			req := newReq("POST", "/api/run", string(body))
+			req.Header.Set("Accept-Encoding", "gzip")
+			gz := do(s, req)
+			if plain.Code != 200 || gz.Code != 200 {
+				t.Fatalf("%s seed %d: status %d/%d: %.200s", pr.ID, seed, plain.Code, gz.Code, plain.Body)
 			}
-			sizes = append(sizes, rec.Body.Len())
-			switch {
-			case rec.Body.Len() >= hardCap:
-				t.Errorf("%s seed %d: %d bytes, want under %d", pr.ID, seed, rec.Body.Len(), hardCap)
-			case rec.Body.Len() >= 2<<20 && !knownOver[pr.ID]:
-				t.Errorf("%s seed %d: %d bytes, want under 2 MiB", pr.ID, seed, rec.Body.Len())
-			case rec.Body.Len() >= 2<<20:
-				t.Logf("OVER 2 MiB (known, lossless reductions exhausted): %s seed %d: %d bytes", pr.ID, seed, rec.Body.Len())
+			raw, zipped = append(raw, plain.Body.Len()), append(zipped, gz.Body.Len())
+			if plain.Body.Len() >= 3<<20 {
+				t.Errorf("%s seed %d: %d raw bytes, want under 3 MiB", pr.ID, seed, plain.Body.Len())
+			}
+			if gz.Body.Len() >= 1<<20 {
+				t.Errorf("%s seed %d: %d gzipped bytes, want under 1 MiB", pr.ID, seed, gz.Body.Len())
+			}
+			if !bytes.Equal(gunzip(t, gz.Body.Bytes()), plain.Body.Bytes()) {
+				t.Errorf("%s seed %d: the gzipped body does not decode to the plain one", pr.ID, seed)
 			}
 		}
-		t.Logf("preset %-8s sizes %v", pr.ID, sizes)
+		t.Logf("preset %-8s raw %v gzip %v", pr.ID, raw, zipped)
+	}
+}
+
+func TestGzipAndPlainReturnTheSameJSON(t *testing.T) {
+	s := New()
+	for _, tc := range []struct{ method, target, body string }{
+		{"GET", "/api/defaults", ""},
+		{"POST", "/api/compare", smallBody},
+		{"POST", "/api/run", runBody},
+	} {
+		plain := do(s, newReq(tc.method, tc.target, tc.body))
+		if ce := plain.Header().Get("Content-Encoding"); ce != "" {
+			t.Errorf("%s: plain request got Content-Encoding %q", tc.target, ce)
+		}
+		req := newReq(tc.method, tc.target, tc.body)
+		req.Header.Set("Accept-Encoding", "br, GZip;q=0.8")
+		gz := do(s, req)
+		if gz.Header().Get("Content-Encoding") != "gzip" {
+			t.Fatalf("%s: no gzip: %v", tc.target, gz.Header())
+		}
+		for _, r := range []*httptest.ResponseRecorder{plain, gz} {
+			if !strings.Contains(r.Header().Get("Vary"), "Accept-Encoding") {
+				t.Errorf("%s: Vary %q", tc.target, r.Header().Get("Vary"))
+			}
+		}
+		var a, b any
+		if err := json.Unmarshal(gunzip(t, gz.Body.Bytes()), &a); err != nil {
+			t.Fatal(err)
+		}
+		decode(t, plain, &b)
+		zeroP99(a)
+		zeroP99(b)
+		if !reflect.DeepEqual(a, b) {
+			t.Errorf("%s: gzip and plain JSON differ", tc.target)
+		}
+	}
+	// gzip refused with q=0, and errors are never compressed.
+	req := newReq("GET", "/api/defaults", "")
+	req.Header.Set("Accept-Encoding", "gzip;q=0")
+	if rec := do(s, req); rec.Header().Get("Content-Encoding") != "" {
+		t.Error("gzip;q=0 was compressed")
+	}
+	req = newReq("POST", "/api/compare", `{`)
+	req.Header.Set("Accept-Encoding", "gzip")
+	if rec := do(s, req); rec.Code != 400 || rec.Header().Get("Content-Encoding") != "" {
+		t.Errorf("error response: %d %q", rec.Code, rec.Header().Get("Content-Encoding"))
 	}
 }
 

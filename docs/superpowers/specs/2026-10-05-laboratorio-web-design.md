@@ -76,7 +76,7 @@ Rotas JSON; requisições POST com corpo JSON.
 - `series` em colunas: por minuto, potência comandada e física total e camada; por carregador, potência e ônibus ligado; por ônibus, carga real, carga lida (`null` quando não há leitura) e carregador.
 - `decisions`: só os minutos em que a decisão mudou, com camada, rodízios e o estado dos ônibus **em delta**: cada decisão lista apenas os ônibus cuja entrada (`b`, `ok`, `as`, `sf`, `r`) mudou desde a decisão anterior (a primeira lista todos) e `gone` traz os ids que estavam listados e deixaram de estar (sempre uma lista, possivelmente vazia). O leitor mantém um mapa, aplica `buses` e remove `gone`; o resultado após a decisão *k* é exatamente a lista de estados que o planejador produziu nela (sem perda). `sf` é omitido quando vale 0. Não há potência por carregador nas decisões: a potência comandada vem de `series.chargers[].commanded_kw`. Os motivos vão numa tabela de textos (`reasons`, cada ônibus aponta por `r`, -1 = sem motivo) e os avisos do planejador (por exemplo "rodízio não recomendado: ônibus B006 cedeu o carregador há 3 min…") vão numa tabela `notes` do topo da resposta, cada texto exato uma vez, com os números; `decisions[].notes` é a lista de índices nessa tabela. O cursor usa a última decisão até o minuto (acumulando os deltas).
 - `metrics.plan_p99_micros` é zerado em `/api/run` de propósito (é tempo real medido): a mesma requisição devolve sempre os mesmos bytes.
-- Tamanho: 50 ônibus e 25 carregadores ficam em torno de 1 MB sem falhas e entre 2,1 e 2,3 MB nos cenários com falhas (a meta de 2 MiB não é atingida em todos os cenários prontos; ver relatório da Tarefa 3). Para limitar a resposta, `/api/run` aceita no máximo 500 ônibus e 500 carregadores.
+- Tamanho típico (50 ônibus, 25 carregadores, um dia): abaixo de 2 MB transferidos (gzip) e abaixo de 3 MB sem compressão (cerca de 1 MB sem falhas, até uns 2,3 MB com falhas). As rotas JSON comprimem a resposta com gzip quando o pedido traz `Accept-Encoding: gzip` (`Content-Encoding: gzip`, `Vary: Accept-Encoding`); sem o cabeçalho os bytes são exatamente o JSON sem compressão. Os arquivos estáticos não são comprimidos. Para limitar a resposta, `/api/run` aceita no máximo 500 ônibus e 500 carregadores.
 
 **Validação:** mesmos limites do `simrun` (ônibus e carregadores até 10 mil, sementes até 1000, limite finito em (0, 1e7] kW), via função compartilhada. Inválido devolve 400 com `{"error": "...", "field": "..."}`. No máximo duas execuções simultâneas; a terceira recebe 503 "ocupado". Prazo de 60 s por requisição, tanto em `/api/compare` quanto em `/api/run`: a simulação verifica o cancelamento a cada minuto simulado, então o prazo interrompe execuções em andamento e libera a vaga (504 com mensagem em português). Limites do `/api/run`: ônibus e carregadores até 500 (`lab_max_run_buses` e `lab_max_run_chargers` em `GET /api/defaults`). O JSON de erro de perfil lista os valores da API (`none`, `mild`, `severe`, `random`).
 
@@ -88,7 +88,7 @@ Rotas JSON; requisições POST com corpo JSON.
 - `RunTraced` devolve as mesmas métricas que `Run`.
 - A comparação do laboratório é idêntica à do `simrun` para os mesmos parâmetros.
 - Mesma requisição duas vezes devolve JSON idêntico, inclusive com sementes em paralelo.
-- Rotas com `httptest`: parâmetros inválidos, NaN/Inf, limites estourados, corpo grande, `Host` não local, rejeição acima de duas execuções, tamanho da resposta de `/api/run` nos quatro cenários prontos, execução cancelada por prazo (504) em `/api/compare` e `/api/run`, e codificação em delta das decisões sem perda (reconstrução igual à lista do planejador).
+- Rotas com `httptest`: parâmetros inválidos, NaN/Inf, limites estourados, corpo grande, `Host` não local, rejeição acima de duas execuções, tamanho da resposta de `/api/run` nos quatro cenários prontos (abaixo de 3 MiB puro e de 1 MiB em gzip, e o gzip decodificado igual ao corpo puro), execução cancelada por prazo (504) em `/api/compare` e `/api/run`, e codificação em delta das decisões sem perda (reconstrução igual à lista do planejador).
 - Todo arquivo referenciado pelo `index.html` existe no conteúdo embutido.
 
 **Frontend:** cálculos puros (escalas, posição das barras, formatação, escolha da decisão por minuto) em módulos separados, testados com `node --test` (somente desenvolvimento e CI, não para usar a ferramenta). O desenho é verificado em navegador real com capturas de tela a cada marco.
@@ -105,7 +105,7 @@ Cada marco é usável, vai para o `main` e é enviado ao GitHub.
 
 ## 9. Riscos
 
-- **Tamanho e velocidade do traço:** medidos no marco 1; teste de 2 MB.
+- **Tamanho e velocidade do traço:** medidos no marco 1; teste de tamanho (3 MiB puro, 1 MiB em gzip).
 - **p99 com paralelismo:** a tela avisa que é aproximado.
 - **JavaScript sem framework que cresce demais:** módulos pequenos, uma responsabilidade cada.
 - **Muitos elementos SVG:** estimativa de cerca de 36 mil pontos no gráfico de potência; se pesar, esse painel passa para canvas.

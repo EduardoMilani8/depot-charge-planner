@@ -4,6 +4,7 @@ package lab
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"errors"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -132,7 +134,7 @@ func (s *Server) route(method string, h handlerFunc) http.HandlerFunc {
 			writeError(w, aerr)
 			return
 		}
-		writeJSON(w, http.StatusOK, body)
+		writeJSON(w, r, http.StatusOK, body)
 	}
 }
 
@@ -162,19 +164,52 @@ func decodeBody(r *http.Request, v any) *apiError {
 	return nil
 }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
+// acceptsGzip reports whether the request's Accept-Encoding allows gzip (q=0 forbids it).
+func acceptsGzip(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	for _, part := range strings.Split(strings.Join(r.Header.Values("Accept-Encoding"), ","), ",") {
+		name, params, _ := strings.Cut(strings.TrimSpace(part), ";")
+		if !strings.EqualFold(strings.TrimSpace(name), "gzip") {
+			continue
+		}
+		if q, ok := strings.CutPrefix(strings.ReplaceAll(strings.ToLower(params), " ", ""), "q="); ok {
+			if f, err := strconv.ParseFloat(q, 64); err == nil && f == 0 {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// writeJSON writes v as JSON. When r asks for gzip the already-buffered body is
+// compressed (lossless: the decoded bytes are the same as the plain response); without
+// the header the bytes are exactly the uncompressed JSON. r may be nil (no compression).
+func writeJSON(w http.ResponseWriter, r *http.Request, status int, v any) {
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(v); err != nil {
 		writeError(w, &apiError{status: http.StatusInternalServerError, Message: "Erro interno ao montar a resposta."})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Add("Vary", "Accept-Encoding")
+	body := buf.Bytes()
+	if acceptsGzip(r) {
+		var z bytes.Buffer
+		zw := gzip.NewWriter(&z)
+		if _, err := zw.Write(body); err == nil && zw.Close() == nil {
+			w.Header().Set("Content-Encoding", "gzip")
+			body = z.Bytes()
+		}
+	}
 	w.WriteHeader(status)
-	w.Write(buf.Bytes())
+	w.Write(body)
 }
 
 func writeError(w http.ResponseWriter, e *apiError) {
-	writeJSON(w, e.status, e)
+	writeJSON(w, nil, e.status, e)
 }
 
 var errBusy = &apiError{status: http.StatusServiceUnavailable,
