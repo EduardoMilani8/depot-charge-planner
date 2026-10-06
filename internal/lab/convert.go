@@ -2,7 +2,6 @@ package lab
 
 import (
 	"math"
-	"regexp"
 	"sort"
 
 	"github.com/EduardoMilani8/depot-charge-planner/internal/sim"
@@ -69,12 +68,26 @@ type swapDTO struct {
 	Reason  string `json:"reason"`
 }
 
-type decisionDTO struct {
+// fullDecision is one decision as the planner produced it (every bus, note texts).
+type fullDecision struct {
 	Minute int            `json:"minute"`
 	Layer  string         `json:"layer"`
 	Buses  []busStatusDTO `json:"buses"`
 	Swaps  []swapDTO      `json:"swaps"`
-	Notes  []string       `json:"notes"` // only the first occurrence of each text (see buildRun)
+	Notes  []string       `json:"notes"`
+}
+
+// decisionDTO is the wire form of a decision. Buses lists only the entries that changed
+// since the previous decision (the first decision lists all of them) and Gone the buses
+// that were listed before and no longer are. Notes are indices into runResponse.Notes.
+// There are no setpoints: series.chargers[].commanded_kw carries what was commanded.
+type decisionDTO struct {
+	Minute int            `json:"minute"`
+	Layer  string         `json:"layer"`
+	Buses  []busStatusDTO `json:"buses"`
+	Gone   []string       `json:"gone"`
+	Swaps  []swapDTO      `json:"swaps"`
+	Notes  []int          `json:"notes"`
 }
 
 type outcomeDTO struct {
@@ -99,12 +112,10 @@ type runResponse struct {
 	Scenario   scenarioDTO   `json:"scenario"`
 	Series     seriesDTO     `json:"series"`
 	Reasons    []string      `json:"reasons"`
+	Notes      []string      `json:"notes"`
 	Decisions  []decisionDTO `json:"decisions"`
 	Outcomes   []outcomeDTO  `json:"outcomes"`
 }
-
-// numberRE matches standalone numbers (digits inside IDs such as "B004" survive).
-var numberRE = regexp.MustCompile(`\b[0-9]+(?:[.,][0-9]+)?\b`)
 
 func sortChargerDTOs(cs []chargerDTO) {
 	sort.Slice(cs, func(i, j int) bool { return cs[i].ID < cs[j].ID })
@@ -118,11 +129,11 @@ func finite(v float64) float64 {
 	return v
 }
 
-// decisionToDTO converts one decision; reasonIdx interns reason texts.
-func decisionToDTO(d sim.Decision, reasonIdx func(string) int) decisionDTO {
+// decisionToDTO converts one decision, with every bus; reasonIdx interns reason texts.
+func decisionToDTO(d sim.Decision, reasonIdx func(string) int) fullDecision {
 	// d.Setpoints is not copied: series.chargers[].commanded_kw already carries what was
 	// commanded every minute, and repeating it here made the response too large.
-	out := decisionDTO{Minute: d.Minute, Layer: d.Layer, Notes: d.Notes,
+	out := fullDecision{Minute: d.Minute, Layer: d.Layer, Notes: d.Notes,
 		Buses: []busStatusDTO{}, Swaps: []swapDTO{}}
 	if out.Notes == nil {
 		out.Notes = []string{}
@@ -135,6 +146,48 @@ func decisionToDTO(d sim.Decision, reasonIdx func(string) int) decisionDTO {
 	}
 	for _, s := range d.Swaps {
 		out.Swaps = append(out.Swaps, swapDTO{Charger: s.ChargerID, Out: s.OutBusID, In: s.InBusID, Reason: s.Reason})
+	}
+	return out
+}
+
+// deltaEncoder turns full decisions into decisionDTOs: only the bus entries that changed,
+// the ids that disappeared, and note texts replaced by indices into a table (each exact
+// text once, numbers intact).
+type deltaEncoder struct {
+	listed   map[string]busStatusDTO // what the reader has after the decisions already sent
+	noteIdx  map[string]int
+	NoteText []string
+}
+
+func newDeltaEncoder() *deltaEncoder {
+	return &deltaEncoder{listed: map[string]busStatusDTO{}, noteIdx: map[string]int{}, NoteText: []string{}}
+}
+
+func (e *deltaEncoder) encode(f fullDecision) decisionDTO {
+	out := decisionDTO{Minute: f.Minute, Layer: f.Layer, Buses: []busStatusDTO{}, Gone: []string{},
+		Swaps: f.Swaps, Notes: []int{}}
+	now := make(map[string]busStatusDTO, len(f.Buses))
+	for _, b := range f.Buses {
+		now[b.Bus] = b
+		if prev, ok := e.listed[b.Bus]; !ok || prev != b {
+			out.Buses = append(out.Buses, b)
+		}
+	}
+	for id := range e.listed {
+		if _, ok := now[id]; !ok {
+			out.Gone = append(out.Gone, id)
+		}
+	}
+	sort.Strings(out.Gone)
+	e.listed = now
+	for _, n := range f.Notes {
+		i, ok := e.noteIdx[n]
+		if !ok {
+			i = len(e.NoteText)
+			e.noteIdx[n] = i
+			e.NoteText = append(e.NoteText, n)
+		}
+		out.Notes = append(out.Notes, i)
 	}
 	return out
 }
@@ -192,22 +245,11 @@ func buildRun(p Params, seed int64, controller string, sc sim.Scenario, m sim.Me
 		return interned[s]
 	}
 	resp.Decisions = []decisionDTO{}
-	seenNote := map[string]bool{}
+	enc := newDeltaEncoder()
 	for _, d := range tr.Decisions {
-		dto := decisionToDTO(d, reasonIdx)
-		// A note such as "rodízio não recomendado: ônibus B006 cedeu o carregador há 3 min"
-		// repeats every minute with only its numbers changed: keep the first occurrence of
-		// each text (numbers masked) and drop the repeats, so the response stays small.
-		kept := []string{}
-		for _, n := range dto.Notes {
-			if k := numberRE.ReplaceAllString(n, "#"); !seenNote[k] {
-				seenNote[k] = true
-				kept = append(kept, n)
-			}
-		}
-		dto.Notes = kept
-		resp.Decisions = append(resp.Decisions, dto)
+		resp.Decisions = append(resp.Decisions, enc.encode(decisionToDTO(d, reasonIdx)))
 	}
+	resp.Notes = enc.NoteText
 	resp.Outcomes = []outcomeDTO{}
 	for _, o := range tr.Outcomes {
 		resp.Outcomes = append(resp.Outcomes, outcomeDTO{

@@ -3,6 +3,7 @@ package lab
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"runtime"
 
@@ -17,13 +18,14 @@ type presetDTO struct {
 }
 
 type limitsDTO struct {
-	MaxBuses         int     `json:"max_buses"`
-	MaxChargers      int     `json:"max_chargers"`
-	MaxSeeds         int     `json:"max_seeds"`
-	MaxLimitKW       float64 `json:"max_limit_kw"`
-	MaxReadingAgeMin int     `json:"max_reading_age_min"`
-	LabMaxWork       int     `json:"lab_max_work"`
-	LabMaxRunBuses   int     `json:"lab_max_run_buses"`
+	MaxBuses          int     `json:"max_buses"`
+	MaxChargers       int     `json:"max_chargers"`
+	MaxSeeds          int     `json:"max_seeds"`
+	MaxLimitKW        float64 `json:"max_limit_kw"`
+	MaxReadingAgeMin  int     `json:"max_reading_age_min"`
+	LabMaxWork        int     `json:"lab_max_work"`
+	LabMaxRunBuses    int     `json:"lab_max_run_buses"`
+	LabMaxRunChargers int     `json:"lab_max_run_chargers"`
 }
 
 type defaultsResponse struct {
@@ -54,12 +56,20 @@ func (s *Server) defaults(r *http.Request) (any, *apiError) {
 		Limits: limitsDTO{
 			MaxBuses: sim.MaxBuses, MaxChargers: sim.MaxChargers, MaxSeeds: sim.MaxSeeds,
 			MaxLimitKW: sim.MaxLimitKW, MaxReadingAgeMin: sim.MaxReadingAgeMin,
-			LabMaxWork: labMaxWork, LabMaxRunBuses: labMaxRunBuses,
+			LabMaxWork: labMaxWork, LabMaxRunBuses: labMaxRunBuses, LabMaxRunChargers: labMaxRunChargers,
 		},
 		Presets:     presets(),
 		Controllers: sim.ControllerNames,
 		Profiles:    []string{"none", "mild", "severe", "random"},
 	}, nil
+}
+
+// ctxError maps a simulation that ended early: 504 on the deadline, 408 if the client left.
+func ctxError(err error, timeoutMsg string) *apiError {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return &apiError{status: http.StatusGatewayTimeout, Message: timeoutMsg}
+	}
+	return &apiError{status: http.StatusRequestTimeout, Message: "Requisição cancelada."}
 }
 
 type seedDTO struct {
@@ -101,10 +111,7 @@ func (s *Server) compare(r *http.Request) (any, *apiError) {
 	g, cfg := p.toSim()
 	res, err := sim.Compare(ctx, g, cfg, p.Seeds, runtime.NumCPU())
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return nil, &apiError{status: http.StatusGatewayTimeout, Message: "Tempo esgotado: reduza as sementes ou o número de ônibus."}
-		}
-		return nil, &apiError{status: http.StatusRequestTimeout, Message: "Requisição cancelada."}
+		return nil, ctxError(err, "Tempo esgotado: reduza as sementes ou o número de ônibus.")
 	}
 	out := compareResponse{
 		Params:  p,
@@ -147,18 +154,28 @@ func (s *Server) run(r *http.Request) (any, *apiError) {
 	}
 	if p.Buses > labMaxRunBuses {
 		return nil, &apiError{status: http.StatusBadRequest, Field: "buses",
-			Message: "Para abrir uma execução detalhada use no máximo 1000 ônibus."}
+			Message: fmt.Sprintf("Para abrir uma execução detalhada use no máximo %d ônibus.", labMaxRunBuses)}
+	}
+	if p.Chargers > labMaxRunChargers {
+		return nil, &apiError{status: http.StatusBadRequest, Field: "chargers",
+			Message: fmt.Sprintf("Para abrir uma execução detalhada use no máximo %d carregadores.", labMaxRunChargers)}
 	}
 	release, ok := s.acquire()
 	if !ok {
 		return nil, errBusy
 	}
 	defer release()
+	ctx, cancel := context.WithTimeout(r.Context(), s.timeout)
+	defer cancel()
 	g, cfg := p.toSim()
 	sc, ctrl, _ := sim.ForController(req.Controller, cfg, sim.Generate(g, req.Seed))
 	tr := sim.NewTrace()
-	m := sim.RunTraced(sc, ctrl, nil, tr)
-	// The p99 is wall-clock time: zeroed so the same request always gives the same bytes.
+	m, err := sim.RunContext(ctx, sc, ctrl, nil, tr)
+	if err != nil {
+		return nil, ctxError(err, "Tempo esgotado: reduza o número de ônibus ou de carregadores.")
+	}
+	// plan_p99_micros is wall-clock time and is zeroed on purpose, so the same request
+	// always gives the same bytes.
 	m.PlanP99Micros = 0
 	return buildRun(p, req.Seed, req.Controller, sc, m, tr), nil
 }

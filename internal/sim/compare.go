@@ -45,8 +45,9 @@ type ControllerResult struct {
 
 // Compare runs every controller on seeds 1..seeds. Runs are independent, so up to
 // `workers` of them run at once; results are always ordered by controller and seed, so
-// they do not depend on workers (PlanP99Micros is wall-clock and does). ctx is checked
-// before each run is started.
+// they do not depend on workers (PlanP99Micros is wall-clock and does). ctx stops runs
+// in flight (checked every simulated minute) and no new run starts after it ends; the
+// result is then ctx.Err() with no partial results.
 func Compare(ctx context.Context, p GenParams, cfg planner.Config, seeds, workers int) ([]ControllerResult, error) {
 	if workers < 1 {
 		workers = 1
@@ -54,6 +55,7 @@ func Compare(ctx context.Context, p GenParams, cfg planner.Config, seeds, worker
 	out := make([]ControllerResult, 0, len(ControllerNames))
 	for _, name := range ControllerNames {
 		res := make([]SeedResult, seeds)
+		errs := make([]error, seeds)
 		sem := make(chan struct{}, workers)
 		var wg sync.WaitGroup
 		for i := 0; i < seeds; i++ {
@@ -67,12 +69,18 @@ func Compare(ctx context.Context, p GenParams, cfg planner.Config, seeds, worker
 				defer func() { <-sem }()
 				seed := int64(i + 1)
 				sc, ctrl, _ := ForController(name, cfg, Generate(p, seed)) // names are fixed: no error
-				res[i] = SeedResult{Seed: seed, Metrics: Run(sc, ctrl, nil)}
+				m, err := RunContext(ctx, sc, ctrl, nil, nil)
+				res[i], errs[i] = SeedResult{Seed: seed, Metrics: m}, err
 			}(i)
 		}
 		wg.Wait()
 		if err := ctx.Err(); err != nil {
 			return nil, err
+		}
+		for _, err := range errs {
+			if err != nil {
+				return nil, err
+			}
 		}
 		ms := make([]Metrics, seeds)
 		for i, r := range res {

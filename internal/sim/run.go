@@ -1,6 +1,7 @@
 package sim
 
 import (
+	"context"
 	"math"
 	"time"
 
@@ -20,11 +21,22 @@ func Run(sc Scenario, ctrl Controller, rec Recorder) Metrics {
 // RunTraced is Run that also fills tr (when not nil) with the simulator's truth and
 // the decisions. It returns exactly the metrics Run returns.
 func RunTraced(sc Scenario, ctrl Controller, rec Recorder, tr *Trace) Metrics {
+	m, _ := RunContext(context.Background(), sc, ctrl, rec, tr) // Background never ends: no error
+	return m
+}
+
+// RunContext is RunTraced that can be cancelled: it checks ctx before every simulated
+// minute and returns ctx.Err() (with zero Metrics and a partial tr) as soon as it ends.
+// With a context that never ends it returns exactly the metrics RunTraced returns.
+func RunContext(ctx context.Context, sc Scenario, ctrl Controller, rec Recorder, tr *Trace) (Metrics, error) {
 	w := newWorld(sc)
 	m := Metrics{Buses: len(sc.Buses), LayerTicks: map[string]int{}}
 	durations := make([]time.Duration, 0, sc.Horizon+1)
 	prev := map[string]float64{}
 	for t := 0; t <= sc.Horizon; t++ {
+		if err := ctx.Err(); err != nil {
+			return Metrics{}, err
+		}
 		w.beginTick(t)
 		in := w.observe()
 		if tr != nil {
@@ -63,7 +75,7 @@ func RunTraced(sc Scenario, ctrl Controller, rec Recorder, tr *Trace) Metrics {
 		tr.finish(w)
 	}
 	m.PlanP99Micros = p99Micros(durations)
-	return m
+	return m, nil
 }
 
 func changed(a, b map[string]float64) bool {

@@ -10,8 +10,9 @@ import (
 
 // Work limits of the lab (on top of sim.Max*): a request must stay interactive.
 const (
-	labMaxWork     = 20000 // buses x seeds in /api/compare
-	labMaxRunBuses = 1000  // buses in /api/run (the response carries every series)
+	labMaxWork        = 20000 // buses x seeds in /api/compare
+	labMaxRunBuses    = 500   // buses in /api/run (the response carries every series)
+	labMaxRunChargers = 500   // chargers in /api/run
 )
 
 // Params is the scenario form. Missing JSON fields keep the default.
@@ -63,7 +64,7 @@ var jsonField = map[string]string{
 func ptMessage(field string) string {
 	switch field {
 	case "profile":
-		return "Perfil de falhas inválido: use nenhuma, leve, severa ou aleatória."
+		return "Perfil de falhas inválido: use none, mild, severe ou random."
 	case "seeds":
 		return fmt.Sprintf("Sementes: informe um valor entre 1 e %d.", sim.MaxSeeds)
 	case "buses":

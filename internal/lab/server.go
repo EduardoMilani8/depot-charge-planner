@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -36,7 +37,7 @@ func New() *Server {
 	}
 	return &Server{
 		sem:     make(chan struct{}, maxConcurrent),
-		static:  http.FileServer(http.FS(sub)),
+		static:  noListing(sub, http.FileServer(http.FS(sub))),
 		timeout: 60 * time.Second,
 	}
 }
@@ -48,6 +49,29 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/run", s.route(http.MethodPost, s.run))
 	mux.Handle("/", s.static)
 	return guard(mux)
+}
+
+// noListing serves files only: a path ending in "/" (other than "/" itself) or naming a
+// directory answers 404 instead of a directory listing.
+func noListing(fsys fs.FS, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := path.Clean("/" + r.URL.Path)
+		if p != "/" && strings.HasSuffix(r.URL.Path, "/") {
+			http.NotFound(w, r)
+			return
+		}
+		name := strings.TrimPrefix(p, "/")
+		if name == "" {
+			name = "."
+		}
+		if st, err := fs.Stat(fsys, name); err == nil && st.IsDir() {
+			if _, err := fs.Stat(fsys, path.Join(name, "index.html")); err != nil || name != "." {
+				http.NotFound(w, r)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // isLocalHost accepts 127.0.0.1, localhost and ::1 with or without a port.
@@ -73,7 +97,8 @@ func guard(next http.Handler) http.Handler {
 			return
 		}
 		if o := r.Header.Get("Origin"); o != "" {
-			if u, err := url.Parse(o); err != nil || !isLocalHost(u.Host) {
+			// The page and its API share one origin: the Origin's host must be the Host.
+			if u, err := url.Parse(o); err != nil || !strings.EqualFold(u.Host, r.Host) {
 				writeError(w, &apiError{status: http.StatusForbidden, Message: "Acesso negado: origem não permitida."})
 				return
 			}
@@ -126,7 +151,12 @@ func decodeBody(r *http.Request, v any) *apiError {
 		}
 		return &apiError{status: http.StatusBadRequest, Message: "JSON inválido: " + err.Error()}
 	}
-	if dec.More() {
+	// Nothing but whitespace may follow the object.
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			return &apiError{status: http.StatusRequestEntityTooLarge, Message: "Corpo da requisição grande demais (limite de 64 KB)."}
+		}
 		return &apiError{status: http.StatusBadRequest, Message: "JSON inválido: há dados depois do objeto."}
 	}
 	return nil

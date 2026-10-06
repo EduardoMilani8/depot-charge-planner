@@ -74,12 +74,13 @@ Rotas JSON; requisições POST com corpo JSON.
 **`POST /api/run`** (parâmetros, semente, controlador):
 - `scenario`: horizonte, limite ao longo do tempo, carregadores, ônibus (chegada, saída, capacidade, alvo previsto e real), falhas.
 - `series` em colunas: por minuto, potência comandada e física total e camada; por carregador, potência e ônibus ligado; por ônibus, carga real, carga lida (`null` quando não há leitura) e carregador.
-- `decisions`: só os minutos em que a decisão mudou, com camada, potência por carregador, estado de cada ônibus e rodízios. Os motivos vão numa tabela de textos e cada ônibus aponta para ela. O cursor usa a última decisão até o minuto.
-- Tamanho típico (50 ônibus, um dia) abaixo de 2 MB.
+- `decisions`: só os minutos em que a decisão mudou, com camada, rodízios e o estado dos ônibus **em delta**: cada decisão lista apenas os ônibus cuja entrada (`b`, `ok`, `as`, `sf`, `r`) mudou desde a decisão anterior (a primeira lista todos) e `gone` traz os ids que estavam listados e deixaram de estar (sempre uma lista, possivelmente vazia). O leitor mantém um mapa, aplica `buses` e remove `gone`; o resultado após a decisão *k* é exatamente a lista de estados que o planejador produziu nela (sem perda). `sf` é omitido quando vale 0. Não há potência por carregador nas decisões: a potência comandada vem de `series.chargers[].commanded_kw`. Os motivos vão numa tabela de textos (`reasons`, cada ônibus aponta por `r`, -1 = sem motivo) e os avisos do planejador (por exemplo "rodízio não recomendado: ônibus B006 cedeu o carregador há 3 min…") vão numa tabela `notes` do topo da resposta, cada texto exato uma vez, com os números; `decisions[].notes` é a lista de índices nessa tabela. O cursor usa a última decisão até o minuto (acumulando os deltas).
+- `metrics.plan_p99_micros` é zerado em `/api/run` de propósito (é tempo real medido): a mesma requisição devolve sempre os mesmos bytes.
+- Tamanho: 50 ônibus e 25 carregadores ficam em torno de 1 MB sem falhas e entre 2,1 e 2,3 MB nos cenários com falhas (a meta de 2 MiB não é atingida em todos os cenários prontos; ver relatório da Tarefa 3). Para limitar a resposta, `/api/run` aceita no máximo 500 ônibus e 500 carregadores.
 
-**Validação:** mesmos limites do `simrun` (ônibus e carregadores até 10 mil, sementes até 1000, limite finito em (0, 1e7] kW), via função compartilhada. Inválido devolve 400 com `{"error": "...", "field": "..."}`. No máximo duas execuções simultâneas; a terceira recebe 503 "ocupado". Prazo por requisição; as sementes verificam cancelamento entre execuções.
+**Validação:** mesmos limites do `simrun` (ônibus e carregadores até 10 mil, sementes até 1000, limite finito em (0, 1e7] kW), via função compartilhada. Inválido devolve 400 com `{"error": "...", "field": "..."}`. No máximo duas execuções simultâneas; a terceira recebe 503 "ocupado". Prazo de 60 s por requisição, tanto em `/api/compare` quanto em `/api/run`: a simulação verifica o cancelamento a cada minuto simulado, então o prazo interrompe execuções em andamento e libera a vaga (504 com mensagem em português). Limites do `/api/run`: ônibus e carregadores até 500 (`lab_max_run_buses` e `lab_max_run_chargers` em `GET /api/defaults`). O JSON de erro de perfil lista os valores da API (`none`, `mild`, `severe`, `random`).
 
-**Segurança local:** só `127.0.0.1`; rejeita `Host` não local (DNS rebinding); corpo até 64 KB; sem CORS.
+**Segurança local:** só `127.0.0.1`; rejeita `Host` não local (DNS rebinding) e `Origin` cujo host não seja o próprio `Host` (sem `Origin` é aceito); corpo até 64 KB, incluindo o que vem depois do objeto JSON; sem CORS; os arquivos estáticos não têm listagem de diretório (caminho de diretório responde 404).
 
 ## 7. Testes
 
@@ -87,7 +88,7 @@ Rotas JSON; requisições POST com corpo JSON.
 - `RunTraced` devolve as mesmas métricas que `Run`.
 - A comparação do laboratório é idêntica à do `simrun` para os mesmos parâmetros.
 - Mesma requisição duas vezes devolve JSON idêntico, inclusive com sementes em paralelo.
-- Rotas com `httptest`: parâmetros inválidos, NaN/Inf, limites estourados, corpo grande, `Host` não local, rejeição acima de duas execuções, resposta de `/api/run` abaixo de 2 MB.
+- Rotas com `httptest`: parâmetros inválidos, NaN/Inf, limites estourados, corpo grande, `Host` não local, rejeição acima de duas execuções, tamanho da resposta de `/api/run` nos quatro cenários prontos, execução cancelada por prazo (504) em `/api/compare` e `/api/run`, e codificação em delta das decisões sem perda (reconstrução igual à lista do planejador).
 - Todo arquivo referenciado pelo `index.html` existe no conteúdo embutido.
 
 **Frontend:** cálculos puros (escalas, posição das barras, formatação, escolha da decisão por minuto) em módulos separados, testados com `node --test` (somente desenvolvimento e CI, não para usar a ferramenta). O desenho é verificado em navegador real com capturas de tela a cada marco.
