@@ -14,6 +14,12 @@ type Recorder interface {
 
 // Run simulates the scenario with the given controller. rec may be nil.
 func Run(sc Scenario, ctrl Controller, rec Recorder) Metrics {
+	return RunTraced(sc, ctrl, rec, nil)
+}
+
+// RunTraced is Run that also fills tr (when not nil) with the simulator's truth and
+// the decisions. It returns exactly the metrics Run returns.
+func RunTraced(sc Scenario, ctrl Controller, rec Recorder, tr *Trace) Metrics {
 	w := newWorld(sc)
 	m := Metrics{Buses: len(sc.Buses), LayerTicks: map[string]int{}}
 	durations := make([]time.Duration, 0, sc.Horizon+1)
@@ -43,9 +49,16 @@ func Run(sc Scenario, ctrl Controller, rec Recorder) Metrics {
 			w.applySwaps(plan.Swaps)
 		}
 		w.advance(&m)
+		if tr != nil {
+			tr.capture(w, in, plan)
+			tr.recordDecision(t, plan)
+		}
 		w.endTick()
 	}
 	w.finish(&m)
+	if tr != nil {
+		tr.finish(w)
+	}
 	m.PlanP99Micros = p99Micros(durations)
 	return m
 }

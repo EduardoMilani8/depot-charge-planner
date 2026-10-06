@@ -44,6 +44,8 @@ type World struct {
 	chargers  []model.Charger
 	cmd       map[string]float64 // commands issued this step
 	applied   map[string]float64 // power in effect (commands of the previous step)
+	physKW    map[string]float64 // grid power each charger actually delivered this step
+	physTotal float64            // sum of physKW (what the overshoot metric compares to the limit)
 	freed     map[string]bool    // chargers operators freed this tick (UnplugFull)
 	moves     int                // manual moves: swaps executed and buses unplugged
 	ready     int
@@ -56,6 +58,7 @@ func newWorld(sc Scenario) *World {
 		rng:     rand.New(rand.NewSource(sc.Seed)),
 		cmd:     map[string]float64{},
 		applied: map[string]float64{},
+		physKW:  map[string]float64{},
 	}
 	w.chargers = append([]model.Charger(nil), sc.Chargers...)
 	sort.Slice(w.chargers, func(i, j int) bool { return w.chargers[i].ID < w.chargers[j].ID })
@@ -330,6 +333,15 @@ func (w *World) commandedTotal() float64 {
 	return total
 }
 
+// commandedBy is the power one charger draws under this step's commands (offline
+// chargers keep drawing their last power).
+func (w *World) commandedBy(c model.Charger) float64 {
+	if c.Status == model.ChargerOffline {
+		return w.applied[c.ID]
+	}
+	return w.cmd[c.ID]
+}
+
 // applySwaps executes recommended swaps (when operators follow them).
 func (w *World) applySwaps(swaps []planner.Swap) {
 	for _, s := range swaps {
@@ -354,6 +366,7 @@ func (w *World) applySwaps(swaps []planner.Swap) {
 
 // advance runs the physics for one step using the power in effect (previous commands).
 func (w *World) advance(m *Metrics) {
+	w.physKW = map[string]float64{}
 	total := 0.0
 	for _, bs := range w.buses {
 		if !bs.present || bs.departed || bs.chargerID == "" || w.t < bs.busyUntil {
@@ -376,9 +389,11 @@ func (w *World) advance(m *Metrics) {
 		bs.soc += e
 		grid := e / c.Efficiency
 		total += grid / stepHours
+		w.physKW[c.ID] = grid / stepHours
 		m.EnergyKWh += grid
 		m.CostBRL += grid * w.sc.Tariff.PriceAt(w.sc.StartClockMin+w.t)
 	}
+	w.physTotal = total
 	if total > m.PeakKW {
 		m.PeakKW = total
 	}
