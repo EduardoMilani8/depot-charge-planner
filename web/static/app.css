@@ -2,14 +2,17 @@
   --bg: #fafafa; --fg: #1b1f24; --muted: #5a6370; --card: #ffffff; --border: #d5d9df;
   --accent: #0072b2; --accent-fg: #ffffff; --bad: #b3410a; --bad-bg: #fbe9df;
   --ok: #007a5a; --amber: #b07800; --sky: #56b4e9; --purple: #a8497f;
-  --chart-a: #3b86b8; --chart-b: #7fb5d9; --limit: #d55e00; --grid: #e3e6ea;
+  --chart-a: #3b86b8; --chart-b: #1f5a85; --limit: #d55e00; --grid: #e3e6ea;
+  /* Non-text contrast (WCAG 1.4.11, 3:1) of what the eye must find: field borders and the outline of bars. */
+  --control-border: #7d8590; --bar-track: #e3e6ea; --bar-edge: #7d8590;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #14171b; --fg: #e6e9ed; --muted: #9aa3ad; --card: #1c2025; --border: #343b44;
     --accent: #56b4e9; --accent-fg: #0b1620; --bad: #ff9b62; --bad-bg: #3a2418;
     --ok: #3ccf9c; --amber: #e8b23a; --sky: #56b4e9; --purple: #d996bd;
-    --chart-a: #4f9fd0; --chart-b: #2d6f99; --limit: #ff9b62; --grid: #2a3038;
+    --chart-a: #4f9fd0; --chart-b: #3278a8; --limit: #ff9b62; --grid: #2a3038;
+    --control-border: #6f7882; --bar-track: #2a3038; --bar-edge: #6f7882;
   }
 }
 * { box-sizing: border-box; }
@@ -30,7 +33,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .field { display: flex; flex-direction: column; gap: 4px; }
 .field.check { flex-direction: row; align-items: center; flex-wrap: wrap; }
 .field label { font-size: .9rem; color: var(--muted); }
-.field input[type=number], .field select { padding: 7px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); font: inherit; }
+.field input[type=number], .field select { padding: 7px 8px; border: 1px solid var(--control-border); border-radius: 6px; background: var(--bg); color: var(--fg); font: inherit; }
 .field input[aria-invalid=true] { border-color: var(--bad); }
 .field-error { color: var(--bad); font-size: .85rem; min-height: 0; flex-basis: 100%; }
 .presets { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
@@ -52,7 +55,7 @@ td.bad { background: var(--bad-bg); color: var(--bad); font-weight: 600; }
 .strip-row { display: grid; grid-template-columns: 110px 1fr 110px; align-items: center; gap: 8px; }
 .strip-name { font-size: .9rem; } .strip-mean { font-size: .85rem; color: var(--muted); }
 .strip { width: 100%; height: 44px; }
-.strip .bar { fill: var(--chart-b); opacity: .65; }
+.strip .bar { fill: var(--chart-b); }
 .strip .axis { stroke: var(--border); stroke-width: 2; } .strip .mean { stroke: var(--limit); stroke-width: 2; stroke-dasharray: 3 3; }
 .dot { fill: var(--accent); stroke: var(--card); stroke-width: 1.5; cursor: pointer; }
 .dot:hover { fill: var(--limit); }
@@ -63,7 +66,7 @@ td.bad { background: var(--bad-bg); color: var(--bad); font-weight: 600; }
 /* Execution tab */
 .run-controls { display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: center; margin: 8px 0; }
 .run-controls label { color: var(--muted); font-size: .9rem; }
-.run-controls select, .run-controls input { padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); font: inherit; width: auto; }
+.run-controls select, .run-controls input { padding: 5px 8px; border: 1px solid var(--control-border); border-radius: 6px; background: var(--bg); color: var(--fg); font: inherit; width: auto; }
 .run-controls input[type=number] { width: 6rem; }
 .summary { font-weight: 600; margin: 4px 0; }
 .faults summary { cursor: pointer; color: var(--muted); } .faults ul { margin: 4px 0 8px; padding-left: 20px; }
@@ -94,12 +97,12 @@ td.bad { background: var(--bad-bg); color: var(--bad); font-weight: 600; }
 [hidden] { display: none !important; }
 .row-bg { fill: transparent; } .row:hover .row-bg { fill: color-mix(in srgb, var(--accent) 8%, transparent); } .row.selected .row-bg { fill: color-mix(in srgb, var(--accent) 16%, transparent); }
 .row-label { fill: var(--muted); font-size: 11px; cursor: pointer; } .row-label.plain { cursor: default; } .row.selected .row-label { fill: var(--fg); font-weight: 700; }
-.bus-bar { fill: var(--grid); stroke: var(--border); stroke-width: .8; } .soc-fill { fill: var(--chart-a); opacity: .85; }
+.bus-bar { fill: var(--bar-track); stroke: var(--bar-edge); stroke-width: .8; } .soc-fill { fill: var(--chart-a); }
 .target-line { stroke: var(--fg); stroke-width: 1; stroke-dasharray: 3 2; opacity: .7; } .target-line.wide { stroke-width: 1.5; fill: none; }
 .true-target-line { stroke: var(--limit); stroke-width: 1.5; fill: none; }
 .mark-ready { fill: var(--ok); stroke: var(--card); stroke-width: 1; } .mark-fail { stroke: var(--bad); stroke-width: 2.4; fill: none; } .mark-pending { fill: none; stroke: var(--muted); stroke-width: 1.5; }
 .swap-in { fill: var(--ok); } .swap-out { fill: var(--amber); } .bus-fault { fill: var(--purple); } .bus-fault-all { fill: var(--purple); opacity: .8; }
-.occ { fill: var(--grid); stroke: var(--border); stroke-width: .6; } .power-fill { fill: var(--chart-a); opacity: .85; } .occ-label { fill: var(--fg); font-size: 10px; pointer-events: none; }
+.occ { fill: var(--bar-track); stroke: var(--bar-edge); stroke-width: .6; } .power-fill { fill: var(--chart-a); opacity: .85; } .occ-label { fill: var(--fg); font-size: 10px; pointer-events: none; }
 .status-fail { fill: url(#pat-fail); stroke: var(--bad); stroke-width: 1; } .status-offline { fill: url(#pat-offline); stroke: var(--amber); stroke-width: 1; }
 .pat-fail-bg { fill: color-mix(in srgb, var(--bad) 25%, var(--card)); } .pat-fail-line { stroke: var(--bad); } .pat-offline-bg { fill: color-mix(in srgb, var(--amber) 25%, var(--card)); } .pat-offline-dot { fill: var(--amber); }
 .line-true { fill: none; stroke: var(--chart-a); stroke-width: 2.5; } .line-observed { fill: none; stroke: var(--purple); stroke-width: 1.5; stroke-dasharray: 2 3; }
@@ -141,7 +144,7 @@ section[role=tabpanel]:not([hidden]) { animation: rise .25s ease-out; }
 .playing .status-fail.flicker { animation: flicker 1s linear infinite; }
 
 .player-row { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin: 8px 0 0; }
-.player-row select { padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); font: inherit; }
+.player-row select { padding: 5px 8px; border: 1px solid var(--control-border); border-radius: 6px; background: var(--bg); color: var(--fg); font: inherit; }
 .player-row label { color: var(--muted); font-size: .9rem; }
 button.play { min-width: 9.5rem; }
 .live-dot { display: none; width: .7em; height: .7em; border-radius: 50%; background: var(--bad); }
