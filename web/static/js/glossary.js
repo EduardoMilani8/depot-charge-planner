@@ -33,3 +33,42 @@ export const CONTROLLER_HELP = {
 export function formatCell(col, metrics) {
   return col.fmt(metrics[col.key]);
 }
+
+export const FAULT_LABEL = {
+  charger_fail: 'carregador em falha',
+  charger_offline: 'carregador sem comunicação',
+  limit_drop: 'queda do limite da rede',
+  soc_noise: 'ruído na leitura de carga',
+  soc_bias: 'viés na leitura de carga',
+  soc_freeze: 'leitura de carga congelada',
+  soc_missing: 'leitura de carga ausente',
+  consumption_over: 'consumo acima do previsto',
+  late_arrival: 'chegada atrasada',
+  early_departure: 'saída antecipada',
+  planner_panic: 'planejador travou',
+  planner_slow: 'planejador lento',
+  planner_garbage: 'planejador devolveu plano inválido',
+};
+
+export const LAYER_LABEL = { normal: 'normal', 'last-valid': 'último plano válido', safe: 'perfil seguro' };
+
+// Faults that change the site's power picture (drawn on the power chart).
+export const POWER_FAULTS = new Set(['limit_drop', 'charger_fail', 'charger_offline', 'planner_panic', 'planner_slow', 'planner_garbage']);
+
+const VALUE_TEXT = {
+  limit_drop: (v) => `×${String(v).replace('.', ',')}`,
+  soc_noise: (v) => `${v} kWh`,
+  soc_bias: (v) => `${v} kWh`,
+  consumption_over: (v) => `+${v} kWh`,
+  late_arrival: (v) => `${v} min`,
+  early_departure: (v) => `saída no minuto ${v}`,
+};
+
+// describeFault: "<kind> (<target>, <value>), min <from>–<to>"; "*" means every bus.
+export function describeFault(f) {
+  const label = FAULT_LABEL[f.kind] || f.kind;
+  const bits = [];
+  if (f.target && f.target !== '*') bits.push(f.target);
+  if (VALUE_TEXT[f.kind] && f.value) bits.push(VALUE_TEXT[f.kind](f.value));
+  return `${label}${bits.length ? ` (${bits.join(', ')})` : ''}, min ${f.from}–${f.to}`;
+}

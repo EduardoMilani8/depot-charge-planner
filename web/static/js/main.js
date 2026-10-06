@@ -2,11 +2,13 @@ import { getDefaults, compare, createLatest, ApiError } from './api.js';
 import { hashToState, stateToHash, nextTab, TABS } from './params.js';
 import { createForm } from './form.js';
 import { renderCompare } from './compare.js';
+import { createRunView } from './run.js';
 import { h } from './dom.js';
 
 const latest = createLatest();
 let state;
 let form;
+let runView;
 const $ = (id) => document.getElementById(id);
 
 function syncHash() {
@@ -60,6 +62,7 @@ export function openRun(controller, seed) {
   state.controller = controller;
   state.seed = seed;
   showTab('run');
+  runView.load(state);
 }
 
 async function init() {
@@ -73,6 +76,7 @@ async function init() {
   state = hashToState(location.hash, defaults.params);
   form = createForm($('tab-scenario'), defaults, { onRun: runCompare });
   form.write(state.params);
+  runView = createRunView($('run-out'), { onSelect: (controller, seed) => openRun(controller, seed) });
   for (const b of document.querySelectorAll('nav.tabs button')) b.addEventListener('click', () => showTab(b.dataset.tab));
   // Keyboard pattern of tabs: arrows (with wrap), Home and End move focus and activate the tab.
   $('tablist').addEventListener('keydown', (e) => {
@@ -85,6 +89,7 @@ async function init() {
   const wanted = state.tab; // showTab overwrites state.tab, so remember the link's view first
   showTab('scenario');
   if (wanted === 'compare') runCompare(state.params);
+  if (wanted === 'run') openRun(state.controller, state.seed);
 }
 
 init();
