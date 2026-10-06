@@ -76,7 +76,33 @@ export function busExposure(data, busIdx) {
   return e;
 }
 
-// explainBus answers "why did this bus (not) leave ready?" from the run's truth.
+// Thresholds of the cause analysis in explainBus.
+const REACHED_TOL_KWH = 1; // outcomes are rounded to 0.1 kWh; within 1 kWh of the forecast counts as reached
+const MIN_CAUSE_MIN = 10; // minutes on a failed charger or waiting before it is worth naming (or half of a short stay)
+const READING_ERR_KWH = 5; // mean |reading - truth| (kWh) from which the readings are suspect
+const READING_ERR_SHARE = 0.5; // ...and it must be at least this share of the shortfall to explain it
+
+// readingError is the mean |observed - true SoC| (kWh) over the minutes the bus was in the
+// depot with a reading; null when the run has no true SoC series or no reading at all.
+export function readingError(data, busIdx) {
+  const b = data.series.buses[busIdx];
+  if (!b.true_soc_kwh || !b.observed_kwh) return null;
+  let sum = 0;
+  let n = 0;
+  b.state.forEach((st, i) => {
+    const obs = b.observed_kwh[i];
+    const truth = b.true_soc_kwh[i];
+    if (st !== 1 || obs === null || obs === undefined || truth === null || truth === undefined) return;
+    sum += Math.abs(obs - truth);
+    n++;
+  });
+  return n > 0 ? sum / n : null;
+}
+
+// explainBus answers "why did this bus (not) leave ready?" from the run's truth. The causes
+// the planner could not see (real consumption above the forecast, a stay too short for any
+// charger, wrong readings) come before the ones it could act on (failed charger, queue,
+// power); the first one named is the primary.
 export function explainBus(data, busIdx) {
   const b = data.series.buses[busIdx];
   const o = data.outcomes.find((x) => x.id === b.id);
@@ -91,7 +117,8 @@ export function explainBus(data, busIdx) {
   out.push(o.ready
     ? `Saiu pronto às ${clock(start, o.departure)}: ${have}.`
     : `Saiu sem a carga às ${clock(start, o.departure)}: ${have} (faltaram ${fmtNum(o.shortfall_kwh, 0)} kWh).`);
-  if (o.true_target_kwh > o.forecast_target_kwh + 0.5) {
+  const overForecast = o.true_target_kwh > o.forecast_target_kwh + 0.5;
+  if (overForecast) {
     out.push(`O consumo real passou do previsto: o planejador contava com ${fmtNum(o.forecast_target_kwh, 0)} kWh e a rota exigiu ${fmtNum(o.true_target_kwh, 0)} kWh.`);
   }
   const e = busExposure(data, busIdx);
@@ -101,11 +128,37 @@ export function explainBus(data, busIdx) {
   if (e.onOffline) bits.push(`em carregador sem comunicação ${duration(e.onOffline)}`);
   if (e.noReading) bits.push(`sem leitura de carga ${duration(e.noReading)}`);
   out.push(`No pátio por ${duration(e.present)}: ${bits.join(', ')}.`);
-  if (!o.ready) {
-    if (e.onFaulted || e.onOffline) out.push('Possível causa: ficou em carregador com falha ou sem comunicação.');
-    else if (e.waiting) out.push('Possível causa: esperou por um carregador livre.');
-    else out.push('Possível causa: teve carregador o tempo todo; a potência disponível (limite da garagem ou prioridade dada a outros ônibus) não bastou.');
+  if (o.ready) return out;
+
+  const causes = [];
+  // (b) Not enough time: even at the fastest charger the stay could not deliver the energy.
+  const maxKw = Math.max(0, ...(data.scenario.chargers ?? []).map((c) => c.max_kw));
+  const dwell = o.departure - o.arrival;
+  const needKwh = o.true_target_kwh - o.initial_soc_kwh;
+  const capKwh = (dwell / 60) * maxKw;
+  const impossible = maxKw > 0 && needKwh > capKwh + 0.5
+    ? `fisicamente impossível: em ${duration(dwell)} de pátio, um carregador de ${fmtNum(maxKw, 0)} kW entrega no máximo ${fmtNum(capKwh, 0)} kWh e eram necessários ${fmtNum(needKwh, 0)} kWh`
+    : null;
+  // (a) The bus got what the planner aimed for: the miss is on the forecast, not on the charging.
+  if (overForecast && o.final_soc_kwh >= o.forecast_target_kwh - REACHED_TOL_KWH) {
+    causes.push('o consumo real passou do previsto (o planejador não tinha como saber)');
+    if (impossible) causes.push(impossible);
+  } else {
+    if (impossible) causes.push(impossible);
+    // (c) Wrong or late readings over the stay.
+    const err = readingError(data, busIdx);
+    if (err !== null && err >= READING_ERR_KWH && err >= READING_ERR_SHARE * o.shortfall_kwh) {
+      causes.push(`leituras de carga imprecisas ou atrasadas (erro médio de ${fmtNum(err, 0)} kWh entre a leitura e a carga real)`);
+    }
+    // (d) What the planner could act on.
+    const notable = (min) => min > 0 && (min >= MIN_CAUSE_MIN || min >= e.present / 2);
+    if (notable(e.onFaulted + e.onOffline)) causes.push('ficou em carregador com falha ou sem comunicação');
+    if (notable(e.waiting)) causes.push('esperou por um carregador livre');
+    if (causes.length === 0) {
+      causes.push('teve carregador o tempo todo; a potência disponível (limite da garagem ou prioridade dada a outros ônibus) não bastou');
+    }
   }
+  out.push(`Possível causa: ${causes[0]}.` + (causes.length > 1 ? ` Também pesou: ${causes.slice(1).join('; ')}.` : ''));
   return out;
 }
 
