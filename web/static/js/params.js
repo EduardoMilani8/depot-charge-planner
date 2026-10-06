@@ -57,6 +57,15 @@ export function hashToState(hash, defaults) {
   return { params, tab, seed: seed >= 1 ? seed : 1, controller };
 }
 
+// linkState is the state a link must carry. On the run tab that is the run on screen
+// (`run` = { params, controller, seed }, or null when none): `state.params` may already hold
+// the parameters of a newer comparison, and the link has to reproduce what the person sees.
+// Other tabs show what `state` holds.
+export function linkState(state, run) {
+  if (state.tab !== 'run' || !run) return state;
+  return { ...state, params: run.params, controller: run.controller, seed: run.seed };
+}
+
 // decideHashAction: what a hashchange should do. null when `hash` already describes `state`
 // (after normalising: key order, garbage values), so pasting the same link needs no re-run;
 // otherwise the next state read from the hash. `defaultParams` is the flat parameter object

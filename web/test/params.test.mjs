@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { stateToHash, hashToState, decideHashAction, coerce, fieldSpecs, TABS, CONTROLLERS } from '../static/js/params.js';
+import { stateToHash, hashToState, decideHashAction, linkState, coerce, fieldSpecs, TABS, CONTROLLERS } from '../static/js/params.js';
 
 const defaults = {
   buses: 50, chargers: 25, limit_kw: 2000, profile: 'none', seeds: 20, follow_swaps: true,
@@ -102,4 +102,38 @@ test('decideHashAction: a different hash returns the next state', () => {
   assert.deepEqual(decideHashAction('', state, response.params), hashToState('', response.params));
   // garbage values fall back to the defaults, and that is still a change from a custom screen
   assert.deepEqual(decideHashAction('#buses=abc&tab=nope&seed=-4', state, response.params), hashToState('', response.params));
+});
+
+// The Execução tab can show a run computed with other parameters than the ones a newer
+// comparison put in `state.params`: the link must describe what is on screen.
+const onScreen = { params: { ...defaults, buses: 30, profile: 'severe' }, controller: 'fifo', seed: 3 };
+const newer = { params: { ...defaults, buses: 20 }, tab: 'run', seed: 1, controller: 'planner' };
+
+test('linkState: on the run tab the link carries the run on screen', () => {
+  const l = linkState(newer, onScreen);
+  assert.deepEqual(l.params, onScreen.params);
+  assert.equal(l.controller, 'fifo');
+  assert.equal(l.seed, 3);
+  assert.equal(l.tab, 'run');
+  const back = hashToState(stateToHash(l), defaults);
+  assert.deepEqual(back.params, onScreen.params);
+});
+
+test('linkState: other tabs, or no run on screen, keep the state as it is', () => {
+  assert.deepEqual(linkState({ ...newer, tab: 'compare' }, onScreen).params, newer.params);
+  assert.deepEqual(linkState({ ...newer, tab: 'scenario' }, onScreen).params, newer.params);
+  assert.equal(linkState(newer, null), newer);
+  assert.equal(linkState(newer, undefined), newer);
+});
+
+test('linkState does not change the state it reads', () => {
+  const copy = JSON.parse(JSON.stringify(newer));
+  linkState(newer, onScreen);
+  assert.deepEqual(newer, copy);
+});
+
+test('a hash that describes the run on screen needs no action even when state.params is newer', () => {
+  const hash = stateToHash(linkState(newer, onScreen));
+  assert.equal(decideHashAction(hash, linkState(newer, onScreen), defaults), null);
+  assert.notEqual(decideHashAction(hash, newer, defaults), null); // without linkState it would re-run
 });

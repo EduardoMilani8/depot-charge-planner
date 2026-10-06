@@ -1,15 +1,12 @@
 import { h, clear } from './dom.js';
 import { s } from './charts/svg.js';
-import { COLUMNS, CONTROLLER_HELP, formatCell } from './glossary.js';
+import { COLUMNS, CONTROLLER_HELP, formatCell, describeParams } from './glossary.js';
 import { dotStrip } from './charts/layout.js';
 import { fmtNum, fmtPct } from './format.js';
 import { countingText, staggerStep } from './motion.js';
 
-const PROFILE_PT = { none: 'sem falhas', mild: 'falhas leves', severe: 'falhas severas', random: 'falhas aleatórias' };
-
 function summary(p) {
-  return `${p.buses} ônibus, ${p.chargers} carregadores, limite ${fmtNum(p.limit_kw, 0)} kW, ${PROFILE_PT[p.profile] || p.profile}, ` +
-    `${p.seeds} sementes, operadores ${p.follow_swaps ? 'seguem' : 'não seguem'} os rodízios. Dados sintéticos: mostram o comportamento do algoritmo, não de uma garagem real.`;
+  return `${describeParams(p, { seeds: true })}. Dados sintéticos: mostram o comportamento do algoritmo, não de uma garagem real.`;
 }
 
 // table draws the comparison; rows enter one after the other and the share of ready buses

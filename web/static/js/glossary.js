@@ -72,3 +72,16 @@ export function describeFault(f) {
   if (VALUE_TEXT[f.kind] && f.value !== undefined && f.value !== null) bits.push(VALUE_TEXT[f.kind](f.value));
   return `${label}${bits.length ? ` (${bits.join(', ')})` : ''}, min ${f.from}–${f.to}`;
 }
+
+const PROFILE_PT = { none: 'sem falhas', mild: 'falhas leves', severe: 'falhas severas', random: 'falhas aleatórias' };
+
+// describeParams: one line with the scenario's parameters ("30 ônibus, 12 carregadores, ...").
+// The reading age shows only when there is one; the number of seeds only on request (a single
+// run has no seeds to speak of).
+export function describeParams(p, { seeds = false } = {}) {
+  const bits = [`${p.buses} ônibus`, `${p.chargers} carregadores`, `limite ${fmtNum(p.limit_kw, 0)} kW`, PROFILE_PT[p.profile] || p.profile];
+  if (seeds) bits.push(`${p.seeds} sementes`);
+  if (p.reading_age_min > 0) bits.push(`leitura com ${p.reading_age_min} min de idade`);
+  bits.push(`operadores ${p.follow_swaps ? 'seguem' : 'não seguem'} os rodízios`);
+  return bits.join(', ');
+}

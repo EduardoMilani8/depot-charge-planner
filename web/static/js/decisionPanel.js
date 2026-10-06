@@ -86,7 +86,7 @@ export function renderDecisionPanel(root, data, cursor, selection) {
         onclick: () => pick(b.b), onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(b.b); } } },
       h('th', { scope: 'row' }, b.b),
       h('td', {}, b.as ? (b.ok ? '✓ atinge o alvo' : '✗ não atinge') : 'não avaliado'),
-      h('td', {}, b.ok ? '—' : `${fmtNum(b.sf, 0)} kWh`),
+      h('td', {}, b.as && !b.ok ? `${fmtNum(b.sf, 0)} kWh` : '—'), // not assessed: there is no forecast shortfall to show
       h('td', { class: 'reason' }, b.r >= 0 ? data.reasons[b.r] : '—'));
       busRows.set(b.b, tr);
       return tr;

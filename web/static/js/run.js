@@ -7,7 +7,8 @@ import { renderBusTimeline, renderChargerTimeline } from './charts/gantt.js';
 import { renderDecisionPanel } from './decisionPanel.js';
 import { fmtNum, fmtPct, fmtBRL, clock } from './format.js';
 import { CONTROLLERS } from './params.js';
-import { describeFault, CONTROLLER_HELP } from './glossary.js';
+import { describeFault, describeParams, CONTROLLER_HELP } from './glossary.js';
+import { nextFocusTarget, restoreFocus } from './focus.js';
 import { createPlayer, countingText } from './motion.js';
 import { feedUpdate } from './events.js';
 import { createFeed, FEED_MAX } from './feed.js';
@@ -23,6 +24,7 @@ export function createRunView(root, hooks) {
   const latest = createLatest();
   let current = null; // { data, cursor, selection } of the run on screen
   let loading = false;
+  let focusTarget = null; // what gets focus once the run (or its error) is drawn
   let player = null; // plays the run on screen
   let disposers = []; // everything the run on screen started: frame loops, timers, subscriptions
 
@@ -113,6 +115,14 @@ export function createRunView(root, hooks) {
       h('ul', {}, data.scenario.faults.map((f) => h('li', {}, describeFault(f)))));
   }
 
+  // The heading takes focus (tabindex -1) when a run is opened from a seed dot.
+  const heading = () => h('h2', { tabindex: -1 }, 'Execução');
+
+  function settleFocus() {
+    restoreFocus(root, focusTarget);
+    focusTarget = null;
+  }
+
   function render(data) {
     teardown();
     const cursor = createCursor(data.scenario.horizon_min);
@@ -124,7 +134,8 @@ export function createRunView(root, hooks) {
     const chargerPanel = h('div', { class: 'panel', id: 'panel-chargers' });
     const decisionPanel = h('div', { class: 'panel', id: 'panel-decision' });
     clear(root).append(
-      h('h2', {}, 'Execução'),
+      heading(),
+      h('p', { class: 'note run-params' }, `Parâmetros: ${describeParams(data.params)}.`),
       controls(data),
       summaryLine(data.metrics),
       faultList(data),
@@ -167,11 +178,17 @@ export function createRunView(root, hooks) {
     disposers.push(renderDecisionPanel(decisionPanel, data, cursor, selection).dispose);
     current = { data, cursor, selection };
     hooks.onRendered?.(current);
+    settleFocus();
   }
 
-  async function load(state) {
+  // load draws the run of state = { params, controller, seed }. `heading: true` moves focus to
+  // the heading afterwards (a run opened from elsewhere); otherwise focus returns to the control
+  // of this view that asked for the reload, which the redraw would have dropped.
+  async function load(state, { heading: toHeading = false } = {}) {
+    const a = document.activeElement;
+    focusTarget = nextFocusTarget(focusTarget, { activeId: a?.id, inside: root.contains(a), heading: toHeading });
     teardown();
-    clear(root).append(h('h2', {}, 'Execução'), h('p', { class: 'loading' }, 'Calculando a execução…'));
+    clear(root).append(heading(), h('p', { class: 'loading' }, 'Calculando a execução…'));
     current = null;
     loading = true;
     try {
@@ -183,18 +200,21 @@ export function createRunView(root, hooks) {
       loading = false;
       const msg = e instanceof ApiError ? e.message : 'Erro inesperado: ' + e.message;
       // Keep the pickers so the seed or controller can be corrected right here.
-      clear(root).append(h('h2', {}, 'Execução'), controls(state), h('div', { class: 'banner-inline', role: 'alert' }, msg));
+      clear(root).append(heading(), controls(state), h('div', { class: 'banner-inline', role: 'alert' }, msg));
+      settleFocus();
     }
   }
 
   // cancel drops a load in flight (its result is never drawn); the "Calculando…" text goes back
-  // to the idle note. A run already on screen is left alone.
+  // to the idle note (returns true then). A run already on screen is left alone.
   function cancel() {
     latest.cancel();
     pause();
-    if (!loading) return;
+    focusTarget = null; // the load it belonged to will never draw
+    if (!loading) return false;
     loading = false;
     clear(root).append(h('p', { class: 'note' }, IDLE_NOTE));
+    return true;
   }
 
   // pause stops the day playing (leaving the tab, hiding the page, a new link); the run stays.
