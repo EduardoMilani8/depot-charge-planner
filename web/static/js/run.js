@@ -77,7 +77,12 @@ export function createRunView(root, hooks) {
     renderPowerChart(powerPanel, data, cursor);
     const busView = renderBusTimeline(busPanel, data, cursor, {
       onSelectBus: (id) => selection.set(id),
-      onJump: () => decisionPanel.querySelector('.bus-detail').scrollIntoView({ block: 'start' }),
+      onJump: () => {
+        const target = decisionPanel.querySelector('.bus-detail');
+        if (!target) return;
+        target.scrollIntoView({ block: 'start' });
+        target.focus({ preventScroll: true }); // so a screen reader announces the section it landed on
+      },
     });
     selection.onChange((id) => busView.setSelected(id));
     renderChargerTimeline(chargerPanel, data, cursor);

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { stateToHash, hashToState, coerce, fieldSpecs, TABS, CONTROLLERS } from '../static/js/params.js';
+import { stateToHash, hashToState, hashMatchesState, coerce, fieldSpecs, TABS, CONTROLLERS } from '../static/js/params.js';
 
 const defaults = {
   buses: 50, chargers: 25, limit_kw: 2000, profile: 'none', seeds: 20, follow_swaps: true,
@@ -70,4 +70,19 @@ test('nextTab implements the keyboard pattern of tabs', async () => {
   assert.equal(nextTab('compare', 'a'), null);
   assert.equal(nextTab('compare', 'Enter'), null);
   assert.equal(nextTab('bogus', 'ArrowRight'), null);
+});
+
+test('hashMatchesState tells a hash that is already on screen from a new one', () => {
+  const state = { params: { ...defaults, limit_kw: 600 }, tab: 'run', seed: 3, controller: 'planner' };
+  assert.equal(hashMatchesState(stateToHash(state), state, defaults), true);
+  // order of keys and omitted defaults do not make a different state
+  const reordered = '#' + [...new URLSearchParams(stateToHash(state).slice(1))].reverse().map(([k, v]) => `${k}=${v}`).join('&');
+  assert.equal(hashMatchesState(reordered, state, defaults), true);
+  assert.equal(hashMatchesState(stateToHash({ ...state, seed: 4 }), state, defaults), false);
+  assert.equal(hashMatchesState(stateToHash({ ...state, tab: 'compare' }), state, defaults), false);
+  assert.equal(hashMatchesState(stateToHash({ ...state, params: { ...state.params, profile: 'severe' } }), state, defaults), false);
+  // garbage normalises to the defaults, so it matches only a state that is the defaults
+  const fresh = hashToState('', defaults);
+  assert.equal(hashMatchesState('#tab=nope&buses=abc', fresh, defaults), true);
+  assert.equal(hashMatchesState('', state, defaults), false);
 });

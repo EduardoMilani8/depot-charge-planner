@@ -1,7 +1,7 @@
 # Laboratório web de simulação — Design (sub-projeto 2)
 
 Data: 2026-10-05
-Status: aprovado pelo autor em conversa em 2026-10-05; aguardando revisão deste arquivo
+Status: aprovado e implementado (plano em docs/superpowers/plans/2026-10-05-laboratorio-web.md)
 
 ## 1. Contexto e objetivo
 

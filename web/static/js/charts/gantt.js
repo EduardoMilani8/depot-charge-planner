@@ -29,6 +29,7 @@ function bindPointer(svg, x, cursor, onRow) {
   };
   let dragging = false;
   svg.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return; // only the primary button selects or drags; right-click opens the context menu
     const row = e.target.closest('[data-key]');
     if (row && onRow) onRow(row.dataset.key);
     const u = toUnits(e.clientX);
@@ -99,6 +100,17 @@ export function renderBusTimeline(root, data, cursor, hooks) {
 
   // bus-level faults and recommended swaps
   const rowOf = new Map(buses.map((b, i) => [b.id, top + i * ROW_H]));
+  // Faults on every bus ("*") are a thin band above the first row (a lane per fault, up to three).
+  let lane = 0;
+  for (const f of data.scenario.faults) {
+    if (!BUS_FAULTS.has(f.kind) || f.target !== '*') continue;
+    const from = Math.max(0, f.from);
+    const to = Math.min(n, f.to);
+    if (to < from) continue;
+    parts.push(s('rect', { x: x(from), y: 1 + Math.min(lane, 2) * 4, width: Math.max(2, x(to) - x(from)), height: 3, class: 'bus-fault-all' },
+      s('title', {}, `${describeFault(f)}, todos os ônibus`)));
+    lane++;
+  }
   for (const f of data.scenario.faults) {
     if (!BUS_FAULTS.has(f.kind) || !rowOf.has(f.target)) continue;
     const y = rowOf.get(f.target);
@@ -129,7 +141,8 @@ export function renderBusTimeline(root, data, cursor, hooks) {
     legendItem(swatchSvg(12, s('circle', { cx: 6, cy: 6, r: 4, class: 'mark-pending' })), 'não saiu dentro do horizonte'),
     legendItem(swatchSvg(12, s('path', { d: 'M1,11l10,0l-5,-9z', class: 'swap-in' })), 'recebe carregador (rodízio recomendado)'),
     legendItem(swatchSvg(12, s('path', { d: 'M1,1l10,0l-5,9z', class: 'swap-out' })), 'cede carregador (rodízio recomendado)'),
-    legendItem(swatchSvg(12, s('path', { d: 'M1,1l10,0l-5,9z', class: 'bus-fault' })), 'falha do ônibus (leitura, consumo ou horário)'));
+    legendItem(swatchSvg(12, s('path', { d: 'M1,1l10,0l-5,9z', class: 'bus-fault' })), 'falha do ônibus (leitura, consumo ou horário)'),
+    legendItem(swatchSvg(22, s('rect', { y: 4, width: 22, height: 3, class: 'bus-fault-all' })), 'falha em todos os ônibus (faixa no topo)'));
   root.replaceChildren(h('h3', {}, 'Ônibus'),
     h('p', { class: 'note' }, 'Clique numa linha (ou no código do ônibus) para ver por que ele saiu pronto ou não. ', picked, jump),
     wrap, legend);

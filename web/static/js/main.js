@@ -1,5 +1,5 @@
 import { getDefaults, compare, createLatest, ApiError } from './api.js';
-import { hashToState, stateToHash, nextTab, TABS } from './params.js';
+import { hashToState, hashMatchesState, stateToHash, nextTab, TABS } from './params.js';
 import { createForm } from './form.js';
 import { renderCompare } from './compare.js';
 import { createRunView } from './run.js';
@@ -7,6 +7,7 @@ import { h } from './dom.js';
 
 const latest = createLatest();
 let state;
+let defaults;
 let form;
 let runView;
 const $ = (id) => document.getElementById(id);
@@ -65,8 +66,45 @@ export function openRun(controller, seed) {
   runView.load(state);
 }
 
+let toastTimer = null;
+function toast(message) {
+  const t = $('toast');
+  t.textContent = message;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+async function copyLink() {
+  syncHash();
+  const url = location.href;
+  try {
+    await navigator.clipboard.writeText(url);
+    toast('Link copiado.');
+  } catch {
+    window.prompt('Copie o link:', url); // clipboard blocked: let the user copy it by hand
+  }
+}
+
+// applyState shows `next` (read from the hash) as if the page had just loaded with that link.
+function applyState(next) {
+  banner('');
+  state = next;
+  form.write(state.params);
+  const wanted = state.tab; // showTab overwrites state.tab, so remember the link's view first
+  showTab('scenario');
+  if (wanted === 'compare') runCompare(state.params);
+  if (wanted === 'run') openRun(state.controller, state.seed);
+}
+
+// Pasting or editing a link in the same tab only changes the hash. showTab/syncHash use
+// replaceState, which fires no hashchange, so only a hash that differs from the screen lands here.
+function onHashChange() {
+  if (!state || hashMatchesState(location.hash, state, defaults)) return;
+  applyState(hashToState(location.hash, defaults.params));
+}
+
 async function init() {
-  let defaults;
   try {
     defaults = await getDefaults();
   } catch (e) {
@@ -75,7 +113,6 @@ async function init() {
   }
   state = hashToState(location.hash, defaults.params);
   form = createForm($('tab-scenario'), defaults, { onRun: runCompare });
-  form.write(state.params);
   runView = createRunView($('run-out'), { onSelect: (controller, seed) => openRun(controller, seed) });
   for (const b of document.querySelectorAll('nav.tabs button')) b.addEventListener('click', () => showTab(b.dataset.tab));
   // Keyboard pattern of tabs: arrows (with wrap), Home and End move focus and activate the tab.
@@ -86,10 +123,9 @@ async function init() {
     showTab(next);
     document.querySelector(`[data-tab="${next}"]`).focus();
   });
-  const wanted = state.tab; // showTab overwrites state.tab, so remember the link's view first
-  showTab('scenario');
-  if (wanted === 'compare') runCompare(state.params);
-  if (wanted === 'run') openRun(state.controller, state.seed);
+  $('copy-link').addEventListener('click', copyLink);
+  window.addEventListener('hashchange', onHashChange);
+  applyState(state);
 }
 
 init();

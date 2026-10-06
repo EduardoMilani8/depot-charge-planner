@@ -23,6 +23,24 @@ Controladores comparados:
 - `safe`: só a camada 0 do planner (divisão igual do limite entre os ônibus conectados, sem ler SoC). É o perfil de último recurso, medido sozinho; não precisa superar os baselines.
 - `planner`: camadas 0 e 1 com rodízio. Quando o limite não dá para terminar todos os ônibus conectados, o planner escolhe o maior grupo que o limite consegue terminar (por ordem de saída, deixando de fora quem precisa de mais energia) e o atende primeiro; os demais recebem só a sobra. Sem sobrecarga, a potência vai primeiro para quem tem menos folga e toda a sobra é usada. O planner recomenda rodízios (um ônibus esperando assume o carregador de um ônibus que já atingiu o alvo) só quando isso aumenta o número de ônibus que chegam ao alvo com o limite atual. Um ônibus que cedeu o carregador só volta por rodízio depois de 30 minutos e se a média das suas leituras desde que foi desconectado (parado, a carga dele não muda) indicar que falta mais de 10 kWh para o alvo com margem, ou seja, que ele está abaixo do próprio alvo da rota (`Config.SwapBackCooldownMin` e `Config.SwapBackMinNeedKWh`). Ficam fora da média as leituras não confiáveis e as que não são mais novas, pelo horário em que foram feitas (minuto atual menos `SoCAgeMin`), que a última já contada para aquele ônibus; assim a mesma leitura conta uma vez só, mesmo congelada ou informada com alguns minutos de idade. Com `-follow-swaps` (padrão) o simulador supõe que os operadores executam **todas** as recomendações; com `-follow-swaps=false` nenhuma é executada (`planner (sem rodízio)` nas tabelas).
 
+## Laboratório web
+
+Uma interface local para configurar cenários, comparar o planejador com as referências e abrir uma execução minuto a minuto (potência contra o limite, carga de cada ônibus, carregadores, decisão tomada e o motivo).
+
+    go run ./cmd/lab
+
+Abra `http://127.0.0.1:8080`. Não precisa de Node: a interface vai dentro do programa. O servidor só escuta em endereço local (não tem login) e só aceita requisições para `127.0.0.1`, `localhost` ou `::1`.
+
+- **Cenário:** ônibus, carregadores, limite (kW), perfil de falhas, sementes, operadores seguem rodízios, idade da leitura e, em "Avançado", a regra anti-vaivém do rodízio. Há cenários prontos.
+- **Comparação:** a mesma tabela do `simrun` (os números são idênticos para os mesmos parâmetros) e um ponto por semente; clicar num ponto abre aquela execução.
+- **Execução:** gráfico de potência, linha do tempo de ônibus e de carregadores e painel de decisão, com um cursor de tempo. Clicar num ônibus explica por que ele saiu pronto ou não. "Copiar link desta tela" gera um endereço (o estado fica no `#` do endereço) que reproduz a execução; colar um link novo na mesma aba também atualiza a tela. O simulador é determinístico: a mesma semente e os mesmos parâmetros dão sempre a mesma execução, e nada é gravado em disco.
+
+Limites para a tela não travar: ônibus × sementes até 20000 na comparação e até 500 ônibus e 500 carregadores numa execução detalhada (e sementes de 1 a 1000).
+
+API (JSON): `GET /api/defaults`, `POST /api/compare`, `POST /api/run`; o formato está em `docs/superpowers/specs/2026-10-05-laboratorio-web-design.md`. Testes da interface: `node --test web/test/*.test.mjs` (só desenvolvimento).
+
+Os dados são sintéticos: mostram o comportamento do algoritmo, não o de uma garagem real.
+
 ## Resultados de exemplo
 
 Todos os números desta seção saem do `simrun` com o código deste repositório (50 ônibus, 25 carregadores, `-seeds 20`, configuração padrão), por exemplo `go run ./cmd/simrun -limit 1200 -profile severe -seeds 20`; a coluna `planner (sem rodízio)` usa `-follow-swaps=false` e a coluna "regra desligada" usa `-swap-back-cooldown 0 -swap-back-min-need 0`.

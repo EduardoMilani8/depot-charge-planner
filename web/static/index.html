@@ -10,6 +10,18 @@
 <header class="top">
   <h1>Laboratório de recarga</h1>
   <p class="sub">Simulador de garagem de ônibus elétricos com dados sintéticos: mostra como o algoritmo se comporta, não o resultado numa garagem real.</p>
+  <div class="top-actions">
+    <button id="copy-link" type="button" class="chip">Copiar link desta tela</button>
+  </div>
+  <details class="howto">
+    <summary>Como ler esta tela</summary>
+    <ul>
+      <li><strong>Cenário:</strong> escolha o tamanho da garagem, o limite de potência da rede e o perfil de falhas, e clique em Rodar.</li>
+      <li><strong>Comparação:</strong> o planejador contra quatro referências, na média de várias garagens simuladas (sementes). “Violações do plano” deve ser sempre 0.</li>
+      <li><strong>Execução:</strong> um dia de uma garagem simulada, minuto a minuto. Arraste o cursor para ver a potência contra o limite, a carga de cada ônibus, os carregadores e a decisão tomada. Clique num ônibus para saber por que ele saiu pronto ou não.</li>
+      <li>Os dados são sintéticos: mostram o comportamento do algoritmo, não o de uma garagem real. A premissa de que os operadores executam os rodízios recomendados precisa ser validada com operadores reais.</li>
+    </ul>
+  </details>
 </header>
 <nav class="tabs" id="tablist" role="tablist" aria-label="Seções">
   <button role="tab" id="t-scenario" aria-controls="tab-scenario" data-tab="scenario" aria-selected="true">Cenário</button>
@@ -22,6 +34,7 @@
   <section id="tab-compare" role="tabpanel" aria-labelledby="t-compare" hidden><div id="compare-out"><p class="note">Rode um cenário para ver a comparação.</p></div></section>
   <section id="tab-run" role="tabpanel" aria-labelledby="t-run" hidden><div id="run-out"><p class="note">Nenhuma execução aberta. Rode um cenário e, na Comparação, clique num ponto de semente para ver aquela execução minuto a minuto.</p></div></section>
 </main>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
 <script type="module" src="js/main.js"></script>
 </body>
 </html>

@@ -57,6 +57,12 @@ export function hashToState(hash, defaults) {
   return { params, tab, seed: seed >= 1 ? seed : 1, controller };
 }
 
+// hashMatchesState: true when `hash` already describes `state` (after normalising), so a
+// hashchange caused by our own replaceState, or by pasting the same link, needs no re-run.
+export function hashMatchesState(hash, state, defaults) {
+  return stateToHash(hashToState(hash, defaults)) === stateToHash(state);
+}
+
 // fieldSpecs describes the form; bounds come from the server's limits.
 export function fieldSpecs(limits) {
   return [

@@ -15,9 +15,9 @@ export function renderDecisionPanel(root, data, cursor, selection) {
   const busIdx = new Map(data.series.buses.map((b, i) => [b.id, i]));
   const occupancy = chargerOccupancy(data);
   // Only the planner explains itself bus by bus; the other controllers list no buses at all.
-  const explains = data.decisions.some((d) => d.buses.length > 0);
+  const explains = data.decisions.some((d) => (d.buses?.length ?? 0) > 0);
   const body = h('div', { class: 'decision-body' });
-  const detail = h('div', { class: 'bus-detail' });
+  const detail = h('div', { class: 'bus-detail', tabindex: -1, role: 'region', 'aria-label': 'Detalhe do ônibus selecionado' });
   root.replaceChildren(h('h3', {}, 'Decisão neste minuto'), body, detail);
   let disposeChart = null;
   // The statuses are rebuilt from deltas, so keep the last result per decision.
@@ -50,7 +50,7 @@ export function renderDecisionPanel(root, data, cursor, selection) {
   }
 
   function busSection(list) {
-    if (list.length > 0) {
+    if ((list?.length ?? 0) > 0) {
       return h('div', { class: 'table-wrap' }, h('table', { class: 'metrics small' },
         h('thead', {}, h('tr', {}, ['ônibus', 'previsão', 'déficit previsto', 'motivo'].map((t) => h('th', { scope: 'col' }, t)))),
         h('tbody', {}, busRows(list))));
@@ -71,11 +71,12 @@ export function renderDecisionPanel(root, data, cursor, selection) {
     const d = found.decision;
     const v = valuesAt(data, m);
     const notes = decisionNotes(data, d);
+    const swaps = d.swaps ?? [];
     const blocks = [
       h('p', { class: 'note' }, `Minuto ${m} (${clock(start, m)}). Decisão tomada no minuto ${found.from} (${clock(start, found.from)}), em vigor até o minuto ${found.to}. Camada: ${LAYER_LABEL[d.layer] || d.layer}. ` +
         `${explains ? 'Os motivos são os do minuto em que a decisão foi tomada. ' : ''}Potência física agora: ${kw(v.physical, 0)}.`),
-      d.swaps.length ? h('div', {}, h('h4', {}, 'Rodízios recomendados'), h('ul', {}, d.swaps.map((sw) => h('li', {}, `${sw.in} assume ${sw.charger} no lugar de ${sw.out}. ${sw.reason}`)))) : null,
-      notes.length ? h('div', {}, h('h4', {}, 'Observações do planejador'), h('ul', {}, notes.map((t) => h('li', {}, t)))) : null,
+      swaps.length ? h('div', {}, h('h4', {}, 'Rodízios recomendados'), h('ul', {}, swaps.map((sw) => h('li', {}, `${sw.in} assume ${sw.charger} no lugar de ${sw.out}. ${sw.reason}`)))) : null,
+      (notes?.length ?? 0) > 0 ? h('div', {}, h('h4', {}, 'Observações do planejador'), h('ul', {}, notes.map((t) => h('li', {}, t)))) : null,
       h('h4', {}, 'Carregadores'),
       h('div', { class: 'table-wrap' }, h('table', { class: 'metrics small' },
         h('thead', {}, h('tr', {}, ['carregador', 'potência comandada', 'potência física', 'ônibus ligado', 'estado'].map((t) => h('th', { scope: 'col' }, t)))),
