@@ -9,10 +9,13 @@ import { fmtNum, fmtPct, fmtBRL, clock } from './format.js';
 import { CONTROLLERS } from './params.js';
 import { describeFault, CONTROLLER_HELP } from './glossary.js';
 
+const IDLE_NOTE = 'Nenhuma execução aberta. Rode um cenário e, na Comparação, clique num ponto de semente para ver aquela execução minuto a minuto.';
+
 // createRunView owns the "Execução" tab: it loads one run and draws its panels.
 export function createRunView(root, hooks) {
   const latest = createLatest();
   let current = null; // { data, cursor, selection } of the run on screen
+  let loading = false;
 
   function summaryLine(m) {
     const bad = m.plan_violations > 0;
@@ -94,16 +97,28 @@ export function createRunView(root, hooks) {
   async function load(state) {
     clear(root).append(h('h2', {}, 'Execução'), h('p', { class: 'loading' }, 'Calculando a execução…'));
     current = null;
+    loading = true;
     try {
       const r = await latest((signal) => apiRun({ ...state.params, seed: state.seed, controller: state.controller }, signal));
       if (r.stale) return;
+      loading = false;
       render(r.value);
     } catch (e) {
+      loading = false;
       const msg = e instanceof ApiError ? e.message : 'Erro inesperado: ' + e.message;
       // Keep the pickers so the seed or controller can be corrected right here.
       clear(root).append(h('h2', {}, 'Execução'), controls(state), h('div', { class: 'banner-inline', role: 'alert' }, msg));
     }
   }
 
-  return { load, getCurrent: () => current };
+  // cancel drops a load in flight (its result is never drawn); the "Calculando…" text goes back
+  // to the idle note. A run already on screen is left alone.
+  function cancel() {
+    latest.cancel();
+    if (!loading) return;
+    loading = false;
+    clear(root).append(h('p', { class: 'note' }, IDLE_NOTE));
+  }
+
+  return { load, cancel, getCurrent: () => current };
 }

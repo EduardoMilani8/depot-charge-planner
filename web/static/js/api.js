@@ -50,6 +50,12 @@ export function createLatest() {
       inflight--;
     }
   }
+  // cancel() supersedes the call in flight without starting another: it is aborted and
+  // reports {stale:true}, so nothing of it is rendered and none of its errors surface.
+  latest.cancel = () => {
+    n++;
+    if (ctrl) ctrl.abort();
+  };
   latest.busy = () => inflight > 0;
   return latest;
 }

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { stateToHash, hashToState, hashMatchesState, coerce, fieldSpecs, TABS, CONTROLLERS } from '../static/js/params.js';
+import { stateToHash, hashToState, decideHashAction, coerce, fieldSpecs, TABS, CONTROLLERS } from '../static/js/params.js';
 
 const defaults = {
   buses: 50, chargers: 25, limit_kw: 2000, profile: 'none', seeds: 20, follow_swaps: true,
@@ -72,17 +72,34 @@ test('nextTab implements the keyboard pattern of tabs', async () => {
   assert.equal(nextTab('bogus', 'ArrowRight'), null);
 });
 
-test('hashMatchesState tells a hash that is already on screen from a new one', () => {
+// The shape of the real /api/defaults reply: the parameters are nested under `params`.
+const response = { params: defaults, limits: { max_buses: 10000 }, presets: [] };
+
+test('decideHashAction: a hash that normalises to the screen state needs no action', () => {
   const state = { params: { ...defaults, limit_kw: 600 }, tab: 'run', seed: 3, controller: 'planner' };
-  assert.equal(hashMatchesState(stateToHash(state), state, defaults), true);
-  // order of keys and omitted defaults do not make a different state
+  assert.equal(decideHashAction(stateToHash(state), state, response.params), null);
   const reordered = '#' + [...new URLSearchParams(stateToHash(state).slice(1))].reverse().map(([k, v]) => `${k}=${v}`).join('&');
-  assert.equal(hashMatchesState(reordered, state, defaults), true);
-  assert.equal(hashMatchesState(stateToHash({ ...state, seed: 4 }), state, defaults), false);
-  assert.equal(hashMatchesState(stateToHash({ ...state, tab: 'compare' }), state, defaults), false);
-  assert.equal(hashMatchesState(stateToHash({ ...state, params: { ...state.params, profile: 'severe' } }), state, defaults), false);
-  // garbage normalises to the defaults, so it matches only a state that is the defaults
-  const fresh = hashToState('', defaults);
-  assert.equal(hashMatchesState('#tab=nope&buses=abc', fresh, defaults), true);
-  assert.equal(hashMatchesState('', state, defaults), false);
+  assert.equal(decideHashAction(reordered, state, response.params), null);
+  // empty hash against a fresh default state, and garbage that falls back to the defaults
+  const fresh = hashToState('', response.params);
+  assert.equal(decideHashAction('', fresh, response.params), null);
+  assert.equal(decideHashAction('#', fresh, response.params), null);
+  assert.equal(decideHashAction('#tab=nope&buses=abc&seeds=1.5&follow_swaps=maybe', fresh, response.params), null);
+});
+
+test('decideHashAction: a different hash returns the next state', () => {
+  const state = { params: { ...defaults, limit_kw: 600 }, tab: 'run', seed: 3, controller: 'planner' };
+  const seed = decideHashAction(stateToHash({ ...state, seed: 4 }), state, response.params);
+  assert.deepEqual(seed, { ...state, seed: 4 });
+  assert.equal(decideHashAction(stateToHash({ ...state, tab: 'compare' }), state, response.params).tab, 'compare');
+  const profile = decideHashAction(stateToHash({ ...state, params: { ...state.params, profile: 'severe' } }), state, response.params);
+  assert.equal(profile.params.profile, 'severe');
+  assert.equal(profile.params.limit_kw, 600);
+  // partial hash: what is missing comes from the defaults, not from the screen state
+  const partial = decideHashAction('#tab=compare&limit_kw=800&profile=mild', state, response.params);
+  assert.deepEqual(partial, { params: { ...defaults, limit_kw: 800, profile: 'mild' }, tab: 'compare', seed: 1, controller: 'planner' });
+  // an empty hash against a non-default screen is a change back to the defaults
+  assert.deepEqual(decideHashAction('', state, response.params), hashToState('', response.params));
+  // garbage values fall back to the defaults, and that is still a change from a custom screen
+  assert.deepEqual(decideHashAction('#buses=abc&tab=nope&seed=-4', state, response.params), hashToState('', response.params));
 });

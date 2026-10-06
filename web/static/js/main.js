@@ -1,5 +1,5 @@
 import { getDefaults, compare, createLatest, ApiError } from './api.js';
-import { hashToState, hashMatchesState, stateToHash, nextTab, TABS } from './params.js';
+import { hashToState, decideHashAction, stateToHash, nextTab, TABS } from './params.js';
 import { createForm } from './form.js';
 import { renderCompare } from './compare.js';
 import { createRunView } from './run.js';
@@ -7,7 +7,7 @@ import { h } from './dom.js';
 
 const latest = createLatest();
 let state;
-let defaults;
+let defaultParams; // the flat `params` of the /api/defaults reply
 let form;
 let runView;
 const $ = (id) => document.getElementById(id);
@@ -88,6 +88,12 @@ async function copyLink() {
 
 // applyState shows `next` (read from the hash) as if the page had just loaded with that link.
 function applyState(next) {
+  // Whatever is still loading belongs to the previous link: drop it so it cannot render into a
+  // tab that is now hidden or send its error to showTab('scenario').
+  if (latest.busy()) $('compare-out').replaceChildren(h('p', { class: 'note' }, 'Rode um cenário para ver a comparação.'));
+  latest.cancel();
+  runView.cancel();
+  form.setBusy(false);
   banner('');
   state = next;
   form.write(state.params);
@@ -100,18 +106,21 @@ function applyState(next) {
 // Pasting or editing a link in the same tab only changes the hash. showTab/syncHash use
 // replaceState, which fires no hashchange, so only a hash that differs from the screen lands here.
 function onHashChange() {
-  if (!state || hashMatchesState(location.hash, state, defaults)) return;
-  applyState(hashToState(location.hash, defaults.params));
+  if (!state) return;
+  const next = decideHashAction(location.hash, state, defaultParams);
+  if (next) applyState(next);
 }
 
 async function init() {
+  let defaults;
   try {
     defaults = await getDefaults();
+    defaultParams = defaults.params;
   } catch (e) {
     banner(e.message);
     return;
   }
-  state = hashToState(location.hash, defaults.params);
+  state = hashToState(location.hash, defaultParams);
   form = createForm($('tab-scenario'), defaults, { onRun: runCompare });
   runView = createRunView($('run-out'), { onSelect: (controller, seed) => openRun(controller, seed) });
   for (const b of document.querySelectorAll('nav.tabs button')) b.addEventListener('click', () => showTab(b.dataset.tab));

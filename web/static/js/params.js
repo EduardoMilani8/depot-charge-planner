@@ -57,10 +57,13 @@ export function hashToState(hash, defaults) {
   return { params, tab, seed: seed >= 1 ? seed : 1, controller };
 }
 
-// hashMatchesState: true when `hash` already describes `state` (after normalising), so a
-// hashchange caused by our own replaceState, or by pasting the same link, needs no re-run.
-export function hashMatchesState(hash, state, defaults) {
-  return stateToHash(hashToState(hash, defaults)) === stateToHash(state);
+// decideHashAction: what a hashchange should do. null when `hash` already describes `state`
+// (after normalising: key order, garbage values), so pasting the same link needs no re-run;
+// otherwise the next state read from the hash. `defaultParams` is the flat parameter object
+// (`/api/defaults` reply's `.params`), not the whole reply.
+export function decideHashAction(hash, state, defaultParams) {
+  const next = hashToState(hash, defaultParams);
+  return stateToHash(next) === stateToHash(state) ? null : next;
 }
 
 // fieldSpecs describes the form; bounds come from the server's limits.

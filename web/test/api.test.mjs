@@ -36,3 +36,28 @@ test('busy tells whether a call is in flight', async () => {
   await p;
   assert.equal(latest.busy(), false);
 });
+
+test('cancel makes the call in flight stale, aborts it, and leaves later calls alone', async () => {
+  const latest = createLatest();
+  let aborted = false;
+  let release;
+  const slow = latest((signal) => new Promise((resolve) => {
+    signal.addEventListener('abort', () => { aborted = true; });
+    release = resolve;
+  }));
+  latest.cancel();
+  release('late');
+  assert.deepEqual(await slow, { stale: true });
+  assert.equal(aborted, true);
+  assert.deepEqual(await latest(async () => 'fresh'), { stale: false, value: 'fresh' });
+});
+
+test('cancel also silences a call that fails after it', async () => {
+  const latest = createLatest();
+  let fail;
+  const p = latest(() => new Promise((_, reject) => { fail = reject; }));
+  latest.cancel();
+  fail(new Error('boom'));
+  assert.deepEqual(await p, { stale: true });
+  latest.cancel(); // nothing in flight: harmless
+});
