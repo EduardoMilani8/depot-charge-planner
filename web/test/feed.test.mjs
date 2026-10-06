@@ -49,3 +49,15 @@ test('clear empties the list and the counter, and an empty push is a no-op', () 
   assert.deepEqual(m.items, []);
   assert.equal(m.total, 0);
 });
+
+test('reset replaces the list and sets the counter to a total that may exceed what is shown', () => {
+  const m = createFeedModel(3);
+  m.push([ev(1, 'swap'), ev(2, 'swap'), ev(3, 'swap'), ev(4, 'swap')]);
+  const r = m.reset([ev(8, 'swap'), ev(9, 'swap')], 21);
+  assert.deepEqual(m.items.map((i) => i.minute), [9, 8]);
+  assert.equal(m.total, 21);
+  assert.equal(r.added.length, 2);
+  m.reset([], 0);
+  assert.deepEqual(m.items, []);
+  assert.equal(m.total, 0);
+});

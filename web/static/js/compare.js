@@ -3,7 +3,7 @@ import { s } from './charts/svg.js';
 import { COLUMNS, CONTROLLER_HELP, formatCell } from './glossary.js';
 import { dotStrip } from './charts/layout.js';
 import { fmtNum, fmtPct } from './format.js';
-import { countingText } from './motion.js';
+import { countingText, staggerStep } from './motion.js';
 
 const PROFILE_PT = { none: 'sem falhas', mild: 'falhas leves', severe: 'falhas severas', random: 'falhas aleatórias' };
 
@@ -44,13 +44,14 @@ function seedsPanel(data, onOpen) {
     h('p', { class: 'note' }, 'Cada ponto é uma semente (uma garagem simulada). Clique num ponto para abrir aquela execução minuto a minuto.'),
     data.controllers.map((c) => {
       const dots = dotStrip(c.seeds.map((x) => ({ seed: x.seed, value: x.metrics.ready_pct })), W, H, 10);
+      const step = staggerStep(dots.length); // the cascade is capped, so every dot is there within about a second
       const mean = 10 + ((W - 20) * Math.min(100, Math.max(0, c.aggregate.ready_pct))) / 100;
       const svg = s('svg', { viewBox: `0 0 ${W} ${H}`, class: 'strip', role: 'group', 'aria-label': `${c.name}: ônibus prontos por semente` },
         s('line', { x1: 10, x2: W - 10, y1: H - 6, y2: H - 6, class: 'axis' }),
         s('rect', { x: 10, y: H - 12, width: Math.max(0, mean - 10), height: 8, class: 'bar grow' }, s('title', {}, `média: ${fmtNum(c.aggregate.ready_pct, 1)}%`)),
         s('line', { x1: mean, x2: mean, y1: 2, y2: H - 2, class: 'mean' }),
         dots.map((d, i) => s('circle', {
-          cx: d.x, cy: d.y, r: 5, class: 'dot pop', style: `--i:${i}`, tabindex: 0, role: 'button',
+          cx: d.x, cy: d.y, r: 5, class: 'dot pop', style: `--i:${i};--step:${step}ms`, tabindex: 0, role: 'button',
           'aria-label': `${c.name}, semente ${d.seed}: ${fmtNum(d.value, 1)}% prontos. Abrir execução`,
           onclick: () => onOpen(c.name, d.seed),
           onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(c.name, d.seed); } },

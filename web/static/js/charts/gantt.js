@@ -7,7 +7,7 @@ import { clock, fmtNum } from '../format.js';
 import { describeFault } from '../glossary.js';
 import { bindCursorKeys } from '../cursor.js';
 import { bindPlotPointer } from './pointer.js';
-import { crossed } from '../events.js';
+import { crossedPlayback } from '../events.js';
 import { animationsEnabled } from '../motion.js';
 
 const W = 1000;
@@ -37,7 +37,14 @@ function cursorLine(parts, x, cursor, y1, y2) {
 function pop(node) {
   if (!animationsEnabled() || node.classList.contains('hit')) return;
   node.classList.add('hit');
-  node.addEventListener('animationend', () => node.classList.remove('hit'), { once: true });
+  // animationcancel: the switch turned animations off mid-pop, so animationend never comes
+  const done = () => {
+    node.classList.remove('hit');
+    node.removeEventListener('animationend', done);
+    node.removeEventListener('animationcancel', done);
+  };
+  node.addEventListener('animationend', done);
+  node.addEventListener('animationcancel', done);
 }
 
 const swatchSvg = (w, ...kids) => s('svg', { width: w, height: 12, 'aria-hidden': 'true' }, kids);
@@ -163,16 +170,19 @@ export function renderBusTimeline(root, data, cursor, hooks, player) {
       if (on !== bar.on) { bar.on = on; bar.node.classList.toggle('charging', on); }
     }
     busClip.setAttribute('width', playing() ? x(m) : W);
-    if (playing()) for (const mk of crossed(pops, lastMinute, m, Math.max(30, player.state.speed / 2))) pop(mk.node);
+    if (playing()) for (const mk of crossedPlayback(pops, lastMinute, m, Math.max(30, player.state.speed / 2))) pop(mk.node);
     lastMinute = m;
   }
+  let revealed = playing();
   function setReveal() {
-    const attr = playing();
+    revealed = playing();
+    const attr = revealed;
     for (const f of fills) { if (attr) f.setAttribute('clip-path', 'url(#clip-bus-past)'); else f.removeAttribute('clip-path'); }
     paint(cursor.value);
   }
   offs.push(cursor.onChange(paint));
-  if (player) offs.push(player.onChange(setReveal));
+  // speed and loop changes also emit; the reveal only changes when playback starts or stops
+  if (player) offs.push(player.onChange((s) => { if (s.playing !== revealed) setReveal(); }));
   paint(cursor.value);
 
   return {

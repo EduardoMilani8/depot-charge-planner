@@ -1,6 +1,8 @@
 import { h } from './dom.js';
 import { clock } from './format.js';
 
+export const FEED_MAX = 6;
+
 const ICON = { depart_ok: '●', depart_fail: '✗', swap: '⇄', layer: '⚙', fault: '⚠' };
 const KIND_LABEL = { depart_ok: 'saída', depart_fail: 'saída sem a carga', swap: 'rodízio', layer: 'camada', fault: 'falha' };
 
@@ -11,7 +13,7 @@ export function feedKind(e) {
 
 // createFeedModel keeps the latest `max` events, newest first. push() says which items were
 // added and which fell off the end so a view only touches those.
-export function createFeedModel(max = 6) {
+export function createFeedModel(max = FEED_MAX) {
   let items = [];
   let nextId = 1;
   let total = 0;
@@ -28,13 +30,20 @@ export function createFeedModel(max = 6) {
       return { added: fresh, removed: merged.slice(max).filter((i) => !fresh.includes(i)) };
     },
     clear() { items = []; total = 0; },
+    // reset replaces everything with `events` (the newest ones) and a counter of `count` events.
+    reset(events, count = events.length) {
+      items = [];
+      const r = this.push(events);
+      total = count;
+      return r;
+    },
   };
 }
 
 // createFeed draws the list of the latest events (newest first); items rise in via CSS.
 // opts: { max, startClock } (startClock adds the wall-clock time of each event).
 export function createFeed(root, opts = {}) {
-  const model = createFeedModel(opts.max ?? 6);
+  const model = createFeedModel(opts.max ?? FEED_MAX);
   const counter = h('span', { class: 'feed-count' });
   const empty = h('li', { class: 'feed-empty' }, 'Os acontecimentos do dia aparecem aqui enquanto ele toca.');
   // aria-live stays off on purpose: at high speed the feed would flood a screen reader. The
@@ -54,6 +63,17 @@ export function createFeed(root, opts = {}) {
       empty.remove();
       for (const e of removed) { nodes.get(e.id)?.remove(); nodes.delete(e.id); }
       for (const e of added) { const li = node(e); nodes.set(e.id, li); list.prepend(li); }
+      paintCount();
+    },
+    reset(events, count) {
+      model.clear();
+      nodes.clear();
+      list.replaceChildren(empty);
+      const { added } = model.reset(events, count);
+      if (added.length > 0) {
+        empty.remove();
+        for (const e of added) { const li = node(e); nodes.set(e.id, li); list.prepend(li); }
+      }
       paintCount();
     },
     clear() {

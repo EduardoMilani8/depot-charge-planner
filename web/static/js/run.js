@@ -9,8 +9,8 @@ import { fmtNum, fmtPct, fmtBRL, clock } from './format.js';
 import { CONTROLLERS } from './params.js';
 import { describeFault, CONTROLLER_HELP } from './glossary.js';
 import { createPlayer, countingText } from './motion.js';
-import { eventsBetween } from './events.js';
-import { createFeed } from './feed.js';
+import { feedUpdate } from './events.js';
+import { createFeed, FEED_MAX } from './feed.js';
 
 const SPEEDS = [[30, '30 min/s'], [60, '1 h/s'], [120, '2 h/s'], [300, '5 h/s'], [600, '10 h/s']];
 // Elements where Space already means something else.
@@ -131,20 +131,26 @@ export function createRunView(root, hooks) {
       h('div', { class: 'transport' }, playerRow(player), cursorRow(data, cursor, playButton(player))),
       powerPanel, feedPanel, busPanel, chargerPanel, decisionPanel);
     disposers.push(renderPowerChart(powerPanel, data, cursor, player).dispose);
-    const feed = createFeed(feedPanel, { startClock: data.scenario.start_clock_min });
-    // The feed follows the day while it plays. A cursor moved by hand only updates `lastMinute`
-    // (eventsBetween ignores jumps), and a wrap-around of "repetir" starts the list over.
+    const feed = createFeed(feedPanel, { startClock: data.scenario.start_clock_min, max: FEED_MAX });
+    // The feed follows the day while it plays. While paused the cursor only updates
+    // `lastMinute`. Whenever the feed cannot just append what happened since `lastMinute`
+    // (play starting at any minute, a seek backwards, a wrap-around of "repetir", a jump past
+    // the span) it is rebuilt as it would look had the day played up to the cursor.
     let lastMinute = -1;
+    let wasPlaying = false;
     const span = () => Math.max(30, player.state.speed / 2); // half a second of playback, so a slow frame loses nothing
-    cursor.onChange((m) => {
-      if (player.state.playing) {
-        if (m < lastMinute) { feed.clear(); feed.push(eventsBetween(data, -1, m, span())); } else feed.push(eventsBetween(data, lastMinute, m, span()));
-      }
+    const follow = (m, rebuild) => {
+      const u = feedUpdate(data, lastMinute, m, { span: span(), max: FEED_MAX, rebuild });
+      if (u.rebuild) feed.reset(u.events, u.total); else feed.push(u.events);
       lastMinute = m;
+    };
+    cursor.onChange((m) => {
+      if (player.state.playing) follow(m, false); else lastMinute = m;
     });
     player.onChange((s) => {
-      if (!s.playing) return;
-      if (cursor.value === 0) { feed.clear(); lastMinute = -1; } else lastMinute = cursor.value;
+      const started = s.playing && !wasPlaying; // a speed or loop change while playing is not a start
+      wasPlaying = s.playing;
+      if (started) follow(cursor.value, true);
     });
     const busView = renderBusTimeline(busPanel, data, cursor, {
       onSelectBus: (id) => selection.set(id),

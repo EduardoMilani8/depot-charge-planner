@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  easeOutCubic, lerp, createPlayer, countUpValue, countUp, throttle, frameThrottle, animationsEnabled,
+  easeOutCubic, lerp, createPlayer, countUpValue, countUp, throttle, frameThrottle, animationsEnabled, setAnimations, staggerStep,
 } from '../static/js/motion.js';
 import { createCursor } from '../static/js/cursor.js';
 
@@ -29,15 +29,18 @@ function fakeClock() {
   };
 }
 
+// frames come every `step` ms, like a real display
+function play(clock, ms, step = 50) { for (let t = 0; t < ms; t += step) clock.advance(step); }
+
 test('playing advances the cursor by speed minutes per second', () => {
   const clock = fakeClock();
   const cursor = createCursor(1000);
   const p = createPlayer(cursor, clock.deps);
   p.setSpeed(60);
   p.play();
-  clock.advance(1000);
+  play(clock, 1000);
   assert.equal(cursor.value, 60);
-  clock.advance(500);
+  play(clock, 500);
   assert.equal(cursor.value, 90);
   assert.equal(p.state.playing, true);
 });
@@ -58,13 +61,13 @@ test('pause stops the cursor and play resumes from there', () => {
   const p = createPlayer(cursor, clock.deps);
   p.setSpeed(60);
   p.play();
-  clock.advance(1000);
+  play(clock, 1000);
   p.pause();
   clock.advance(5000);
   assert.equal(cursor.value, 60);
   assert.equal(clock.pendingFrames(), 0);
   p.play();
-  clock.advance(1000);
+  play(clock, 1000);
   assert.equal(cursor.value, 120);
 });
 
@@ -74,7 +77,7 @@ test('reaching the end pauses, and play at the end restarts from zero', () => {
   const p = createPlayer(cursor, clock.deps);
   p.setSpeed(600);
   p.play();
-  clock.advance(1000);
+  play(clock, 1000);
   assert.equal(cursor.value, 100);
   assert.equal(p.state.playing, false);
   p.play();
@@ -89,7 +92,7 @@ test('loop wraps around instead of stopping', () => {
   p.setSpeed(60);
   p.setLoop(true);
   p.play();
-  clock.advance(2000); // 120 minutes of a 100-minute day
+  play(clock, 2000); // 120 minutes of a 100-minute day
   assert.equal(p.state.playing, true);
   assert.ok(cursor.value < 100);
 });
@@ -272,4 +275,52 @@ test('blocked storage falls back to the system preference', () => {
   const blocked = { getItem() { throw new Error('denied'); }, setItem() { throw new Error('denied'); } };
   withGlobals({ localStorage: blocked, matchMedia: media(true) }, () => assert.equal(animationsEnabled(), false));
   withGlobals({ localStorage: blocked, matchMedia: media(false) }, () => assert.equal(animationsEnabled(), true));
+});
+
+test('a stalled frame (hidden tab, GC pause) advances at most a quarter of a second', () => {
+  const clock = fakeClock();
+  const cursor = createCursor(1000);
+  const p = createPlayer(cursor, clock.deps);
+  p.setSpeed(60);
+  p.play();
+  clock.advance(10000); // ten seconds without a frame
+  assert.equal(cursor.value, 15); // 250 ms * 60 min/s
+  assert.equal(p.state.playing, true);
+  clock.advance(100);
+  assert.equal(cursor.value, 21); // back to the real clock afterwards
+});
+
+test('staggerStep keeps a cascade of any size inside the cap', () => {
+  assert.equal(staggerStep(1), 25);
+  assert.equal(staggerStep(8), 25); // 7 gaps * 25 ms = 175 ms, under the cap
+  assert.equal(staggerStep(15), 25); // exactly 350 ms
+  for (const n of [16, 200, 1000]) assert.ok(staggerStep(n) * (n - 1) <= 350 + 1e-9, `n=${n}`);
+  assert.equal(staggerStep(0), 25);
+  assert.equal(staggerStep(201, 100, 10), 0.5);
+});
+
+test('with storage that throws, the switch still works in memory', () => {
+  const blocked = { getItem() { throw new Error('denied'); }, setItem() { throw new Error('denied'); } };
+  const doc = { documentElement: { classList: { toggle() {} } } };
+  withGlobals({ localStorage: blocked, matchMedia: media(false), document: doc }, () => {
+    assert.equal(animationsEnabled(), true);
+    setAnimations(false);
+    assert.equal(animationsEnabled(), false); // not back to the system preference
+    setAnimations(true);
+    assert.equal(animationsEnabled(), true);
+  });
+  withGlobals({ localStorage: blocked, matchMedia: media(true), document: doc }, () => {
+    setAnimations(true);
+    assert.equal(animationsEnabled(), true); // wins over "reduce motion"
+  });
+  // a write that works again hands the decision back to the storage
+  let saved = null;
+  const ok = { getItem: () => saved, setItem: (_k, v) => { saved = v; } };
+  withGlobals({ localStorage: ok, matchMedia: media(false), document: doc }, () => {
+    setAnimations(false);
+    assert.equal(animationsEnabled(), false);
+    assert.equal(saved, 'off');
+    saved = 'on';
+    assert.equal(animationsEnabled(), true);
+  });
 });

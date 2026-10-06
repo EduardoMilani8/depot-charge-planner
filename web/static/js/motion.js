@@ -7,9 +7,14 @@ export const lerp = (a, b, t) => a + (b - a) * t;
 
 const KEY = 'lab-animations';
 
+// When storage refuses the write (private mode, blocked site data) the switch is kept here, so
+// the toggle still works until the page is closed. A write that works clears it.
+let override = null;
+
 // animationsEnabled: the user's switch ('on'/'off') wins; otherwise follow the system's
 // "reduce motion" preference.
 export function animationsEnabled() {
+  if (override !== null) return override;
   let stored = null;
   try { stored = localStorage.getItem(KEY); } catch { /* storage blocked */ }
   if (stored === 'on') return true;
@@ -27,7 +32,7 @@ export function applyMotionClass() {
 }
 
 export function setAnimations(on) {
-  try { localStorage.setItem(KEY, on ? 'on' : 'off'); } catch { /* storage blocked */ }
+  try { localStorage.setItem(KEY, on ? 'on' : 'off'); override = null; } catch { override = Boolean(on); }
   applyMotionClass();
 }
 
@@ -36,6 +41,12 @@ const clocks = (deps) => ({
   raf: deps.raf || ((f) => requestAnimationFrame(f)),
   caf: deps.caf || ((id) => cancelAnimationFrame(id)),
 });
+
+// staggerStep is the delay between consecutive items of a cascade of n: `stepMs`, but small
+// enough that the whole cascade (n - 1 gaps) stays within `capMs` however many items there are.
+export function staggerStep(n, capMs = 350, stepMs = 25) {
+  return n > 1 ? Math.min(stepMs, capMs / (n - 1)) : stepMs;
+}
 
 // countUpValue is the number shown `elapsed` ms after the count started (after `delay`).
 export function countUpValue(from, to, elapsed, ms, delay = 0) {
@@ -139,6 +150,8 @@ export function frameThrottle(fn, deps = {}) {
   return call;
 }
 
+const MAX_FRAME_MS = 250;
+
 // createPlayer plays the day: it moves the cursor `speed` simulated minutes per real
 // second. deps (now, raf, caf) can be replaced to test it without a browser.
 export function createPlayer(cursor, deps = {}) {
@@ -155,7 +168,9 @@ export function createPlayer(cursor, deps = {}) {
     frameId = null;
     if (!state.playing) return;
     const t = now();
-    acc += ((t - last) / 1000) * state.speed;
+    // A frame that comes very late (hidden tab, a long pause of the page) must not jump the day
+    // ahead and skip its events: it counts as at most MAX_FRAME_MS.
+    acc += (Math.min(MAX_FRAME_MS, Math.max(0, t - last)) / 1000) * state.speed;
     last = t;
     const whole = Math.floor(acc);
     if (whole > 0) {

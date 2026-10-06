@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { eventsBetween, crossed } from '../static/js/events.js';
+import { eventsBetween, crossed, crossedPlayback, feedUpdate } from '../static/js/events.js';
 
 const data = {
   scenario: {
@@ -76,4 +76,46 @@ test('crossed lists the markers the cursor passed, in (from, to], and ignores ju
   assert.deepEqual(crossed(marks, 0, 40), []); // a scrub, not playback
   assert.deepEqual(crossed(marks, 0, 40, 100).map((m) => m.minute), [2, 5, 5, 9, 40]);
   assert.deepEqual(crossed([], 0, 5), []);
+});
+
+test('crossedPlayback treats a wrap-around as a restart from before minute 0', () => {
+  const marks = [{ minute: 0 }, { minute: 1 }, { minute: 3 }, { minute: 50 }];
+  assert.deepEqual(crossedPlayback(marks, 1, 3).map((m) => m.minute), [3]); // normal playback
+  assert.deepEqual(crossedPlayback(marks, 99, 2, 30).map((m) => m.minute), [0, 1]); // looped to minute 2
+  assert.deepEqual(crossedPlayback(marks, 99, 60, 30), []); // a backward scrub far from 0 pops nothing
+});
+
+// a day of 1000 minutes with a departure every 10 minutes
+const busy = {
+  scenario: { faults: [] },
+  series: { layer: [] },
+  decisions: [],
+  outcomes: Array.from({ length: 100 }, (_, i) => ({ id: `B${i}`, departed: true, ready: true, departure: i * 10 })),
+};
+
+test('feedUpdate appends while playback advances by less than the span', () => {
+  const u = feedUpdate(busy, 100, 120, { span: 30, max: 6 });
+  assert.equal(u.rebuild, false);
+  assert.deepEqual(u.events.map((e) => e.minute), [110, 120]);
+});
+
+test('feedUpdate rebuilds on play, on a backward seek and on a forward jump past the span', () => {
+  const play = feedUpdate(busy, 800, 200, { span: 30, max: 6, rebuild: true });
+  assert.equal(play.rebuild, true);
+  assert.deepEqual(play.events.map((e) => e.minute), [150, 160, 170, 180, 190, 200]); // newest `max`, in order
+  assert.equal(play.total, 21); // departures at 0, 10, ..., 200: the counter is everything up to the cursor
+  const back = feedUpdate(busy, 800, 200, { span: 30, max: 6 });
+  assert.equal(back.rebuild, true);
+  assert.equal(back.total, 21);
+  const jump = feedUpdate(busy, 100, 700, { span: 30, max: 6 });
+  assert.equal(jump.rebuild, true);
+  assert.equal(jump.total, 71);
+});
+
+test('a rebuild at minute 0 still sees minute 0 and an empty cursor gives an empty feed', () => {
+  const r = feedUpdate(busy, -1, 0, { span: 30, max: 6, rebuild: true });
+  assert.deepEqual(r.events.map((e) => e.minute), [0]);
+  assert.equal(r.total, 1);
+  const none = feedUpdate({ ...busy, outcomes: [] }, -1, 0, { rebuild: true });
+  assert.deepEqual(none, { rebuild: true, events: [], total: 0 });
 });

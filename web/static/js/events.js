@@ -49,3 +49,24 @@ export function crossed(markers, from, to, maxSpan = 30) {
   for (let i = lo; i < markers.length && markers[i].minute <= to; i++) out.push(markers[i]);
   return out;
 }
+
+// crossedPlayback is crossed() for a cursor that is playing: a move backwards is a wrap-around
+// ("repetir"), so it starts over from before minute 0 like the feed does and the marks of the
+// first minutes after the wrap are not skipped. A backward scrub far from 0 is longer than
+// maxSpan and yields nothing.
+export function crossedPlayback(markers, from, to, maxSpan = 30) {
+  return crossed(markers, to < from ? -1 : from, to, maxSpan);
+}
+
+// feedUpdate says how the event feed gets from the cursor at `from` to the one at `to`.
+// While playback moves forward by at most `span` minutes it only appends what happened in
+// between ({ rebuild: false, events }). Anything else (play starting, a seek backwards or a
+// jump forward past the span, or `rebuild: true`) must redraw the feed as it would look had
+// the day played up to `to`: { rebuild: true, events: the newest `max`, total: all of them }.
+export function feedUpdate(data, from, to, { span = 30, max = 6, rebuild = false } = {}) {
+  if (rebuild || to < from || to - from > span) {
+    const all = eventsBetween(data, -1, to, Infinity);
+    return { rebuild: true, events: all.slice(-max), total: all.length };
+  }
+  return { rebuild: false, events: eventsBetween(data, from, to, span), total: null };
+}
