@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
@@ -707,6 +708,68 @@ func TestEmbeddedAssetsExist(t *testing.T) {
 				continue
 			}
 			queue = append(queue, target)
+		}
+	}
+}
+
+// Out-of-range messages print plain numbers (not 1e+07) and take the seed bound from sim.
+func TestRangeMessagesUsePlainNumbers(t *testing.T) {
+	s := New()
+	for _, tc := range []struct{ path, body, want string }{
+		{"/api/compare", `{"limit_kw":1e308}`, fmt.Sprintf("até %.0f kW", float64(sim.MaxLimitKW))},
+		{"/api/compare", `{"swap_back_min_need_kwh":1e308}`, fmt.Sprintf("de 0 a %.0f kWh", float64(sim.MaxLimitKW))},
+		{"/api/run", `{"seed":5000}`, fmt.Sprintf("entre 1 e %d", sim.MaxSeeds)},
+	} {
+		rec := do(s, newReq("POST", tc.path, tc.body))
+		var e struct{ Error string }
+		decode(t, rec, &e)
+		if rec.Code != 400 || !strings.Contains(e.Error, tc.want) {
+			t.Errorf("%s %s: status %d, message %q, want it to contain %q", tc.path, tc.body, rec.Code, e.Error, tc.want)
+		}
+		if strings.Contains(e.Error, "e+") {
+			t.Errorf("%s: message %q has an exponent", tc.body, e.Error)
+		}
+	}
+}
+
+// Every response, errors included, carries the framing and sniffing protections; scripts are
+// limited to the page's own origin.
+func TestSecurityHeaders(t *testing.T) {
+	s := New()
+	foreign := newReq("GET", "/", "")
+	foreign.Host = "evil.example.com"
+	badOrigin := newReq("POST", "/api/compare", smallBody)
+	badOrigin.Header.Set("Origin", "http://evil.example.com")
+	reqs := map[string]*http.Request{
+		"index":          newReq("GET", "/", ""),
+		"script":         newReq("GET", "/js/main.js", ""),
+		"defaults":       newReq("GET", "/api/defaults", ""),
+		"compare":        newReq("POST", "/api/compare", smallBody),
+		"not found":      newReq("GET", "/nope.txt", ""),
+		"wrong method":   newReq("GET", "/api/compare", ""),
+		"foreign host":   foreign,
+		"foreign origin": badOrigin,
+	}
+	for name, req := range reqs {
+		h := do(s, req).Header()
+		if got := h.Get("X-Frame-Options"); got != "DENY" {
+			t.Errorf("%s: X-Frame-Options %q", name, got)
+		}
+		if got := h.Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Errorf("%s: X-Content-Type-Options %q", name, got)
+		}
+		csp := h.Get("Content-Security-Policy")
+		for _, want := range []string{"default-src 'self'", "frame-ancestors 'none'"} {
+			if !strings.Contains(csp, want) {
+				t.Errorf("%s: Content-Security-Policy %q lacks %q", name, csp, want)
+			}
+		}
+		for _, d := range strings.Split(csp, ";") {
+			if d = strings.TrimSpace(d); strings.HasPrefix(d, "script-src") || strings.HasPrefix(d, "default-src") {
+				if strings.Contains(d, "unsafe") {
+					t.Errorf("%s: directive %q loosens scripts", name, d)
+				}
+			}
 		}
 	}
 }

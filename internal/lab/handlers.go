@@ -143,7 +143,8 @@ func (s *Server) run(r *http.Request) (any, *apiError) {
 		return nil, e
 	}
 	if req.Seed < 1 || req.Seed > sim.MaxSeeds {
-		return nil, &apiError{status: http.StatusBadRequest, Field: "seed", Message: "Semente: informe um valor entre 1 e 1000."}
+		return nil, &apiError{status: http.StatusBadRequest, Field: "seed",
+			Message: fmt.Sprintf("Semente: informe um valor entre 1 e %d.", sim.MaxSeeds)}
 	}
 	known := false
 	for _, n := range sim.ControllerNames {

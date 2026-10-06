@@ -6,6 +6,7 @@ export function s(tag, attrs = {}, ...children) {
   for (const [k, v] of Object.entries(attrs || {})) {
     if (v === false || v === null || v === undefined) continue;
     if (k.startsWith('on') && typeof v === 'function') node.addEventListener(k.slice(2), v);
+    else if (k === 'style') node.style.cssText = String(v); // CSSOM, not the attribute: allowed by a strict CSP
     else node.setAttribute(k, String(v));
   }
   for (const c of children.flat(Infinity)) {

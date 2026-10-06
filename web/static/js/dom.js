@@ -4,6 +4,7 @@ export function h(tag, attrs = {}, ...children) {
   for (const [k, v] of Object.entries(attrs || {})) {
     if (v === false || v === null || v === undefined) continue;
     if (k === 'class') node.className = v;
+    else if (k === 'style') node.style.cssText = String(v); // CSSOM, not the attribute: allowed by a strict CSP
     else if (k.startsWith('on') && typeof v === 'function') node.addEventListener(k.slice(2), v);
     else node.setAttribute(k, v === true ? '' : String(v));
   }

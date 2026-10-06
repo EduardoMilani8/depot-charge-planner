@@ -90,10 +90,18 @@ func isLocalHost(hostport string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// securityCSP keeps the page to its own origin: no inline scripts or styles (the JavaScript
+// sets styles through the CSSOM, which this policy allows), no embedding in other pages.
+const securityCSP = "default-src 'self'; frame-ancestors 'none'"
+
 // guard rejects requests for a non-local Host (DNS rebinding) or from a foreign Origin,
-// and marks every response as uncacheable.
+// and marks every response (rejections included) as uncacheable, unframeable and unsniffable.
 func guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hd := w.Header()
+		hd.Set("X-Frame-Options", "DENY")
+		hd.Set("X-Content-Type-Options", "nosniff")
+		hd.Set("Content-Security-Policy", securityCSP)
 		if !isLocalHost(r.Host) {
 			writeError(w, &apiError{status: http.StatusForbidden, Message: "Acesso negado: o laboratório só atende endereços locais."})
 			return
@@ -105,8 +113,7 @@ func guard(next http.Handler) http.Handler {
 				return
 			}
 		}
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
+		hd.Set("Cache-Control", "no-store")
 		next.ServeHTTP(w, r)
 	})
 }

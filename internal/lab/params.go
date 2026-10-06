@@ -72,13 +72,13 @@ func ptMessage(field string) string {
 	case "chargers":
 		return fmt.Sprintf("Carregadores: informe um valor entre 1 e %d.", sim.MaxChargers)
 	case "limit":
-		return fmt.Sprintf("Limite da garagem: informe um valor maior que 0 e até %g kW.", float64(sim.MaxLimitKW))
+		return fmt.Sprintf("Limite da garagem: informe um valor maior que 0 e até %.0f kW.", float64(sim.MaxLimitKW))
 	case "reading-age":
 		return fmt.Sprintf("Idade da leitura: informe de 0 a %d minutos.", sim.MaxReadingAgeMin)
 	case "swap-back-cooldown":
 		return "Espera para voltar a um carregador: informe 0 ou mais minutos."
 	case "swap-back-min-need":
-		return fmt.Sprintf("Necessidade mínima para voltar: informe de 0 a %g kWh.", float64(sim.MaxLimitKW))
+		return fmt.Sprintf("Necessidade mínima para voltar: informe de 0 a %.0f kWh.", float64(sim.MaxLimitKW))
 	}
 	return "Parâmetro inválido."
 }
