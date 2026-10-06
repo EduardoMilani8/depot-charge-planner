@@ -366,7 +366,7 @@ func (w *World) applySwaps(swaps []planner.Swap) {
 
 // advance runs the physics for one step using the power in effect (previous commands).
 func (w *World) advance(m *Metrics) {
-	w.physKW = map[string]float64{}
+	clear(w.physKW)
 	total := 0.0
 	for _, bs := range w.buses {
 		if !bs.present || bs.departed || bs.chargerID == "" || w.t < bs.busyUntil {

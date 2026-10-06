@@ -9,7 +9,10 @@ import (
 	"github.com/EduardoMilani8/depot-charge-planner/internal/planner"
 )
 
-// ChargerTrace is one charger's minute-by-minute truth.
+// ChargerTrace is one charger's minute-by-minute truth. PhysicalKW[i] is the power in
+// effect during minute i (the commands issued at minute i-1), while CommandedKW[i] is
+// what was commanded at minute i: Physical lags Commanded by one minute, so they are
+// not simultaneous.
 type ChargerTrace struct {
 	ID          string
 	Status      []int // model.ChargerStatus
@@ -22,7 +25,7 @@ type ChargerTrace struct {
 type BusTrace struct {
 	ID        string
 	State     []int     // 0 not arrived yet, 1 present, 2 departed
-	TrueSoC   []float64 // NaN while the bus is not present
+	TrueSoC   []float64 // true charge at the moment the planner read the sensor; NaN while the bus is not present
 	Observed  []float64 // NaN when not present or when the planner got no usable reading
 	ChargerID []string  // "" when waiting
 }
@@ -49,7 +52,11 @@ type Decision struct {
 }
 
 // Trace records the simulator's truth (what the planner never sees) for one run, one
-// entry per minute 0..Horizon, plus the decisions that changed.
+// entry per minute 0..Horizon, plus the decisions that changed. Physical[i] is the power
+// in effect during minute i (the commands of minute i-1) while Commanded[i] is what was
+// commanded at minute i, so Physical lags Commanded by one minute. State, ChargerID and
+// the power series are taken at the end of the minute; TrueSoC and Observed share the
+// instant the sensors were read (before the minute's physics step).
 type Trace struct {
 	Limit, Commanded, Physical []float64
 	Layer                      []string
@@ -60,6 +67,7 @@ type Trace struct {
 
 	started bool
 	lastKey string
+	sensed  map[string]float64 // true SoC of the present buses when the planner read the sensors
 }
 
 // NewTrace returns an empty trace to pass to RunTraced.
@@ -72,6 +80,18 @@ func (tr *Trace) start(w *World) {
 	}
 	for _, bs := range w.buses { // sorted by ID in newWorld
 		tr.Buses = append(tr.Buses, &BusTrace{ID: bs.spec.Bus.ID})
+	}
+}
+
+// sense snapshots each present bus's true SoC at the moment the planner reads the
+// sensors (right after World.observe, before the physics step), so TrueSoC and Observed
+// refer to the same instant.
+func (tr *Trace) sense(w *World) {
+	tr.sensed = map[string]float64{}
+	for _, bs := range w.buses {
+		if bs.present && !bs.departed {
+			tr.sensed[bs.spec.Bus.ID] = bs.soc
+		}
 	}
 }
 
@@ -113,7 +133,10 @@ func (tr *Trace) capture(w *World, in planner.Input, plan planner.Plan) {
 		case bs.departed:
 			state = 2
 		case bs.present:
-			state, soc, ch = 1, bs.soc, bs.chargerID
+			state, ch = 1, bs.chargerID
+			if v, ok := tr.sensed[bs.spec.Bus.ID]; ok {
+				soc = v
+			}
 			if v, ok := observed[bs.spec.Bus.ID]; ok {
 				obs = v
 			}
@@ -142,11 +165,13 @@ func (tr *Trace) recordDecision(minute int, plan planner.Plan) {
 	})
 }
 
-var numbers = regexp.MustCompile(`[0-9]+(?:[.,][0-9]+)?`)
+// numbers matches standalone numbers only, so digits inside IDs ("B004") survive.
+var numbers = regexp.MustCompile(`\b[0-9]+(?:[.,][0-9]+)?\b`)
 
 // decisionKey identifies "the same decision": the same layer, setpoints (to 1 kW),
-// per-bus verdicts and swaps. Numbers inside the reasons are masked, because texts like
-// "folga 252 min" change every minute without the decision changing.
+// per-bus verdicts, swaps and notes. Standalone numbers inside the reasons and notes are
+// masked, because texts like "folga 252 min" change every minute without the decision
+// changing.
 func decisionKey(p planner.Plan) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s|", p.Layer)
@@ -160,6 +185,10 @@ func decisionKey(p planner.Plan) string {
 	b.WriteByte('|')
 	for _, s := range p.Swaps {
 		fmt.Fprintf(&b, "%s>%s@%s;", s.OutBusID, s.InBusID, s.ChargerID)
+	}
+	b.WriteByte('|')
+	for _, n := range p.Notes {
+		fmt.Fprintf(&b, "%s;", numbers.ReplaceAllString(n, "#"))
 	}
 	return b.String()
 }

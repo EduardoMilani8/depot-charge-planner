@@ -27,6 +27,9 @@ func RunTraced(sc Scenario, ctrl Controller, rec Recorder, tr *Trace) Metrics {
 	for t := 0; t <= sc.Horizon; t++ {
 		w.beginTick(t)
 		in := w.observe()
+		if tr != nil {
+			tr.sense(w)
+		}
 		start := time.Now()
 		plan := ctrl.Plan(in)
 		durations = append(durations, time.Since(start))

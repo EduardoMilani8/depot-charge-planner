@@ -186,3 +186,90 @@ func TestChargerSeriesAgreeWithBuses(t *testing.T) {
 		}
 	}
 }
+
+func TestObservedMatchesTrueSoCWithPerfectSensors(t *testing.T) {
+	p := smallParams()
+	p.Profile = ProfileNone
+	_, tr, _ := tracedRun(p, 1, "planner")
+	present := 0
+	for _, b := range tr.Buses {
+		for i, st := range b.State {
+			if st != 1 {
+				continue
+			}
+			present++
+			if d := math.Abs(b.Observed[i] - b.TrueSoC[i]); !(d < 1e-9) {
+				t.Fatalf("bus %s minute %d: observed %.6f vs true %.6f (they must be read at the same instant)", b.ID, i, b.Observed[i], b.TrueSoC[i])
+			}
+		}
+	}
+	if present == 0 {
+		t.Fatal("no bus was ever present: the test checks nothing")
+	}
+}
+
+func TestDecisionKeyNotesAndMasking(t *testing.T) {
+	base := planner.Plan{Layer: planner.LayerNormal, Setpoints: []planner.Setpoint{{ChargerID: "C1", KW: 50}}}
+	withNote := func(notes ...string) planner.Plan {
+		p := base
+		p.Notes = notes
+		return p
+	}
+	if decisionKey(base) == decisionKey(withNote("rodízio não recomendado: B004")) {
+		t.Error("a plan with a note must differ from the same plan without it")
+	}
+	if decisionKey(withNote("folga 252 min")) != decisionKey(withNote("folga 251 min")) {
+		t.Error("notes differing only in standalone numbers must share a key")
+	}
+	if decisionKey(withNote("rodízio não recomendado: B004")) == decisionKey(withNote("rodízio não recomendado: B006")) {
+		t.Error("notes naming different buses must not share a key")
+	}
+	r1 := planner.Plan{Layer: base.Layer, Buses: []planner.BusStatus{{BusID: "B1", Reason: "bus B004 folga 3 min"}}}
+	r2 := planner.Plan{Layer: base.Layer, Buses: []planner.BusStatus{{BusID: "B1", Reason: "bus B006 folga 3 min"}}}
+	if decisionKey(r1) == decisionKey(r2) {
+		t.Error("reasons naming different buses must not share a key")
+	}
+	// Recorded through the Trace: a note appearing with unchanged setpoints is a decision.
+	tr := NewTrace()
+	tr.recordDecision(0, base)
+	tr.recordDecision(1, base)
+	tr.recordDecision(2, withNote("verificador corrigiu o plano: 1 violação(ões)"))
+	if len(tr.Decisions) != 2 || tr.Decisions[1].Minute != 2 {
+		t.Errorf("decisions: %+v", tr.Decisions)
+	}
+}
+
+func TestTraceBusArrivingAfterTheHorizon(t *testing.T) {
+	sc := baseScenario()
+	sc.Horizon = 100
+	sc.Buses[0].Bus.ArrivalMin = 500
+	sc.Buses[0].Bus.DepartureMin = 900
+	tr := NewTrace()
+	m := RunTraced(sc, plannerCtrl(sc), nil, tr)
+	for i, st := range tr.Buses[0].State {
+		if st != 0 {
+			t.Fatalf("minute %d: state %d, want 0 (never present)", i, st)
+		}
+	}
+	o := tr.Outcomes[0]
+	if o.Departed || o.Ready || o.ShortfallKWh != 0 {
+		t.Errorf("outcome of a bus that never arrived: %+v", o)
+	}
+	if m.Buses != 1 || m.Ready != 0 || m.ShortfallKWh != 0 {
+		t.Errorf("metrics: %+v", m)
+	}
+}
+
+func TestTraceEarlyDepartureOutcome(t *testing.T) {
+	sc := baseScenario()
+	sc.Faults = []Fault{{Kind: FaultEarlyDeparture, Target: "B1", From: 10, To: forever, Value: 30}}
+	tr := NewTrace()
+	RunTraced(sc, plannerCtrl(sc), nil, tr)
+	o := tr.Outcomes[0]
+	if o.Departure != 30 || !o.Departed || o.Ready || o.ShortfallKWh <= 0 {
+		t.Errorf("outcome: %+v", o)
+	}
+	if st := tr.Buses[0].State; st[29] != 1 || st[30] != 2 {
+		t.Errorf("state at 29/30: %d/%d, want 1/2", st[29], st[30])
+	}
+}
