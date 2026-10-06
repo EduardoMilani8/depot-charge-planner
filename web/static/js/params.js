@@ -1,6 +1,19 @@
 export const TABS = ['scenario', 'compare', 'run'];
 export const CONTROLLERS = ['fifo', 'edf', 'fifo-unplug', 'safe', 'planner'];
 
+// nextTab returns the tab a key moves to (arrows wrap, Home/End jump), or null for other keys.
+export function nextTab(current, key) {
+  const i = TABS.indexOf(current);
+  if (i < 0) return null;
+  switch (key) {
+    case 'ArrowRight': return TABS[(i + 1) % TABS.length];
+    case 'ArrowLeft': return TABS[(i + TABS.length - 1) % TABS.length];
+    case 'Home': return TABS[0];
+    case 'End': return TABS[TABS.length - 1];
+    default: return null;
+  }
+}
+
 const KINDS = {
   buses: 'int', chargers: 'int', limit_kw: 'float', profile: 'string', seeds: 'int',
   follow_swaps: 'bool', reading_age_min: 'int', swap_back_cooldown_min: 'int', swap_back_min_need_kwh: 'float',

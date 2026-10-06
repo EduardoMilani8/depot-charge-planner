@@ -60,6 +60,9 @@ export function createForm(root, defaults, handlers) {
     if (!entry) return false;
     errors.get(key).textContent = message;
     entry.input.setAttribute('aria-invalid', 'true');
+    // A field inside the collapsed "Avançado" block is not rendered until it is opened.
+    const details = entry.input.closest('details');
+    if (details) details.open = true;
     entry.input.focus();
     return true;
   }

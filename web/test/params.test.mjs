@@ -57,3 +57,17 @@ test('field specs take their bounds from the server limits', () => {
   assert.equal(by.buses.advanced, undefined);
   assert.equal(specs.length, 9);
 });
+
+test('nextTab implements the keyboard pattern of tabs', async () => {
+  const { nextTab } = await import('../static/js/params.js');
+  assert.equal(nextTab('scenario', 'ArrowRight'), 'compare');
+  assert.equal(nextTab('compare', 'ArrowRight'), 'run');
+  assert.equal(nextTab('run', 'ArrowRight'), 'scenario'); // wraps
+  assert.equal(nextTab('scenario', 'ArrowLeft'), 'run');  // wraps
+  assert.equal(nextTab('run', 'ArrowLeft'), 'compare');
+  assert.equal(nextTab('compare', 'Home'), 'scenario');
+  assert.equal(nextTab('compare', 'End'), 'run');
+  assert.equal(nextTab('compare', 'a'), null);
+  assert.equal(nextTab('compare', 'Enter'), null);
+  assert.equal(nextTab('bogus', 'ArrowRight'), null);
+});

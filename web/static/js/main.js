@@ -1,5 +1,5 @@
 import { getDefaults, compare, createLatest, ApiError } from './api.js';
-import { hashToState, stateToHash, TABS } from './params.js';
+import { hashToState, stateToHash, nextTab, TABS } from './params.js';
 import { createForm } from './form.js';
 import { renderCompare } from './compare.js';
 import { h } from './dom.js';
@@ -74,6 +74,14 @@ async function init() {
   form = createForm($('tab-scenario'), defaults, { onRun: runCompare });
   form.write(state.params);
   for (const b of document.querySelectorAll('nav.tabs button')) b.addEventListener('click', () => showTab(b.dataset.tab));
+  // Keyboard pattern of tabs: arrows (with wrap), Home and End move focus and activate the tab.
+  $('tablist').addEventListener('keydown', (e) => {
+    const next = nextTab(state.tab, e.key);
+    if (!next) return;
+    e.preventDefault();
+    showTab(next);
+    document.querySelector(`[data-tab="${next}"]`).focus();
+  });
   const wanted = state.tab; // showTab overwrites state.tab, so remember the link's view first
   showTab('scenario');
   if (wanted === 'compare') runCompare(state.params);
