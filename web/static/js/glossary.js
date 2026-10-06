@@ -69,6 +69,6 @@ export function describeFault(f) {
   const label = FAULT_LABEL[f.kind] || f.kind;
   const bits = [];
   if (f.target && f.target !== '*') bits.push(f.target);
-  if (VALUE_TEXT[f.kind] && f.value) bits.push(VALUE_TEXT[f.kind](f.value));
+  if (VALUE_TEXT[f.kind] && f.value !== undefined && f.value !== null) bits.push(VALUE_TEXT[f.kind](f.value));
   return `${label}${bits.length ? ` (${bits.join(', ')})` : ''}, min ${f.from}–${f.to}`;
 }

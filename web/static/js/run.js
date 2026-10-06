@@ -1,7 +1,10 @@
 import { run as apiRun, createLatest, ApiError } from './api.js';
 import { h, clear } from './dom.js';
 import { createCursor } from './cursor.js';
+import { createSelection } from './decision.js';
 import { renderPowerChart } from './charts/power.js';
+import { renderBusTimeline, renderChargerTimeline } from './charts/gantt.js';
+import { renderDecisionPanel } from './decisionPanel.js';
 import { fmtNum, fmtPct, fmtBRL, clock } from './format.js';
 import { CONTROLLERS } from './params.js';
 import { describeFault, CONTROLLER_HELP } from './glossary.js';
@@ -9,7 +12,7 @@ import { describeFault, CONTROLLER_HELP } from './glossary.js';
 // createRunView owns the "Execução" tab: it loads one run and draws its panels.
 export function createRunView(root, hooks) {
   const latest = createLatest();
-  let current = null; // { data, cursor, below } of the run on screen
+  let current = null; // { data, cursor, selection } of the run on screen
 
   function summaryLine(m) {
     const bad = m.plan_violations > 0;
@@ -22,12 +25,14 @@ export function createRunView(root, hooks) {
     const select = h('select', { id: 'run-controller', 'aria-label': 'Controlador' },
       CONTROLLERS.map((c) => h('option', { value: c, selected: c === sel.controller }, c)));
     const seed = h('input', { id: 'run-seed', type: 'number', step: 1, value: sel.seed, 'aria-label': 'Semente' });
-    const hint = h('span', { class: 'field-error', role: 'alert' });
+    // Empty, the hint is hidden so it does not take a blank row of the flex layout.
+    const hint = h('span', { class: 'field-error', role: 'alert', hidden: true });
+    const setHint = (text) => { hint.textContent = text; hint.hidden = text === ''; };
     const open = () => {
       const n = Number(seed.value);
       // Any whole number goes to the server, which answers out-of-range seeds in Portuguese.
-      if (seed.value.trim() === '' || !Number.isInteger(n)) { hint.textContent = 'A semente deve ser um número inteiro.'; return; }
-      hint.textContent = '';
+      if (seed.value.trim() === '' || !Number.isInteger(n)) { setHint('A semente deve ser um número inteiro.'); return; }
+      setHint('');
       hooks.onSelect(select.value, n);
     };
     select.addEventListener('change', open);
@@ -57,18 +62,27 @@ export function createRunView(root, hooks) {
 
   function render(data) {
     const cursor = createCursor(data.scenario.horizon_min);
+    const selection = createSelection();
     const powerPanel = h('div', { class: 'panel', id: 'panel-power' });
-    const below = h('div', { id: 'panels-below' }); // filled by the timelines (task 6)
+    const busPanel = h('div', { class: 'panel', id: 'panel-buses' });
+    const chargerPanel = h('div', { class: 'panel', id: 'panel-chargers' });
+    const decisionPanel = h('div', { class: 'panel', id: 'panel-decision' });
     clear(root).append(
       h('h2', {}, 'Execução'),
       controls(data),
       h('p', { class: 'summary' }, summaryLine(data.metrics)),
       faultList(data),
       cursorRow(data, cursor),
-      powerPanel,
-      below);
+      powerPanel, busPanel, chargerPanel, decisionPanel);
     renderPowerChart(powerPanel, data, cursor);
-    current = { data, cursor, below };
+    const busView = renderBusTimeline(busPanel, data, cursor, {
+      onSelectBus: (id) => selection.set(id),
+      onJump: () => decisionPanel.querySelector('.bus-detail').scrollIntoView({ block: 'start' }),
+    });
+    selection.onChange((id) => busView.setSelected(id));
+    renderChargerTimeline(chargerPanel, data, cursor);
+    renderDecisionPanel(decisionPanel, data, cursor, selection);
+    current = { data, cursor, selection };
     hooks.onRendered?.(current);
   }
 

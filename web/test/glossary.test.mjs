@@ -21,3 +21,7 @@ test('describeFault names the target, the window and the value', () => {
   assert.equal(describeFault({ kind: 'soc_noise', target: '*', from: 0, to: 50, value: 3 }), 'ruído na leitura de carga (3 kWh), min 0–50');
   assert.equal(describeFault({ kind: 'weird', target: '', from: 1, to: 2, value: 0 }), 'weird, min 1–2');
 });
+
+test('a total limit drop (value 0) still says ×0', () => {
+  assert.equal(describeFault({ kind: 'limit_drop', target: '', from: 5, to: 9, value: 0 }), 'queda do limite da rede (×0), min 5–9');
+});

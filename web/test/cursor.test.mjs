@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createCursor, keyDelta } from '../static/js/cursor.js';
+import { createCursor, keyDelta, bindCursorKeys } from '../static/js/cursor.js';
 
 test('the cursor clamps, rounds and ignores non-finite values', () => {
   const c = createCursor(100);
@@ -35,4 +35,41 @@ test('a zero-length run has a cursor that stays at 0', () => {
   const c = createCursor(0);
   c.set(5);
   assert.equal(c.value, 0);
+});
+
+// A minimal stand-in for a focusable element: it records the keydown listener.
+function fakeKeyTarget() {
+  const el = { handler: null, addEventListener(type, fn) { if (type === 'keydown') el.handler = fn; } };
+  const press = (key, shiftKey = false) => {
+    const e = { key, shiftKey, prevented: false, preventDefault() { e.prevented = true; } };
+    el.handler(e);
+    return e;
+  };
+  return { el, press };
+}
+
+test('Home and End jump to the ends and the page does not scroll', () => {
+  const c = createCursor(100);
+  const { el, press } = fakeKeyTarget();
+  bindCursorKeys(el, c);
+  c.set(40);
+  assert.equal(press('End').prevented, true);
+  assert.equal(c.value, 100);
+  assert.equal(press('Home').prevented, true);
+  assert.equal(c.value, 0);
+});
+
+test('arrow keys step the cursor and other keys are left alone', () => {
+  const c = createCursor(100);
+  const { el, press } = fakeKeyTarget();
+  bindCursorKeys(el, c);
+  assert.equal(press('ArrowRight').prevented, true);
+  assert.equal(c.value, 1);
+  press('ArrowRight', true);
+  assert.equal(c.value, 11);
+  press('PageUp');
+  assert.equal(c.value, 71);
+  assert.equal(press('a').prevented, false);
+  assert.equal(press('Tab').prevented, false);
+  assert.equal(c.value, 71);
 });

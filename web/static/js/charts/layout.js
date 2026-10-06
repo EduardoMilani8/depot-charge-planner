@@ -80,3 +80,23 @@ export function valuesAt(run, minute) {
   const at = (a) => (a[i] === undefined ? null : a[i]);
   return { physical: at(sr.physical_kw), commanded: at(sr.commanded_kw), limit: at(sr.limit_kw), layer: sr.layer[i] };
 }
+
+// fillPath fills the area under values[i] down to yBase; a missing value starts a new area.
+export function fillPath(values, x, y, yBase) {
+  let d = '';
+  let start = -1;
+  let last = -1;
+  const close = () => { d += `L${num(x(last))},${num(yBase)}Z`; };
+  values.forEach((v, i) => {
+    if (Number.isFinite(v)) {
+      if (start < 0) { start = i; d += `M${num(x(i))},${num(yBase)}`; }
+      d += `L${num(x(i))},${num(y(v))}`;
+      last = i;
+    } else if (start >= 0) {
+      close();
+      start = -1;
+    }
+  });
+  if (start >= 0) close();
+  return d;
+}
