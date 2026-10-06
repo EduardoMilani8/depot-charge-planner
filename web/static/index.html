@@ -4,9 +4,24 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Laboratório de recarga</title>
+<link rel="stylesheet" href="app.css">
 </head>
 <body>
-<h1>Laboratório de recarga</h1>
-<p>Interface em construção.</p>
+<header class="top">
+  <h1>Laboratório de recarga</h1>
+  <p class="sub">Simulador de garagem de ônibus elétricos com dados sintéticos: mostra como o algoritmo se comporta, não o resultado numa garagem real.</p>
+</header>
+<nav class="tabs" role="tablist" aria-label="Seções">
+  <button role="tab" data-tab="scenario" aria-selected="true">Cenário</button>
+  <button role="tab" data-tab="compare" aria-selected="false">Comparação</button>
+  <button role="tab" data-tab="run" aria-selected="false">Execução</button>
+</nav>
+<div id="banner" class="banner" role="alert" hidden></div>
+<main>
+  <section id="tab-scenario" role="tabpanel"></section>
+  <section id="tab-compare" role="tabpanel" hidden><div id="compare-out"><p class="note">Rode um cenário para ver a comparação.</p></div></section>
+  <section id="tab-run" role="tabpanel" hidden><div id="run-out"><p class="note">Abra uma execução pela aba Comparação (clique num ponto).</p></div></section>
+</main>
+<script type="module" src="js/main.js"></script>
 </body>
 </html>

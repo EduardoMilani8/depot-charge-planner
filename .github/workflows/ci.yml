@@ -12,6 +12,8 @@ jobs:
         run: test -z "$(gofmt -l .)"
       - run: go vet ./...
       - run: go test -race ./...
+      - name: web unit tests
+        run: node --test web/test/*.test.mjs
       - name: long property tests
         run: PROPERTY_SEEDS=100 go test -timeout 20m ./internal/sim
       - name: fuzz (short)

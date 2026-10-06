@@ -1,0 +1,82 @@
+import { getDefaults, compare, createLatest, ApiError } from './api.js';
+import { hashToState, stateToHash, TABS } from './params.js';
+import { createForm } from './form.js';
+import { renderCompare } from './compare.js';
+import { h } from './dom.js';
+
+const latest = createLatest();
+let state;
+let form;
+const $ = (id) => document.getElementById(id);
+
+function syncHash() {
+  history.replaceState(null, '', stateToHash(state));
+}
+
+export function showTab(name) {
+  state.tab = name;
+  for (const t of TABS) {
+    $(`tab-${t}`).hidden = t !== name;
+    const b = document.querySelector(`[data-tab="${t}"]`);
+    b.setAttribute('aria-selected', String(t === name));
+    b.tabIndex = t === name ? 0 : -1;
+  }
+  syncHash();
+}
+
+function banner(message) {
+  const b = $('banner');
+  b.textContent = message || '';
+  b.hidden = !message;
+}
+
+// reportError puts a server error on its form field when it has one, else in the banner.
+function reportError(e) {
+  const msg = e instanceof ApiError ? e.message : 'Erro inesperado: ' + e.message;
+  showTab('scenario');
+  if (e instanceof ApiError && e.field && form.showError(e.field, e.message)) return;
+  banner(msg);
+}
+
+async function runCompare(params) {
+  banner('');
+  state.params = params;
+  form.setBusy(true);
+  $('compare-out').replaceChildren(h('p', { class: 'loading' }, 'Rodando as simulações…'));
+  showTab('compare');
+  try {
+    const r = await latest((signal) => compare(params, signal));
+    if (r.stale) return;
+    renderCompare($('compare-out'), r.value, openRun);
+  } catch (e) {
+    $('compare-out').replaceChildren(h('p', { class: 'note' }, 'Nenhuma comparação: corrija o cenário e rode de novo.'));
+    reportError(e);
+  } finally {
+    if (!latest.busy()) form.setBusy(false);
+  }
+}
+
+export function openRun(controller, seed) {
+  state.controller = controller;
+  state.seed = seed;
+  showTab('run');
+}
+
+async function init() {
+  let defaults;
+  try {
+    defaults = await getDefaults();
+  } catch (e) {
+    banner(e.message);
+    return;
+  }
+  state = hashToState(location.hash, defaults.params);
+  form = createForm($('tab-scenario'), defaults, { onRun: runCompare });
+  form.write(state.params);
+  for (const b of document.querySelectorAll('nav.tabs button')) b.addEventListener('click', () => showTab(b.dataset.tab));
+  const wanted = state.tab; // showTab overwrites state.tab, so remember the link's view first
+  showTab('scenario');
+  if (wanted === 'compare') runCompare(state.params);
+}
+
+init();
