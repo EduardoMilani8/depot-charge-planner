@@ -20,6 +20,8 @@ Ordem recomendada: **1 → 3 → 2 → 4 → 5**. O 1 testa se estamos certos; o
 
 ## Plano 1 — Validar com dados reais
 
+**Situação:** implementado (aguardando dados reais para validar). Veja `README.md` ("Validação com dados reais") e `docs/dados-reais/README.md`.
+
 **Objetivo.** Importar um ou mais dias reais de uma garagem e rodar o planejador e as referências sobre as mesmas condições, comparando com o que de fato aconteceu.
 
 **Por que primeiro.** Tudo o mais se apoia em premissas ainda não validadas. Se o planejador ganhar dos números reais, temos o melhor argumento comercial; se perder, descobrimos onde antes de investir mais.

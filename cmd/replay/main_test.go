@@ -402,6 +402,43 @@ func TestRunPartialRealOutcomeIsExplained(t *testing.T) {
 	}
 }
 
+func TestRunNoRealOutcomeIsNotReportedAsAllReady(t *testing.T) {
+	// without soc_saida_real_pct nobody "was ready": the outcome is unknown
+	dir := copyDemo(t, map[string]func(string) string{
+		"sessoes.csv": nil, "potencia.csv": nil,
+		"onibus.csv": func(string) string {
+			return "onibus_id,capacidade_kwh,chegada,soc_chegada_pct,saida_prevista,soc_saida_exigido_pct,potencia_max_bateria_kw\n" +
+				"B01,300,2026-03-04 20:00,30,2026-03-05 05:00,90,150\n" +
+				"B02,300,2026-03-04 22:00,40,2026-03-05 06:00,85,150\n"
+		}})
+	code, out, errOut := runCmd("-dir", dir)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	if !strings.Contains(out, "Resultado real desconhecido") {
+		t.Errorf("unknown real outcome not said:\n%s", out)
+	}
+	if strings.Contains(out, "Nenhum dos") {
+		t.Errorf("must not claim that no bus was late:\n%s", out)
+	}
+	if !strings.Contains(out, "Agregado (1 noite;") {
+		t.Errorf("singular aggregate title missing:\n%s", out)
+	}
+	// with outcomes the message names how many buses it is about
+	_, out2, _ := runCmd("-dir", copyDemo(t, map[string]func(string) string{"onibus.csv": func(s string) string {
+		s = strings.Replace(s, ",70,2026-03-05 06:00", ",85,2026-03-05 06:00", 1) // B02 of night 1 now ready
+		return strings.Replace(s, ",88,2026-03-06 05:00", ",90,2026-03-06 05:00", 1)
+	}}))
+	for _, want := range []string{
+		"Nenhum dos 3 ônibus com resultado real ficou sem a carga exigida.",
+		"Nenhum dos 2 ônibus com resultado real ficou sem a carga exigida.", // night 2: B03 has no outcome
+	} {
+		if !strings.Contains(out2, want) {
+			t.Errorf("all-ready message %q missing:\n%s", want, out2)
+		}
+	}
+}
+
 func TestRunCostNotComparable(t *testing.T) {
 	for name, edit := range map[string]func(string) string{
 		"window crossing midnight": replace("18:00,21:00", "22:00,06:00"),

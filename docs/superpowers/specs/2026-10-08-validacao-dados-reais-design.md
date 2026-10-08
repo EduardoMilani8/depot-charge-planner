@@ -1,6 +1,6 @@
 # Validação com dados reais — especificação
 
-Status: aprovado pelo autor para implementação da parte independente de dados reais (2026-10-08). Passo 1 do roadmap (`docs/superpowers/plans/2026-10-08-proximos-passos.md`). Nada disto foi implementado ainda.
+Status: implementado (2026-10-08): `internal/realdata`, `cmd/replay` e a aba "Dados reais" do laboratório; plano de implementação em `docs/superpowers/plans/2026-10-08-validacao-dados-reais.md`. Falta validar com dados reais de uma operadora. Passo 1 do roadmap (`docs/superpowers/plans/2026-10-08-proximos-passos.md`).
 
 ## 1. Objetivo e para quem
 
@@ -40,7 +40,7 @@ O ônibus em `sessoes.csv` casa com `onibus_id` e a noite pelo horário da sess�
 
 Por noite, `internal/realdata` monta um `sim.Scenario`:
 
-- `StartClockMin` = hora cheia anterior à menor chegada menos 30 min; `Horizon` = maior saída prevista (ou real) mais 30 min, em minutos desde o início. Limite de horizonte igual ao do simulador.
+- `StartClockMin` = hora cheia anterior à menor chegada menos 60 min; `Horizon` = maior saída prevista (ou real) mais 30 min, em minutos desde o início. Limite de horizonte igual ao do simulador.
 - `BaseLimitKW` = `limite_kw`; `Chargers` = lista de carregadores, todos `ChargerOK`.
 - Ônibus: `SoCKWh` = `soc_chegada_pct`/100 × capacidade; `TargetKWh` = `soc_saida_exigido_pct`/100 × capacidade; `ArrivalMin`/`DepartureMin` = minutos desde o início; `TrueTargetKWh` = o alvo (a necessidade real é a exigida pela operação).
 - Sem falhas injetadas: o que aconteceu de errado na realidade já está nos dados. Leituras de SoC perfeitas por padrão (**premissa**, rotulada); opção `-soc-noise kWh` para testar sensibilidade.

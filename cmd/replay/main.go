@@ -157,7 +157,7 @@ func printReport(w io.Writer, rep *realdata.Report, cfg planner.Config) {
 		printRealNote(w, n.Real)
 		printNotReady(w, n)
 	}
-	fmt.Fprintf(w, "\nAgregado (%d noites; média por noite)\n", len(rep.Nights))
+	fmt.Fprintf(w, "\nAgregado (%s; média por noite)\n", nightsWord(len(rep.Nights)))
 	printTable(w, rep.RealAggregate, rep.Aggregate, rep.CostComparable)
 	printRealNote(w, rep.RealAggregate)
 	if !rep.CostComparable {
@@ -226,7 +226,12 @@ func printNotReady(w io.Writer, n realdata.NightReport) {
 		}
 	}
 	if len(late) == 0 {
-		fmt.Fprintln(w, "Nenhum ônibus com resultado real ficou sem a carga exigida.")
+		if n.Real.WithOutcome == 0 {
+			// no outcome is not "everybody was ready": the spreadsheets just do not say
+			fmt.Fprintln(w, "Resultado real desconhecido: sem soc_saida_real_pct não dá para dizer quais ônibus ficaram sem a carga exigida.")
+		} else {
+			fmt.Fprintf(w, "Nenhum dos %d ônibus com resultado real ficou sem a carga exigida.\n", n.Real.WithOutcome)
+		}
 		return
 	}
 	fmt.Fprintln(w, "Ônibus não prontos na realidade (alvo; real; planner; planner sem rodízio):")
@@ -260,4 +265,11 @@ func warningText(wn realdata.Warning) string {
 		return wn.Message
 	}
 	return strings.Join(where, ", ") + ": " + wn.Message
+}
+
+func nightsWord(n int) string {
+	if n == 1 {
+		return "1 noite"
+	}
+	return fmt.Sprintf("%d noites", n)
 }

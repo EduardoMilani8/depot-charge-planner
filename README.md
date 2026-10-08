@@ -2,7 +2,7 @@
 
 Planejador de recarga para garagens de ônibus elétricos: decide quanta potência cada carregador entrega a cada ônibus para que o máximo de ônibus saia com a carga necessária, respeitando o limite da garagem e continuando a funcionar quando a infraestrutura falha.
 
-Status: em desenvolvimento (planejador + simulador). Design: `docs/superpowers/specs/`. Plano: `docs/superpowers/plans/`.
+Status: em desenvolvimento (planejador + simulador + validação com dados reais, ainda sem dados de uma operadora). Design: `docs/superpowers/specs/`. Plano: `docs/superpowers/plans/`.
 
 ## Uso rápido
 
@@ -35,12 +35,46 @@ Abra `http://127.0.0.1:8080`. Não precisa de Node: a interface vai dentro do pr
 - **Comparação:** a mesma tabela do `simrun` (para os mesmos parâmetros os números são os mesmos, com o arredondamento do Go, apenas com menos casas decimais e separador de milhar; a exceção é o `p99 µs`, um tempo medido que varia de uma execução para outra) e um ponto por semente; clicar num ponto abre aquela execução.
 - **Execução:** gráfico de potência, linha do tempo de ônibus e de carregadores e painel de decisão, com um cursor de tempo. Clicar num ônibus explica por que ele saiu pronto ou não. "Copiar link desta tela" gera um endereço (o estado fica no `#` do endereço) que reproduz a execução; colar um link novo na mesma aba também atualiza a tela. O simulador é determinístico: a mesma semente e os mesmos parâmetros dão sempre a mesma execução, e nada é gravado em disco.
 - **Animações:** "Reproduzir" toca o dia (30 min/s a 10 h/s) com o passado nítido e o futuro esmaecido, ônibus carregando pulsando, fluxo nos carregadores ocupados e um feed de acontecimentos (saídas, rodízios, mudanças de camada, quedas do limite). O interruptor "Animações" e a preferência de sistema "reduzir movimento" desligam as animações (entradas, pulsos, fluxo, contagens); a reprodução do dia continua funcionando, com o cursor se movendo e o passado nítido contra o futuro esmaecido, que fazem parte dela.
+- **Dados reais:** importa as planilhas de uma garagem de verdade e compara com o que aconteceu (veja "Validação com dados reais", abaixo).
 
 Limites para a tela não travar: ônibus × sementes até 20000 na comparação e até 500 ônibus e 500 carregadores numa execução detalhada (e sementes de 1 a 1000).
 
-API (JSON): `GET /api/defaults`, `POST /api/compare`, `POST /api/run`; o formato está em `docs/superpowers/specs/2026-10-05-laboratorio-web-design.md`. Testes da interface: `node --test web/test/*.test.mjs` (só desenvolvimento).
+API (JSON): `GET /api/defaults`, `POST /api/compare`, `POST /api/run`, `POST /api/import` e `POST /api/replay` (os dois últimos, e `/api/run` com `files`, recebem as planilhas no corpo, até 16 MB); o formato está em `docs/superpowers/specs/2026-10-05-laboratorio-web-design.md`. Testes da interface: `node --test web/test/*.test.mjs` (só desenvolvimento).
 
 Os dados são sintéticos: mostram o comportamento do algoritmo, não o de uma garagem real.
+
+## Validação com dados reais
+
+Responde, com planilhas CSV de uma garagem de verdade, à pergunta: **nas mesmas condições em que a operação real trabalhou numa noite, o planejador teria deixado mais ônibus prontos, com menos energia, pico e custo?** Para cada noite, o simulador recebe as chegadas, as saídas, a carga de chegada, a carga exigida na saída, os carregadores e o limite da garagem, roda `fifo`, `edf`, `fifo-unplug`, `safe` e o `planner` (com e sem rodízios) e mostra uma linha `real` com o que as planilhas registram. O kit para pedir os dados a uma operadora (texto do pedido, formato, limites aceitos, LGPD e limitações dos números) está em `docs/dados-reais/README.md`; os modelos de planilha estão em `docs/dados-reais/modelos/`.
+
+    go run ./cmd/replay -dir internal/realdata/testdata/demo
+
+`internal/realdata/testdata/demo` é um exemplo **fictício** completo (2 noites de 3 ônibus, com sessões, potência e tarifa); nenhum número dele vem de uma garagem real. Os modelos de `docs/dados-reais/modelos/` têm uma noite com pouca informação, só para mostrar o formato. Trecho da saída para a primeira noite do exemplo:
+
+    Noite 2026-03-04 (3 ônibus)
+    controller             ready%  shortfall kWh  peak kW         plan violations  overshoot min  energy kWh  cost R$         plan changes  moves/run
+    real                   66.7    45.0           120 (estimado)  —                —              480         522 (estimado)  —             —
+    fifo                   100.0   0.0            150             0                0              565         774             6             0.0
+    planner                100.0   0.0            150             0                0              598         804             6             0.0
+    planner (sem rodízio)  100.0   0.0            150             0                0              598         804             6             0.0
+    Ônibus não prontos na realidade (alvo; real; planner; planner sem rodízio):
+      B02: alvo 255.0 kWh; real 210.0 kWh (não pronto); planner 268.1 kWh (pronto); sem rodízio 268.1 kWh (pronto)
+
+(O programa imprime também as linhas `edf`, `fifo-unplug` e `safe`, as premissas e o agregado das noites; aqui foram omitidos.) As colunas são as do `simrun`. Opções do `replay`:
+
+- `-dir PASTA` (obrigatório): pasta com `garagem.csv`, `carregadores.csv`, `onibus.csv` e, se houver, `sessoes.csv` e `potencia.csv`.
+- `-soc-noise KWH` (padrão 0): ruído (desvio padrão, em kWh) nas leituras de carga que o planejador recebe, para testar a sensibilidade a sensores imprecisos.
+- `-swap-back-cooldown MIN` (padrão 30) e `-swap-back-min-need KWH` (padrão 10): a regra anti-vaivém do rodízio, como no `simrun` (os dois em 0 desligam a regra).
+- `-json`: escreve o relatório completo (por noite, por controlador e por ônibus) em JSON, em vez das tabelas.
+- `-workers N` (padrão: número de CPUs): execuções simultâneas; o resultado não depende disso.
+
+**Medido × estimado.** A linha `real` mostra o que as planilhas registram, e `—` é dado que elas não trazem. `ready%` e `shortfall kWh` vêm de `soc_saida_real_pct` (pronto = carga real na saída pelo menos igual à exigida, a mesma regra do simulador; ônibus sem esse campo não entram nem como prontos nem como não prontos). `energy kWh` vem das sessões (ou, sem sessões, da integral de `potencia.csv`). `peak kW` e `cost R$` vêm de `potencia.csv` quando há leituras na noite (medidos); só com sessões, saem marcados `(estimado)`: a energia de cada sessão é espalhada de modo uniforme entre o início e o fim, o que costuma subestimar o pico. Violações do plano, minutos acima do limite, mudanças de plano e manobras não existem na realidade e aparecem como `—`. As limitações dos números (qual noite recebe cada leitura, leituras sem zero final, janela de ponta que atravessa a meia-noite etc.) estão em "Limitações dos números" no kit.
+
+**Premissas** (impressas no relatório): as leituras de carga (SoC) são perfeitas, a não ser que se use `-soc-noise`; o limite de potência da garagem é fixo durante a noite e nenhum defeito de carregador é injetado (o que deu errado já está nos dados); `planner` supõe que os operadores executam todos os rodízios e `planner (sem rodízio)`, que nenhum é executado; e a operação real tomou decisões (ordem de ligação, rodízios manuais) que o planejador não vê, então o simulador reproduz as condições da noite, não o passado minuto a minuto.
+
+**Aba "Dados reais" do laboratório.** No `go run ./cmd/lab`, a aba aceita os arquivos (ou a pasta inteira) por seletor ou por arrastar e soltar, mostra as noites encontradas e os avisos, e compara com a mesma tabela do `replay` (o `p99 µs` fica em 0 na aba). Cada noite pode ser aberta como uma execução detalhada (minuto a minuto), de qualquer controlador; essa execução detalhada **ignora a opção de ruído** e usa leituras perfeitas. Os arquivos importados nunca saem desta máquina: o navegador lê o texto e fala só com o laboratório em `127.0.0.1`, que não grava nada em disco; os dados também não vão no link "Copiar link desta tela", e fechar ou recarregar a página esquece tudo.
+
+Ainda não houve validação com dados de uma operadora: tudo o que está neste repositório usa dados fictícios ou sintéticos.
 
 ## Resultados de exemplo
 

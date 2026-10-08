@@ -23,12 +23,32 @@ Os arquivos em `modelos/` são **fictícios**, só mostram o formato. Nada neste
 6. `potencia.csv`: potência de cada carregador a cada 1 a 15 minutos (`instante`, `carregador_id`, `potencia_kw`).
 7. Em `garagem.csv`: janela de ponta e preços (R$/kWh) para calcular custo.
 
+## Como rodar
+
+Ponha as planilhas numa pasta **fora do repositório** com estes nomes exatos (os três primeiros são obrigatórios; os outros dois são opcionais e acrescentam energia, pico e custo):
+
+| arquivo | obrigatório | conteúdo |
+|---|---|---|
+| `garagem.csv` | sim | limite de potência e, se houver, janela de ponta e preços |
+| `carregadores.csv` | sim | um carregador por linha |
+| `onibus.csv` | sim | um ônibus por noite por linha |
+| `sessoes.csv` | não | sessões de carga (energia do medidor) |
+| `potencia.csv` | não | potência de cada carregador ao longo da noite |
+
+Na linha de comando:
+
+    go run ./cmd/replay -dir /caminho/da/pasta
+
+Opções: `-soc-noise KWH` (ruído nas leituras de carga), `-swap-back-cooldown MIN`, `-swap-back-min-need KWH`, `-json` e `-workers N`; a descrição de cada uma e um trecho da saída estão na seção "Validação com dados reais" do `README.md` da raiz. Para ver o formato funcionando, use o exemplo fictício completo `go run ./cmd/replay -dir internal/realdata/testdata/demo`; os modelos de `modelos/` têm uma noite só e pouca informação (`go run ./cmd/replay -dir docs/dados-reais/modelos` funciona, mas é só um teste de formato).
+
+No laboratório web (`go run ./cmd/lab`), a aba "Dados reais" faz a mesma comparação: escolha os arquivos (ou a pasta) ou arraste para a área. Os arquivos ficam no seu computador: o navegador fala só com o laboratório local, que não grava nada em disco, e os dados não vão no link da tela. A execução detalhada de uma noite nessa aba ignora a opção de ruído.
+
 ## Formato
 
 - Arquivos CSV em UTF-8. Separador `,` ou `;` (Excel brasileiro gera `;` com vírgula decimal, e isso é aceito).
 - Datas e horas locais, sem fuso: `AAAA-MM-DD HH:MM` (também aceitamos `DD/MM/AAAA HH:MM`).
 - Percentuais de carga em 0 a 100 (`soc_chegada_pct`, `soc_saida_exigido_pct`, `soc_saida_real_pct`).
-- Uma "noite" é identificada pela chegada menos 12 horas (chegadas de 12:00 a 23:59 pertencem ao dia; de 00:00 a 11:59, ao dia anterior).
+- Uma "noite" é identificada pela chegada menos 12 horas (chegadas de 12:00 a 23:59 pertencem ao dia; de 00:00 a 11:59, ao dia anterior). As sessões e as leituras de potência são atribuídas à noite pelo mesmo critério, aplicado ao início da sessão e ao instante da leitura (veja "Limitações dos números").
 - Cabeçalhos exatamente como nos modelos; colunas extras são ignoradas.
 
 ## Limites aceitos
@@ -40,6 +60,18 @@ Valores fora destes limites são recusados com o arquivo, a linha e a coluna do 
 - Permanência do ônibus (`saida_prevista` e `saida_real` menos `chegada`): até 48 horas. Duração de uma sessão (`fim` menos `inicio`): até 48 horas.
 - Energia de uma sessão (`energia_kwh`): até 1.000.000 kWh. Potência de uma leitura (`potencia_kw`): até 100.000 kW (leitura acima de 2 vezes a potência máxima do carregador só gera aviso).
 - Até 1000 ônibus por noite, 366 noites e 10.000 ônibus ou carregadores no total.
+
+## Limitações dos números
+
+Leia isto antes de tirar conclusões de um relatório:
+
+- **Qual noite recebe cada dado.** A noite de um ônibus é a da chegada menos 12 horas. Cada sessão e cada leitura de potência vai para a noite do seu início menos 12 horas (instante menos 12 horas, no caso da leitura). Por isso uma leitura depois das 12:00 do dia da saída cai na **noite seguinte**, e uma leitura numa noite sem nenhum ônibus em `onibus.csv` é ignorada com um aviso. Mantenha cada arquivo dentro das janelas das noites que quer comparar.
+- **Leituras de potência e o pico medido.** Cada leitura vale até a próxima leitura do mesmo carregador; a última leitura de cada carregador vale 0 minutos de energia, mas, no **pico medido**, a última leitura diferente de zero de cada carregador continua somada até o fim da noite. Se um arquivo termina sem uma leitura final em zero, o pico pode ficar superestimado. **Termine a série de cada carregador com uma leitura 0.** Se `potencia.csv` cobre só parte da noite, o pico e o custo reais (calculados dele) refletem só essas leituras; a energia continua vindo das sessões quando elas existem. Cada número usa uma única fonte na noite, sem misturar sessões e leituras.
+- **Pico e custo "estimado".** Sem leituras de potência na noite, o pico e o custo vêm das sessões, e a energia de cada sessão é espalhada de modo uniforme entre o início e o fim. A potência de uma sessão real não é constante (cai no fim da carga), então o pico estimado costuma ser menor que o real. O relatório marca esses valores com `(estimado)`.
+- **Janela de ponta que atravessa a meia-noite** (por exemplo 22:00 a 06:00). O simulador só aceita janelas dentro do mesmo dia e trata o horário como fora de ponta; por isso o custo simulado não é comparável com o custo real e aparece como `—` nas linhas simuladas. O custo real continua calculado com a janela correta.
+- **Potência máxima da bateria.** Se `potencia_max_bateria_kw` não vem na planilha, vale a potência de carregador mais comum em `carregadores.csv` (em empate, a maior).
+- **Definição de "pronto".** O ônibus saiu pronto se a carga real na saída (`soc_saida_real_pct`) é pelo menos a exigida menos 1e-6 kWh, a mesma regra do simulador. A necessidade nunca passa da capacidade. O `ready%` de uma noite é a porcentagem dos ônibus **com** `soc_saida_real_pct`; o `ready%` agregado é a **média** dos percentuais de cada noite (não o total de ônibus prontos sobre o total de ônibus). Ônibus sem resultado real nunca contam como não prontos; se nenhum ônibus da noite tem `soc_saida_real_pct`, o relatório diz que o resultado real é desconhecido.
+- **A comparação é contrafactual.** O simulador reproduz as condições da noite (chegadas, saídas, cargas, limite), mas a operação real tomou decisões (ordem de ligação, rodízios manuais) que o planejador não vê; o limite da garagem é fixo e as leituras de carga são perfeitas, a menos que se use `-soc-noise`.
 
 ## Cuidados com privacidade (LGPD)
 
