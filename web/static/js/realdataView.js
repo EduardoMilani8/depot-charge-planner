@@ -7,7 +7,7 @@ import { fmtNum } from './format.js';
 import {
   FILE_SPECS, readFileText, pickKnownFiles, formatImportError, columns, realRowCells, controllerCells,
   pickRows, worstBuses, busStatus, summarizeImport, controllerOptions, controllerHelp,
-  compareButtonState, checkSizes, pickOption, importStatusText, errorStatusText, fmtSize,
+  compareButtonState, checkSizes, checkBody, bodySize, describeFailure, pickOption, importStatusText, errorStatusText, failureStatusText, fmtSize,
 } from './realdata.js';
 
 const MAX_DROPPED = 1000; // files read from a dropped folder, so a huge folder cannot hang the page
@@ -229,22 +229,29 @@ export function createRealView({ filesRoot, outRoot, onOpenRun }) {
 
   const abortError = () => new DOMException('superseded', 'AbortError');
 
-  // readAll returns the text of every held file, decoding each File once.
+  // textOf decodes a File once (the cache also holds the text of every file kept in `held`).
+  async function textOf(f) {
+    let t = cache.get(f);
+    if (t === undefined) {
+      t = readFileText(await f.arrayBuffer());
+      cache.set(f, t);
+    }
+    return t;
+  }
+
+  const unreadable = (name) => new ApiError(`Não consegui ler ${name}. Se o arquivo mudou ou foi movido, escolha-o de novo.`, 'files', 400);
+
+  // readAll returns the text of every held file.
   async function readAll(signal) {
     const out = {};
     for (const [name, f] of Object.entries(held)) {
-      let t = cache.get(f);
-      if (t === undefined) {
-        try {
-          t = readFileText(await f.arrayBuffer());
-        } catch {
-          delete held[name]; // a file that cannot be read must not stay in the list: the next choice replaces it
-          throw new ApiError(`Não consegui ler ${name}. Se o arquivo mudou ou foi movido, escolha-o de novo.`, 'files', 0);
-        }
-        cache.set(f, t);
+      try {
+        out[name] = await textOf(f);
+      } catch {
+        if (held[name] === f) delete held[name]; // it must not stay in the list; a newer file of this name is left alone
+        throw unreadable(name);
       }
       if (signal.aborted) throw abortError();
-      out[name] = t;
     }
     return out;
   }
@@ -276,30 +283,44 @@ export function createRealView({ filesRoot, outRoot, onOpenRun }) {
     paint();
   }
 
-  // transient: an error worth trying again (no connection, busy, timeout, cancelled)
-  const transient = (e) => e instanceof ApiError && (e.status === 0 || e.status === 408 || e.status === 503 || e.status === 504);
-
   async function ingest(files) {
     if (files.length === 0) return;
     const { known, ignored: skipped } = pickKnownFiles(files);
     ignored = skipped;
     choiceNote = '';
     if (Object.keys(known).length === 0) {
-      invalidate(); // the status no longer describes a good import
+      // Nothing usable in this choice: say so, and leave the import, the results and the files as they were.
       const names = FILE_SPECS.map((f) => f.name).join(', ');
-      const message = files.length === 1 ? `O arquivo escolhido não é um dos cinco esperados (${names}).`
+      choiceNote = files.length === 1 ? `O arquivo escolhido não é um dos cinco esperados (${names}).`
         : `Nenhum dos ${files.length} arquivos escolhidos é um dos cinco esperados (${names}).`;
-      failure = { message, retry: null };
-      setStatus(message);
+      setStatus(choiceNote);
       paint();
       return;
     }
-    const sizes = (m) => Object.fromEntries(Object.entries(m).map(([n, f]) => [n, f.size]));
-    const check = checkSizes(sizes(held), sizes(known));
-    for (const name of check.drop) delete known[name];
-    choiceNote = check.message;
+    const notes = [];
+    const raw = checkSizes(Object.fromEntries(Object.entries(known).map(([n, f]) => [n, f.size])));
+    for (const name of raw.drop) delete known[name];
+    if (raw.message) notes.push(raw.message);
+    setStatus(`Lendo ${Object.keys(known).length} ${plural(Object.keys(known).length, 'arquivo', 'arquivos')}…`);
+    const incoming = {}; // name -> text
+    for (const [name, f] of Object.entries(known)) {
+      try {
+        incoming[name] = await textOf(f);
+      } catch {
+        delete known[name];
+        notes.push(unreadable(name).message);
+      }
+    }
+    // The real size of the request is that of the JSON text, not of the files on disk.
+    const heldTexts = Object.fromEntries(Object.entries(held).map(([n, f]) => [n, cache.get(f)]));
+    const body = checkBody(heldTexts, incoming);
+    if (body.refuse) {
+      for (const name of Object.keys(incoming)) delete known[name];
+      notes.push(body.message);
+    }
+    choiceNote = notes.join(' ');
     if (Object.keys(known).length === 0) { // everything chosen was refused: what was held stays as it was
-      setStatus(check.message);
+      setStatus(choiceNote);
       paint();
       return;
     }
@@ -319,24 +340,27 @@ export function createRealView({ filesRoot, outRoot, onOpenRun }) {
     setStatus(`Lendo ${Object.keys(held).length} ${plural(Object.keys(held).length, 'arquivo', 'arquivos')}…`);
     paint();
     if (refocus) statusEl.focus({ preventScroll: true });
+    let sent = 0; // bytes of the body of the request in flight
     try {
       const r = await latest(async (signal) => {
         const t = await readAll(signal);
         if (!signal.aborted) setStatus('Conferindo as planilhas neste computador…');
+        sent = bodySize(t);
         return { t, res: await importFiles(t, signal) };
       });
       if (r.stale) return;
       texts = r.value.t;
       imported = r.value.res;
-      const s = summarizeImport(imported);
-      setStatus(importStatusText(s));
+      setStatus(importStatusText(summarizeImport(imported), choiceNote));
     } catch (e) {
       imported = null;
-      setStatus(errorStatusText(e));
       if (e instanceof ApiError && e.status === 400 && (e.file || e.line || e.column)) {
         importError = formatImportError(e);
+        setStatus(errorStatusText(e, choiceNote));
       } else {
-        failure = { message: e instanceof ApiError ? e.message : 'Erro inesperado: ' + e.message, retry: transient(e) ? runImport : null };
+        const f = describeFailure(e, sent);
+        failure = { message: f.message, retry: f.retry ? runImport : null };
+        setStatus(failureStatusText(f.message, choiceNote));
       }
     } finally {
       if (mine === seq) {
@@ -381,7 +405,8 @@ export function createRealView({ filesRoot, outRoot, onOpenRun }) {
       focusHeading();
     } catch (e) {
       report = null;
-      const msg = e instanceof ApiError ? e.message : 'Erro inesperado: ' + e.message;
+      const f = describeFailure(e, bodySize(texts));
+      const msg = f.message;
       if (e instanceof ApiError && e.field === 'soc_noise_kwh') {
         setStatus(''); // the field's own alert says it
         noiseErr.textContent = msg;
@@ -391,7 +416,7 @@ export function createRealView({ filesRoot, outRoot, onOpenRun }) {
       } else {
         setStatus(`A comparação falhou: ${msg}`);
         put(outRoot, h('h2', { tabindex: -1 }, 'Comparação com a realidade'),
-          h('div', { class: 'banner-inline' }, msg, ' ', transient(e) ? h('button', { type: 'button', class: 'chip', onclick: compare }, 'Tentar de novo') : null));
+          h('div', { class: 'banner-inline' }, msg, ' ', f.retry ? h('button', { type: 'button', class: 'chip', onclick: compare }, 'Tentar de novo') : null));
         focusHeading();
       }
     } finally {

@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import {
   FILE_SPECS, NO_SWAP, readFileText, pickKnownFiles, formatImportError, realRowCells, controllerCells,
   worstBuses, busStatus, summarizeImport, pickRows, columns, runRequestBody, controllerOptions, controllerHelp,
-  compareButtonState, checkSizes, pickOption, importStatusText, errorStatusText, fmtSize, MAX_FILE_BYTES, MAX_TOTAL_BYTES,
+  compareButtonState, checkSizes, pickOption, importStatusText, errorStatusText, fmtSize, MAX_FILE_BYTES, MAX_BODY_BYTES,
+  bodySize, checkBody, describeFailure, failureStatusText,
 } from '../static/js/realdata.js';
 import { ApiError } from '../static/js/api.js';
 
@@ -337,55 +338,123 @@ test('compareButtonState: a missing state is the idle, nothing-imported button',
   assert.deepEqual(compareButtonState({}), { label: 'Comparar', disabled: true });
 });
 
-// ---- checkSizes ----
+// ---- checkSizes (per file, raw bytes) ----
 
 const MB = 1024 * 1024;
 
-test('checkSizes: limits are 8 MB per file and 15 MB in total', () => {
+test('checkSizes: the per-file limit is 8 MB of raw bytes', () => {
   assert.equal(MAX_FILE_BYTES, 8 * MB);
-  assert.equal(MAX_TOTAL_BYTES, 15 * MB);
-});
-
-test('checkSizes: sizes within the limits are accepted', () => {
-  assert.deepEqual(checkSizes({ 'garagem.csv': 100 }, { 'onibus.csv': 8 * MB, 'sessoes.csv': 6 * MB }), { drop: [], message: '' });
-  assert.deepEqual(checkSizes({}, {}), { drop: [], message: '' });
+  assert.deepEqual(checkSizes({ 'onibus.csv': 8 * MB, 'sessoes.csv': 6 * MB }), { drop: [], message: '' });
+  assert.deepEqual(checkSizes({}), { drop: [], message: '' });
 });
 
 test('checkSizes: a file over 8 MB is dropped by name, with the limit in the message', () => {
-  const r = checkSizes({ 'garagem.csv': 100 }, { 'onibus.csv': 9 * MB, 'sessoes.csv': 1 * MB });
+  const r = checkSizes({ 'onibus.csv': 9 * MB, 'sessoes.csv': 1 * MB });
   assert.deepEqual(r.drop, ['onibus.csv']);
   assert.match(r.message, /onibus\.csv/);
-  assert.match(r.message, /8 MB/);
+  assert.match(r.message, /limite é 8 MB/);
+  assert.deepEqual(checkSizes({ 'a.csv': 8 * MB + 1 }).drop, ['a.csv']);
 });
 
-test('checkSizes: a total over 15 MB drops the whole new choice and keeps what was held', () => {
-  const r = checkSizes({ 'onibus.csv': 8 * MB, 'sessoes.csv': 6 * MB }, { 'potencia.csv': 2 * MB });
-  assert.deepEqual(r.drop, ['potencia.csv']);
-  assert.match(r.message, /15 MB/);
-  assert.match(r.message, /16 MB/);
+// ---- bodySize / checkBody: the real JSON body, not the raw bytes ----
+
+const utf8 = (v) => Buffer.byteLength(JSON.stringify(v));
+
+test('bodySize is the UTF-8 size of the JSON the server receives, plus a margin for the keys', () => {
+  const files = { 'garagem.csv': 'limite_kw\n400\n', 'onibus.csv': 'a,b\n1,2\n' };
+  const real = utf8({ files, soc_noise_kwh: 0, swap_back_cooldown_min: 30, swap_back_min_need_kwh: 10 });
+  const size = bodySize(files);
+  assert.ok(size >= real, `${size} < ${real}`);
+  assert.ok(size - real < 1024, 'the margin stays small');
+  assert.equal(bodySize({}), bodySize({}));
 });
 
-test('checkSizes: a replacement counts instead of the file it replaces', () => {
-  // 8 + 6 held; replacing the 6 MB file by a 7 MB one gives 15 MB exactly: accepted
-  assert.deepEqual(checkSizes({ 'onibus.csv': 8 * MB, 'sessoes.csv': 6 * MB }, { 'sessoes.csv': 7 * MB }), { drop: [], message: '' });
-  // replacing it by a smaller one is always fine even when held is at the limit
-  assert.deepEqual(checkSizes({ 'onibus.csv': 8 * MB, 'sessoes.csv': 7 * MB }, { 'sessoes.csv': 1 * MB }), { drop: [], message: '' });
-  // one byte over the total
-  assert.deepEqual(checkSizes({ 'onibus.csv': 8 * MB, 'sessoes.csv': 6 * MB }, { 'sessoes.csv': 7 * MB + 1 }).drop, ['sessoes.csv']);
+test('bodySize: an all-quoted CRLF file is about 1.6 times its raw size', () => {
+  const text = '"a","b","c"\r\n'.repeat(100000); // 1.3 MB raw, a quote becomes \" and CRLF becomes \r\n as text
+  const raw = Buffer.byteLength(text);
+  const size = bodySize({ 'onibus.csv': text });
+  assert.ok(size > raw * 1.5, `${size} vs ${raw}`);
+  assert.ok(size >= utf8({ files: { 'onibus.csv': text } }));
 });
 
-test('checkSizes: an oversize file does not count in the total of the others', () => {
-  const r = checkSizes({ 'onibus.csv': 8 * MB }, { 'sessoes.csv': 20 * MB, 'potencia.csv': 6 * MB });
-  assert.deepEqual(r.drop, ['sessoes.csv']);
+test('bodySize: Windows-1252 accents count as two UTF-8 bytes once decoded', () => {
+  const bytes = new Uint8Array(100000).fill(0xe7); // 100 000 raw bytes: ç
+  const text = readFileText(bytes.buffer);
+  assert.equal(text.length, 100000);
+  const size = bodySize({ 'onibus.csv': text });
+  assert.ok(size > 200000, `${size}`);
+  assert.ok(size < 200000 + 1024);
+});
+
+test('bodySize: control characters and a stray quote grow as the JSON writes them', () => {
+  assert.ok(bodySize({ a: '\u0001'.repeat(1000) }) > 6000);
+  assert.ok(bodySize({ a: '\\'.repeat(1000) }) > 2000);
+});
+
+test('checkBody: under the limit is accepted; a replacement counts instead of the file it replaces', () => {
+  const big = (n) => 'x'.repeat(n);
+  assert.deepEqual(checkBody({ 'garagem.csv': 'a' }, { 'onibus.csv': big(1000) }).refuse, false);
+  const held = { 'onibus.csv': big(8 * MB), 'sessoes.csv': big(7 * MB) };
+  assert.equal(checkBody(held, { 'sessoes.csv': big(1 * MB) }).refuse, false);
+  assert.equal(checkBody(held, { 'potencia.csv': big(1 * MB) }).refuse, true); // 16 MB raw
+});
+
+test('checkBody: all-quoted files that are small raw but big once escaped are refused with the escaped size', () => {
+  const quoted = '"'.repeat(5 * MB); // 5 MB raw, 10 MB in the body
+  const r = checkBody({ 'onibus.csv': quoted }, { 'sessoes.csv': quoted });
+  assert.equal(r.refuse, true);
+  assert.ok(r.size > MAX_BODY_BYTES);
+  assert.match(r.message, /ficaria com/);
+  assert.match(r.message, /limite é 15,5 MB/);
+  assert.match(r.message, /aspas/);
+  assert.equal(checkBody({ 'onibus.csv': quoted }, {}).refuse, false);
+});
+
+test('MAX_BODY_BYTES leaves a margin under the 16 MB the server accepts', () => {
+  assert.equal(MAX_BODY_BYTES, 15.5 * MB);
+  assert.ok(MAX_BODY_BYTES < 16 * MB);
+});
+
+// ---- describeFailure ----
+
+test('describeFailure: a 413 says the send passed the server limit and is not retried', () => {
+  const f = describeFailure(new ApiError('Corpo grande demais', '', 413), 1000);
+  assert.match(f.message, /limite do servidor \(16 MB\)/);
+  assert.equal(f.retry, false);
+});
+
+test('describeFailure: a network error after sending a large body is not retried and mentions the limit', () => {
+  const f = describeFailure(new ApiError('Não consegui falar com o servidor. Ele ainda está rodando?', '', 0), 15 * MB);
+  assert.match(f.message, /16 MB/);
+  assert.equal(f.retry, false);
+});
+
+test('describeFailure: a network error with a small body, busy, timeout and cancelled can be retried', () => {
+  for (const status of [0, 408, 503, 504]) {
+    const f = describeFailure(new ApiError('msg', '', status), 1000);
+    assert.equal(f.retry, true, String(status));
+    assert.equal(f.message, 'msg');
+  }
+});
+
+test('describeFailure: other errors and non-ApiErrors are not retried', () => {
+  assert.equal(describeFailure(new ApiError('feio', '', 400), 0).retry, false);
+  assert.equal(describeFailure(new ApiError('boom', '', 500), 0).retry, false);
+  const g = describeFailure(new Error('x'), 0);
+  assert.equal(g.message, 'Erro inesperado: x');
+  assert.equal(g.retry, false);
 });
 
 // ---- fmtSize ----
 
-test('fmtSize writes bytes, KB and MB', () => {
+test('fmtSize writes bytes, KB and MB, rounding up so a size over a limit never prints like the limit', () => {
   assert.equal(fmtSize(88), '88 B');
   assert.equal(fmtSize(2048), '2 KB');
   assert.equal(fmtSize(16 * MB), '16 MB');
   assert.equal(fmtSize(1.5 * MB), '1,5 MB');
+  assert.equal(fmtSize(8 * MB + 1), '8,1 MB');
+  assert.equal(fmtSize(MAX_BODY_BYTES), '15,5 MB');
+  assert.notEqual(fmtSize(MAX_BODY_BYTES + 1), fmtSize(MAX_BODY_BYTES));
 });
 
 // ---- pickOption ----
@@ -400,6 +469,16 @@ test('pickOption keeps a choice that is still offered and falls back otherwise',
 
 // ---- status texts ----
 
+test('importStatusText: a refusal note is part of the announced sentence', () => {
+  assert.equal(importStatusText({ nights: 2, buses: 6 }, 'sessoes.csv foi recusado.'),
+    'Planilhas conferidas: 2 noites, 6 ônibus. Agora clique em Comparar. sessoes.csv foi recusado.');
+  assert.equal(importStatusText({ nights: 2, buses: 6 }, ''), importStatusText({ nights: 2, buses: 6 }));
+});
+
+test('errorStatusText: with a note it is appended', () => {
+  assert.equal(errorStatusText(new ApiError('x', '', 0), 'Nota.'), 'A importação falhou: x Nota.');
+});
+
 test('importStatusText: one sentence per outcome of a good import', () => {
   assert.equal(importStatusText({ nights: 2, buses: 6 }), 'Planilhas conferidas: 2 noites, 6 ônibus. Agora clique em Comparar.');
   assert.equal(importStatusText({ nights: 1, buses: 1 }), 'Planilhas conferidas: 1 noite, 1 ônibus. Agora clique em Comparar.');
@@ -410,4 +489,9 @@ test('errorStatusText: the failure says what failed once, with the location when
   const e = new ApiError('onibus.csv, linha 3, coluna x: ruim', 'onibus.csv', 400, { file: 'onibus.csv', line: 3, column: 'x' });
   assert.equal(errorStatusText(e), 'A importação falhou: onibus.csv, linha 3, coluna x: ruim');
   assert.equal(errorStatusText(new ApiError('Não consegui falar com o servidor.', '', 0)), 'A importação falhou: Não consegui falar com o servidor.');
+});
+
+test('failureStatusText: the failure and the refusal note in one announced sentence', () => {
+  assert.equal(failureStatusText('Sem rede.'), 'A importação falhou: Sem rede.');
+  assert.equal(failureStatusText('Sem rede.', 'b.csv recusado.'), 'A importação falhou: Sem rede. b.csv recusado.');
 });

@@ -3,6 +3,7 @@
 import { COLUMNS, CONTROLLER_HELP, formatCell } from './glossary.js';
 import { fmtNum, fmtPct } from './format.js';
 import { CONTROLLERS } from './params.js';
+import { ApiError } from './api.js';
 
 // The planner run as if no operator carried out any swap (a row of the report, a controller of /api/run).
 export const NO_SWAP = 'planner (sem rodízio)';
@@ -201,23 +202,24 @@ export function compareButtonState({ imported = false, importing = false, compar
 
 // ---- sizes the server accepts ----
 
-export const MAX_FILE_BYTES = 8 * 1024 * 1024; // per file (the server refuses more)
-// Every request carries all the files as JSON text, and the server's body limit is 16 MB: stay under it
-// with a margin for the JSON quoting and the other fields.
-export const MAX_TOTAL_BYTES = 15 * 1024 * 1024;
+export const MAX_FILE_BYTES = 8 * 1024 * 1024; // per file, raw bytes (the server refuses more)
+const SERVER_BODY_BYTES = 16 * 1024 * 1024; // what /api/import, /api/replay and /api/run accept
+// What the client allows itself to send: the server limit minus a margin.
+export const MAX_BODY_BYTES = 15.5 * 1024 * 1024;
+// A network error after a body this big is more likely the server cutting the request than a lost connection.
+const LARGE_BODY_BYTES = 14 * 1024 * 1024;
+const BODY_OVERHEAD = 512; // the other keys of the request ("files", the noise and swap-back parameters)
 
+// fmtSize rounds up (to 0.1 MB), so a size over a limit never prints the same as the limit.
 export function fmtSize(bytes) {
   if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${fmtNum(bytes / 1024, 0)} KB`;
-  const mb = bytes / (1024 * 1024);
+  if (bytes < 1024 * 1024) return `${fmtNum(Math.ceil(bytes / 1024), 0)} KB`;
+  const mb = Math.ceil((bytes / (1024 * 1024)) * 10) / 10;
   return `${fmtNum(mb, Number.isInteger(mb) ? 0 : 1)} MB`;
 }
 
-// checkSizes decides which of the files just chosen (`incoming`: name -> bytes) cannot be kept next
-// to the ones already held (`held`: name -> bytes): a file over the per-file limit is dropped; if the
-// total (held files, each replaced by its new version) is then over the limit, the whole new choice is
-// dropped and the held files stay as they were. Returns the names to drop and a Portuguese message.
-export function checkSizes(held, incoming) {
+// checkSizes drops the files just chosen (`incoming`: name -> raw bytes) that are over the per-file limit.
+export function checkSizes(incoming) {
   const drop = [];
   const msgs = [];
   for (const [name, size] of Object.entries(incoming)) {
@@ -226,14 +228,42 @@ export function checkSizes(held, incoming) {
       msgs.push(`${name} tem ${fmtSize(size)} e o limite é ${fmtSize(MAX_FILE_BYTES)} por arquivo.`);
     }
   }
-  const kept = { ...held };
-  for (const [name, size] of Object.entries(incoming)) if (!drop.includes(name)) kept[name] = size;
-  const total = Object.values(kept).reduce((n, v) => n + v, 0);
-  if (total > MAX_TOTAL_BYTES) {
-    for (const name of Object.keys(incoming)) if (!drop.includes(name)) drop.push(name);
-    msgs.push(`Os arquivos somariam ${fmtSize(total)} e o limite é ${fmtSize(MAX_TOTAL_BYTES)} por envio. Exporte menos noites e escolha de novo.`);
-  }
   return { drop, message: msgs.join(' ') };
+}
+
+const encoder = new TextEncoder();
+
+// bodySize is the size in bytes of the request carrying `files` (name -> decoded text): the text goes
+// as a JSON string, so every quote takes two bytes, CRLF four, a control character six, and an accent
+// two (UTF-8), however small the file was on disk. A margin covers the other keys.
+export function bodySize(files) {
+  let n = BODY_OVERHEAD;
+  for (const [name, text] of Object.entries(files)) {
+    n += encoder.encode(JSON.stringify(name)).length + encoder.encode(JSON.stringify(text)).length + 2;
+  }
+  return n;
+}
+
+// checkBody: would the files held (name -> text), each replaced by its new version in `incoming`, fit in one request?
+export function checkBody(held, incoming) {
+  const size = bodySize({ ...held, ...incoming });
+  if (size <= MAX_BODY_BYTES) return { refuse: false, size, message: '' };
+  return {
+    refuse: true, size,
+    message: `O envio ficaria com ${fmtSize(size)} (aspas, quebras de linha e acentos ocupam mais no envio do que no arquivo) e o limite é ${fmtSize(MAX_BODY_BYTES)}: o servidor aceita 16 MB, com uma folga. Exporte menos noites e escolha de novo.`,
+  };
+}
+
+// describeFailure: the message to show for a failed request and whether trying again can help. A 413
+// (and a network error right after a very large body) is the body passing the server's limit: never retried.
+export function describeFailure(err, bodyBytes = 0) {
+  const tooBig = 'O envio passou do limite do servidor (16 MB). Exporte menos noites e escolha os arquivos de novo.';
+  if (!(err instanceof ApiError)) return { message: 'Erro inesperado: ' + (err && err.message), retry: false };
+  if (err.status === 413) return { message: tooBig, retry: false };
+  if (err.status === 0 && bodyBytes > LARGE_BODY_BYTES) {
+    return { message: `${err.message} Se ele está rodando, o envio (${fmtSize(bodyBytes)}) pode ter passado do limite do servidor (16 MB): exporte menos noites.`, retry: false };
+  }
+  return { message: err.message, retry: [0, 408, 503, 504].includes(err.status) };
 }
 
 // pickOption keeps `value` if it is one of `options`, else `fallback` (a choice that survives a redraw).
@@ -241,9 +271,13 @@ export const pickOption = (options, value, fallback) => (options.includes(value)
 
 // ---- status sentences (the page's one polite announcement per phase) ----
 
-export function importStatusText({ nights, buses }) {
-  if (nights === 0) return 'As planilhas não têm nenhuma noite utilizável: veja os avisos.';
-  return `Planilhas conferidas: ${nights} ${nights === 1 ? 'noite' : 'noites'}, ${buses} ${buses === 1 ? 'ônibus' : 'ônibus'}. Agora clique em Comparar.`;
+// A note (what was refused in the choice) goes in the same sentence, so the live region announces it.
+const withNote = (text, note) => (note ? `${text} ${note}` : text);
+
+export function importStatusText({ nights, buses }, note = '') {
+  if (nights === 0) return withNote('As planilhas não têm nenhuma noite utilizável: veja os avisos.', note);
+  return withNote(`Planilhas conferidas: ${nights} ${nights === 1 ? 'noite' : 'noites'}, ${buses} ônibus. Agora clique em Comparar.`, note);
 }
 
-export const errorStatusText = (err) => `A importação falhou: ${formatImportError(err).text}`;
+export const failureStatusText = (message, note = '') => withNote(`A importação falhou: ${message}`, note);
+export const errorStatusText = (err, note = '') => failureStatusText(formatImportError(err).text, note);
