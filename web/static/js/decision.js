@@ -141,7 +141,7 @@ export function explainBus(data, busIdx) {
     : null;
   // (a) The bus got what the planner aimed for: the miss is on the forecast, not on the charging.
   if (overForecast && o.final_soc_kwh >= o.forecast_target_kwh - REACHED_TOL_KWH) {
-    causes.push('o consumo real passou do previsto (o planejador não tinha como saber)');
+    causes.push('o consumo real passou do previsto (a previsão não tinha como saber)');
     if (impossible) causes.push(impossible);
   } else {
     if (impossible) causes.push(impossible);

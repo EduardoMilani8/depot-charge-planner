@@ -155,7 +155,7 @@ test('explainBus: reaching the forecast but not the real need blames the consump
   // The bus waited for a charger half of the time, yet it got all the energy the planner asked for.
   const d = causeRun({ o: { forecast_target_kwh: 289.1, true_target_kwh: 319.1, final_soc_kwh: 312, shortfall_kwh: 7.1, initial_soc_kwh: 50 },
     charger: (i) => (i < 100 ? -1 : 0) });
-  assert.match(cause(d), /consumo real passou do previsto \(o planejador não tinha como saber\)/);
+  assert.match(cause(d), /consumo real passou do previsto \(a previsão não tinha como saber\)/);
   assert.doesNotMatch(cause(d), /esperou por um carregador/);
 });
 
