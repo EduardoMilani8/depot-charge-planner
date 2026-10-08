@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   FILE_SPECS, NO_SWAP, readFileText, pickKnownFiles, formatImportError, realRowCells, controllerCells,
   worstBuses, busStatus, summarizeImport, pickRows, columns, runRequestBody, controllerOptions, controllerHelp,
+  compareButtonState, checkSizes, pickOption, importStatusText, errorStatusText, fmtSize, MAX_FILE_BYTES, MAX_TOTAL_BYTES,
 } from '../static/js/realdata.js';
 import { ApiError } from '../static/js/api.js';
 
@@ -311,4 +312,102 @@ test('controllerOptions: the no-swap planner only for imported nights', () => {
 test('controllerHelp explains every row, including the real one and the no-swap planner', () => {
   for (const n of ['real', NO_SWAP, ...controllerOptions(false)]) assert.ok(controllerHelp(n).length > 10, n);
   assert.equal(controllerHelp('inexistente'), '');
+});
+
+// ---- compareButtonState ----
+
+test('compareButtonState: label and disabled derive from one state, for every combination', () => {
+  const cases = [
+    // imported, importing, comparing -> label, disabled
+    [false, false, false, 'Comparar', true],   // nothing good imported yet
+    [true, false, false, 'Comparar', false],   // good import, idle
+    [true, false, true, 'Comparando\u2026', true], // comparing
+    [false, true, false, 'Comparar', true],    // importing (the previous import was dropped)
+    [true, true, false, 'Comparar', true],     // importing while a compare was aborted: label back to Comparar, still disabled
+    [false, false, true, 'Comparando\u2026', true],
+    [true, true, true, 'Comparando\u2026', true],
+    [false, true, true, 'Comparando\u2026', true],
+  ];
+  for (const [imported, importing, comparing, label, disabled] of cases) {
+    assert.deepEqual(compareButtonState({ imported, importing, comparing }), { label, disabled }, JSON.stringify({ imported, importing, comparing }));
+  }
+});
+
+test('compareButtonState: a missing state is the idle, nothing-imported button', () => {
+  assert.deepEqual(compareButtonState({}), { label: 'Comparar', disabled: true });
+});
+
+// ---- checkSizes ----
+
+const MB = 1024 * 1024;
+
+test('checkSizes: limits are 8 MB per file and 15 MB in total', () => {
+  assert.equal(MAX_FILE_BYTES, 8 * MB);
+  assert.equal(MAX_TOTAL_BYTES, 15 * MB);
+});
+
+test('checkSizes: sizes within the limits are accepted', () => {
+  assert.deepEqual(checkSizes({ 'garagem.csv': 100 }, { 'onibus.csv': 8 * MB, 'sessoes.csv': 6 * MB }), { drop: [], message: '' });
+  assert.deepEqual(checkSizes({}, {}), { drop: [], message: '' });
+});
+
+test('checkSizes: a file over 8 MB is dropped by name, with the limit in the message', () => {
+  const r = checkSizes({ 'garagem.csv': 100 }, { 'onibus.csv': 9 * MB, 'sessoes.csv': 1 * MB });
+  assert.deepEqual(r.drop, ['onibus.csv']);
+  assert.match(r.message, /onibus\.csv/);
+  assert.match(r.message, /8 MB/);
+});
+
+test('checkSizes: a total over 15 MB drops the whole new choice and keeps what was held', () => {
+  const r = checkSizes({ 'onibus.csv': 8 * MB, 'sessoes.csv': 6 * MB }, { 'potencia.csv': 2 * MB });
+  assert.deepEqual(r.drop, ['potencia.csv']);
+  assert.match(r.message, /15 MB/);
+  assert.match(r.message, /16 MB/);
+});
+
+test('checkSizes: a replacement counts instead of the file it replaces', () => {
+  // 8 + 6 held; replacing the 6 MB file by a 7 MB one gives 15 MB exactly: accepted
+  assert.deepEqual(checkSizes({ 'onibus.csv': 8 * MB, 'sessoes.csv': 6 * MB }, { 'sessoes.csv': 7 * MB }), { drop: [], message: '' });
+  // replacing it by a smaller one is always fine even when held is at the limit
+  assert.deepEqual(checkSizes({ 'onibus.csv': 8 * MB, 'sessoes.csv': 7 * MB }, { 'sessoes.csv': 1 * MB }), { drop: [], message: '' });
+  // one byte over the total
+  assert.deepEqual(checkSizes({ 'onibus.csv': 8 * MB, 'sessoes.csv': 6 * MB }, { 'sessoes.csv': 7 * MB + 1 }).drop, ['sessoes.csv']);
+});
+
+test('checkSizes: an oversize file does not count in the total of the others', () => {
+  const r = checkSizes({ 'onibus.csv': 8 * MB }, { 'sessoes.csv': 20 * MB, 'potencia.csv': 6 * MB });
+  assert.deepEqual(r.drop, ['sessoes.csv']);
+});
+
+// ---- fmtSize ----
+
+test('fmtSize writes bytes, KB and MB', () => {
+  assert.equal(fmtSize(88), '88 B');
+  assert.equal(fmtSize(2048), '2 KB');
+  assert.equal(fmtSize(16 * MB), '16 MB');
+  assert.equal(fmtSize(1.5 * MB), '1,5 MB');
+});
+
+// ---- pickOption ----
+
+test('pickOption keeps a choice that is still offered and falls back otherwise', () => {
+  const opts = controllerOptions(true);
+  assert.equal(pickOption(opts, 'fifo', 'planner'), 'fifo');
+  assert.equal(pickOption(opts, NO_SWAP, 'planner'), NO_SWAP);
+  assert.equal(pickOption(opts, 'nope', 'planner'), 'planner');
+  assert.equal(pickOption(opts, undefined, 'planner'), 'planner');
+});
+
+// ---- status texts ----
+
+test('importStatusText: one sentence per outcome of a good import', () => {
+  assert.equal(importStatusText({ nights: 2, buses: 6 }), 'Planilhas conferidas: 2 noites, 6 ônibus. Agora clique em Comparar.');
+  assert.equal(importStatusText({ nights: 1, buses: 1 }), 'Planilhas conferidas: 1 noite, 1 ônibus. Agora clique em Comparar.');
+  assert.match(importStatusText({ nights: 0, buses: 0 }), /nenhuma noite utilizável/);
+});
+
+test('errorStatusText: the failure says what failed once, with the location when there is one', () => {
+  const e = new ApiError('onibus.csv, linha 3, coluna x: ruim', 'onibus.csv', 400, { file: 'onibus.csv', line: 3, column: 'x' });
+  assert.equal(errorStatusText(e), 'A importação falhou: onibus.csv, linha 3, coluna x: ruim');
+  assert.equal(errorStatusText(new ApiError('Não consegui falar com o servidor.', '', 0)), 'A importação falhou: Não consegui falar com o servidor.');
 });

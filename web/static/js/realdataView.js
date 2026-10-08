@@ -7,9 +7,9 @@ import { fmtNum } from './format.js';
 import {
   FILE_SPECS, readFileText, pickKnownFiles, formatImportError, columns, realRowCells, controllerCells,
   pickRows, worstBuses, busStatus, summarizeImport, controllerOptions, controllerHelp,
+  compareButtonState, checkSizes, pickOption, importStatusText, errorStatusText, fmtSize,
 } from './realdata.js';
 
-const MAX_FILE_BYTES = 8 * 1024 * 1024; // the server refuses more per file
 const MAX_DROPPED = 1000; // files read from a dropped folder, so a huge folder cannot hang the page
 const MAX_LISTED = 20; // warnings shown before the rest goes into a "more" block
 const BANNER = 'Dados reais: o resultado vale para esta garagem e estes dias. As premissas abaixo continuam sendo suposição.';
@@ -20,12 +20,6 @@ const EMPTY_OUT = 'Importe as planilhas e clique em Comparar para ver aqui o que
 const put = (node, ...children) => node.replaceChildren(...children.flat(Infinity).filter((c) => c !== null && c !== undefined && c !== false));
 const plural = (n, one, many) => (n === 1 ? one : many);
 const noData = () => [h('span', { 'aria-hidden': 'true' }, '—'), h('span', { class: 'sr' }, 'sem dado')];
-
-function fmtSize(bytes) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${fmtNum(bytes / 1024, 0)} KB`;
-  return `${fmtNum(bytes / (1024 * 1024), 1)} MB`;
-}
 
 // collectDropped lists the files of a drop, walking dropped folders. The directory entries must be
 // taken from the event before the first await, so the first statements run synchronously.
@@ -77,10 +71,19 @@ export function createRealView({ filesRoot, outRoot, onOpenRun }) {
   let lastNoise = 0;
   let selected = 'all';
   let showAllBuses = false;
+  let runController = 'planner'; // the controller chosen for "Abrir esta noite", kept across redraws
+  let choiceNote = ''; // why part of the last choice was left out (size limits)
+  // What the tab is doing. The Comparar button is always derived from these (syncButton); `seq`
+  // numbers the actions, so one that was superseded never resets what the newer one set.
+  let importing = false;
+  let comparing = false;
+  let seq = 0;
 
   // ---- the file chooser (built once, so focus and the noise value survive every redraw) ----
 
-  const statusEl = h('p', { class: 'real-status', role: 'status', 'aria-live': 'polite' }, EMPTY_STATUS);
+  // The status is the page's one polite announcement for each phase; errors are written in it
+// (and drawn below as text, without a second alert role).
+  const statusEl = h('p', { class: 'real-status', role: 'status', 'aria-live': 'polite', tabindex: -1 }, EMPTY_STATUS);
   const setStatus = (text) => { if (statusEl.textContent !== text) statusEl.textContent = text; };
   const dyn = h('div', { class: 'real-dyn' });
 
@@ -126,6 +129,7 @@ export function createRealView({ filesRoot, outRoot, onOpenRun }) {
     drop.classList.remove('over');
     collectDropped(e.dataTransfer).then(ingest, () => {
       failure = { message: 'Não consegui ler o que foi solto. Use os seletores de arquivo.', retry: null };
+      setStatus(failure.message);
       paint();
     });
   });
@@ -157,7 +161,7 @@ export function createRealView({ filesRoot, outRoot, onOpenRun }) {
   function errorBlock() {
     if (importError) {
       const e = importError;
-      return h('div', { class: 'real-errors', role: 'alert' },
+      return h('div', { class: 'real-errors' },
         h('h3', {}, 'Erro nos dados'),
         h('div', { class: 'table-wrap' }, h('table', { class: 'metrics small' },
           h('caption', { class: 'sr' }, 'Erro encontrado nas planilhas'),
@@ -170,7 +174,7 @@ export function createRealView({ filesRoot, outRoot, onOpenRun }) {
         h('p', { class: 'note' }, 'Corrija a planilha e escolha o arquivo de novo: ele substitui o anterior.'));
     }
     if (failure) {
-      return h('div', { class: 'banner-inline', role: 'alert' }, failure.message, ' ',
+      return h('div', { class: 'banner-inline' }, failure.message, ' ',
         failure.retry ? h('button', { type: 'button', class: 'chip', onclick: failure.retry }, 'Tentar de novo') : null);
     }
     return null;
@@ -207,11 +211,18 @@ export function createRealView({ filesRoot, outRoot, onOpenRun }) {
       nightTable);
   }
 
+  // syncButton: label and disabled of Comparar, from the state, in this one place.
+  function syncButton() {
+    const s = compareButtonState({ imported: Boolean(imported && imported.nights.length > 0), importing, comparing });
+    if (compareBtn.textContent !== s.label) compareBtn.textContent = s.label;
+    compareBtn.disabled = s.disabled;
+  }
+
   function paint() {
-    put(dyn, 
-      errorBlock(), fileTable(), ignoredNote(),
+    put(dyn,
+      errorBlock(), choiceNote ? h('p', { class: 'note' }, choiceNote) : null, fileTable(), ignoredNote(),
       imported ? [summaryBlock(imported), warningsBlock(imported)] : null);
-    compareBtn.disabled = !(imported && imported.nights.length > 0) || latest.busy();
+    syncButton();
   }
 
   // ---- reading and importing ----
@@ -222,14 +233,12 @@ export function createRealView({ filesRoot, outRoot, onOpenRun }) {
   async function readAll(signal) {
     const out = {};
     for (const [name, f] of Object.entries(held)) {
-      if (f.size > MAX_FILE_BYTES) {
-        throw new ApiError(`${name} tem ${fmtSize(f.size)} e o limite é ${fmtSize(MAX_FILE_BYTES)} por arquivo. Exporte menos noites.`, 'files', 413);
-      }
       let t = cache.get(f);
       if (t === undefined) {
         try {
           t = readFileText(await f.arrayBuffer());
         } catch {
+          delete held[name]; // a file that cannot be read must not stay in the list: the next choice replaces it
           throw new ApiError(`Não consegui ler ${name}. Se o arquivo mudou ou foi movido, escolha-o de novo.`, 'files', 0);
         }
         cache.set(f, t);
@@ -246,11 +255,23 @@ export function createRealView({ filesRoot, outRoot, onOpenRun }) {
     put(outRoot, h('p', { class: 'note' }, EMPTY_OUT));
   }
 
-  function clearAll() {
+  // invalidate drops whatever is running and the results: the files held no longer give a good import.
+  function invalidate() {
     latest.cancel();
-    held = {}; ignored = []; texts = {}; imported = null; importError = null; failure = null;
-    noiseErr.textContent = '';
+    seq++;
+    importing = false;
+    comparing = false;
+    imported = null;
+    importError = null;
+    failure = null;
     resetResults();
+  }
+
+  function clearAll() {
+    invalidate();
+    held = {}; ignored = []; texts = {}; choiceNote = '';
+    noiseErr.textContent = '';
+    noise.removeAttribute('aria-invalid');
     setStatus(EMPTY_STATUS);
     paint();
   }
@@ -261,24 +282,43 @@ export function createRealView({ filesRoot, outRoot, onOpenRun }) {
   async function ingest(files) {
     if (files.length === 0) return;
     const { known, ignored: skipped } = pickKnownFiles(files);
+    ignored = skipped;
+    choiceNote = '';
     if (Object.keys(known).length === 0) {
-      ignored = skipped;
-      failure = { message: `Nenhum dos cinco arquivos esperados (${FILE_SPECS.map((f) => f.name).join(', ')}) está entre os ${files.length} escolhidos.`, retry: null };
+      invalidate(); // the status no longer describes a good import
+      const names = FILE_SPECS.map((f) => f.name).join(', ');
+      const message = files.length === 1 ? `O arquivo escolhido não é um dos cinco esperados (${names}).`
+        : `Nenhum dos ${files.length} arquivos escolhidos é um dos cinco esperados (${names}).`;
+      failure = { message, retry: null };
+      setStatus(message);
+      paint();
+      return;
+    }
+    const sizes = (m) => Object.fromEntries(Object.entries(m).map(([n, f]) => [n, f.size]));
+    const check = checkSizes(sizes(held), sizes(known));
+    for (const name of check.drop) delete known[name];
+    choiceNote = check.message;
+    if (Object.keys(known).length === 0) { // everything chosen was refused: what was held stays as it was
+      setStatus(check.message);
       paint();
       return;
     }
     held = { ...held, ...known }; // a new choice replaces the file of the same name and keeps the rest
-    ignored = skipped;
     await runImport();
   }
 
   async function runImport() {
+    const mine = ++seq;
+    const refocus = dyn.contains(document.activeElement); // the "Tentar de novo" button is about to be redrawn
+    importing = true;
+    comparing = false; // a comparison in flight is aborted by the shared latest
     importError = null;
     failure = null;
     imported = null;
     resetResults();
     setStatus(`Lendo ${Object.keys(held).length} ${plural(Object.keys(held).length, 'arquivo', 'arquivos')}…`);
     paint();
+    if (refocus) statusEl.focus({ preventScroll: true });
     try {
       const r = await latest(async (signal) => {
         const t = await readAll(signal);
@@ -289,19 +329,21 @@ export function createRealView({ filesRoot, outRoot, onOpenRun }) {
       texts = r.value.t;
       imported = r.value.res;
       const s = summarizeImport(imported);
-      setStatus(s.nights === 0 ? 'As planilhas não têm nenhuma noite utilizável: veja os avisos.'
-        : `Planilhas conferidas: ${s.nights} ${plural(s.nights, 'noite', 'noites')}, ${s.buses} ônibus. Agora clique em Comparar.`);
+      setStatus(importStatusText(s));
     } catch (e) {
       imported = null;
+      setStatus(errorStatusText(e));
       if (e instanceof ApiError && e.status === 400 && (e.file || e.line || e.column)) {
         importError = formatImportError(e);
-        setStatus('A importação falhou: veja o erro nos dados abaixo.');
       } else {
         failure = { message: e instanceof ApiError ? e.message : 'Erro inesperado: ' + e.message, retry: transient(e) ? runImport : null };
-        setStatus('A importação falhou.');
+      }
+    } finally {
+      if (mine === seq) {
+        importing = false;
+        paint();
       }
     }
-    paint();
   }
 
   // ---- comparing ----
@@ -319,10 +361,14 @@ export function createRealView({ filesRoot, outRoot, onOpenRun }) {
     }
     failure = null;
     report = null;
-    compareBtn.textContent = 'Comparando…';
+    const mine = ++seq;
+    const refocus = outRoot.contains(document.activeElement); // the "Tentar de novo" button is about to be redrawn
+    comparing = true;
+    importing = false;
+    syncButton();
     setStatus('Comparando: simulando o planejador e as referências em cada noite…');
     put(outRoot, h('h2', { tabindex: -1 }, 'Comparação com a realidade'), h('p', { class: 'loading' }, 'Rodando as simulações das noites…'));
-    compareBtn.disabled = true;
+    if (refocus) outRoot.querySelector('h2').focus({ preventScroll: true });
     try {
       const r = await latest((signal) => replay({ files: texts, soc_noise_kwh: n }, signal));
       if (r.stale) return;
@@ -336,21 +382,22 @@ export function createRealView({ filesRoot, outRoot, onOpenRun }) {
     } catch (e) {
       report = null;
       const msg = e instanceof ApiError ? e.message : 'Erro inesperado: ' + e.message;
-      setStatus('A comparação falhou.');
       if (e instanceof ApiError && e.field === 'soc_noise_kwh') {
+        setStatus(''); // the field's own alert says it
         noiseErr.textContent = msg;
         noise.setAttribute('aria-invalid', 'true');
         put(outRoot, h('p', { class: 'note' }, 'Nenhuma comparação: corrija o ruído e tente de novo.'));
         noise.focus();
       } else {
+        setStatus(`A comparação falhou: ${msg}`);
         put(outRoot, h('h2', { tabindex: -1 }, 'Comparação com a realidade'),
-          h('div', { class: 'banner-inline', role: 'alert' }, msg, ' ', transient(e) ? h('button', { type: 'button', class: 'chip', onclick: compare }, 'Tentar de novo') : null));
+          h('div', { class: 'banner-inline' }, msg, ' ', transient(e) ? h('button', { type: 'button', class: 'chip', onclick: compare }, 'Tentar de novo') : null));
         focusHeading();
       }
     } finally {
-      if (!latest.busy()) {
-        compareBtn.textContent = 'Comparar';
-        paint();
+      if (mine === seq) {
+        comparing = false;
+        syncButton();
       }
     }
   }
@@ -431,8 +478,11 @@ export function createRealView({ filesRoot, outRoot, onOpenRun }) {
   }
 
   function openBlock(night) {
+    const options = controllerOptions(true);
+    const current = pickOption(options, runController, 'planner');
     const choice = h('select', { id: 'real-run-controller', 'aria-label': 'Controlador da execução' },
-      controllerOptions(true).map((c) => h('option', { value: c, selected: c === 'planner' }, c)));
+      options.map((c) => h('option', { value: c, selected: c === current }, c)));
+    choice.addEventListener('change', () => { runController = choice.value; });
     const btn = h('button', { type: 'button', class: 'primary', id: 'real-open-run', disabled: !night }, 'Abrir esta noite na Execução');
     btn.addEventListener('click', () => onOpenRun({ files: texts, night: night.key, controller: choice.value }));
     return h('div', { class: 'real-open' },

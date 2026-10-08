@@ -1,7 +1,7 @@
 // Pure helpers of the "Dados reais" tab: reading the spreadsheets, the rows of the comparison
 // table and the per-bus list. Nothing here touches the DOM or the network.
 import { COLUMNS, CONTROLLER_HELP, formatCell } from './glossary.js';
-import { fmtPct } from './format.js';
+import { fmtNum, fmtPct } from './format.js';
 import { CONTROLLERS } from './params.js';
 
 // The planner run as if no operator carried out any swap (a row of the report, a controller of /api/run).
@@ -188,3 +188,62 @@ export function controllerHelp(name) {
   if (name === NO_SWAP) return HELP_NO_SWAP;
   return CONTROLLER_HELP[name] || '';
 }
+
+// ---- the compare button, from one state ----
+
+// compareButtonState: the label and `disabled` of the Comparar button, derived in one place from what
+// the tab is doing: `imported` (a good import with nights is held), `importing` (reading or sending
+// the files) and `comparing`. A new import aborts a comparison in flight, so the label goes back to
+// "Comparar" the moment only the import is running.
+export function compareButtonState({ imported = false, importing = false, comparing = false } = {}) {
+  return { label: comparing ? 'Comparando\u2026' : 'Comparar', disabled: !imported || importing || comparing };
+}
+
+// ---- sizes the server accepts ----
+
+export const MAX_FILE_BYTES = 8 * 1024 * 1024; // per file (the server refuses more)
+// Every request carries all the files as JSON text, and the server's body limit is 16 MB: stay under it
+// with a margin for the JSON quoting and the other fields.
+export const MAX_TOTAL_BYTES = 15 * 1024 * 1024;
+
+export function fmtSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${fmtNum(bytes / 1024, 0)} KB`;
+  const mb = bytes / (1024 * 1024);
+  return `${fmtNum(mb, Number.isInteger(mb) ? 0 : 1)} MB`;
+}
+
+// checkSizes decides which of the files just chosen (`incoming`: name -> bytes) cannot be kept next
+// to the ones already held (`held`: name -> bytes): a file over the per-file limit is dropped; if the
+// total (held files, each replaced by its new version) is then over the limit, the whole new choice is
+// dropped and the held files stay as they were. Returns the names to drop and a Portuguese message.
+export function checkSizes(held, incoming) {
+  const drop = [];
+  const msgs = [];
+  for (const [name, size] of Object.entries(incoming)) {
+    if (size > MAX_FILE_BYTES) {
+      drop.push(name);
+      msgs.push(`${name} tem ${fmtSize(size)} e o limite é ${fmtSize(MAX_FILE_BYTES)} por arquivo.`);
+    }
+  }
+  const kept = { ...held };
+  for (const [name, size] of Object.entries(incoming)) if (!drop.includes(name)) kept[name] = size;
+  const total = Object.values(kept).reduce((n, v) => n + v, 0);
+  if (total > MAX_TOTAL_BYTES) {
+    for (const name of Object.keys(incoming)) if (!drop.includes(name)) drop.push(name);
+    msgs.push(`Os arquivos somariam ${fmtSize(total)} e o limite é ${fmtSize(MAX_TOTAL_BYTES)} por envio. Exporte menos noites e escolha de novo.`);
+  }
+  return { drop, message: msgs.join(' ') };
+}
+
+// pickOption keeps `value` if it is one of `options`, else `fallback` (a choice that survives a redraw).
+export const pickOption = (options, value, fallback) => (options.includes(value) ? value : fallback);
+
+// ---- status sentences (the page's one polite announcement per phase) ----
+
+export function importStatusText({ nights, buses }) {
+  if (nights === 0) return 'As planilhas não têm nenhuma noite utilizável: veja os avisos.';
+  return `Planilhas conferidas: ${nights} ${nights === 1 ? 'noite' : 'noites'}, ${buses} ${buses === 1 ? 'ônibus' : 'ônibus'}. Agora clique em Comparar.`;
+}
+
+export const errorStatusText = (err) => `A importação falhou: ${formatImportError(err).text}`;
