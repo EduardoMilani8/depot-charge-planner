@@ -115,6 +115,10 @@ Os cenários são sintéticos e usam premissas de dados públicos ainda não val
 
 Todas as premissas de carga vêm de dados públicos e ainda precisam de validação com operadoras reais.
 
+## Próximos passos
+
+O roadmap (validar com dados reais, modo sombra, custo de energia, dimensionamento e tela para o pátio) está em `docs/superpowers/plans/2026-10-08-proximos-passos.md`. Para pedir dados a uma operadora, veja `docs/dados-reais/README.md`.
+
 ## Licença
 
 MIT. Veja o arquivo [LICENSE](LICENSE).

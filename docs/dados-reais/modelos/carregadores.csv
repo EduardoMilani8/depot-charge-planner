@@ -1,0 +1,4 @@
+carregador_id,potencia_max_kw,potencia_min_kw,eficiencia
+C01,150,5,0.94
+C02,150,5,0.94
+C03,150,5,0.94
