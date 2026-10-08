@@ -7,9 +7,11 @@ import (
 	"math"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/EduardoMilani8/depot-charge-planner/internal/planner"
+	"github.com/EduardoMilani8/depot-charge-planner/internal/sim"
 )
 
 func demoReplay(t *testing.T, files map[string][]byte, o NightOptions, workers int) *Report {
@@ -375,5 +377,194 @@ func TestWarningJSONKeys(t *testing.T) {
 	raw, err := json.Marshal(Warning{File: "a.csv", Line: 2, Message: "m"})
 	if err != nil || string(raw) != `{"file":"a.csv","line":2,"message":"m"}` {
 		t.Errorf("%s %v", raw, err)
+	}
+}
+
+// directPlanner runs the planner alone, straight through sim.RunContext, over the
+// nights of d with FollowSwaps set as asked, and returns each night's outcomes by
+// bus plus its operator moves. It is the reference Replay's two planner rows are
+// pinned against.
+func directPlanner(t *testing.T, d *Dataset, follow bool) (outcomes []map[string]sim.BusOutcome, moves []float64) {
+	t.Helper()
+	nights, _ := d.Nights(NightOptions{})
+	for _, n := range nights {
+		sc := cloneScenario(n.Scenario)
+		sc.FollowSwaps = follow
+		sc, ctrl, err := sim.ForController("planner", planner.DefaultConfig(), sc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tr := sim.NewTrace()
+		m, err := sim.RunContext(context.Background(), sc, ctrl, nil, tr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		by := map[string]sim.BusOutcome{}
+		for _, o := range tr.Outcomes {
+			by[o.ID] = o
+		}
+		outcomes = append(outcomes, by)
+		moves = append(moves, m.OperatorMoves)
+	}
+	return outcomes, moves
+}
+
+// TestReplayNoSwapRowPinned: the "planner (sem rodízio)" row must be the planner
+// with FollowSwaps=false and the "planner" row the one with FollowSwaps=true;
+// swapping the two traces (or the flag) must fail it. The demo depot never needs a
+// swap, so the pinned fixture has a single charger for three buses and no
+// sessions/power (a swap is then unavoidable and the two modes end differently).
+func TestReplayNoSwapRowPinned(t *testing.T) {
+	oneCharger := withFile(without(demoFiles(t), FileSessoes, FilePotencia), FileCarregadores,
+		"carregador_id,potencia_max_kw,potencia_min_kw,eficiencia\nC01,150,5,0.94\n")
+	cases := []struct {
+		name      string
+		files     map[string][]byte
+		wantSwaps bool
+	}{
+		{"demo", demoFiles(t), false},
+		{"one charger", oneCharger, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := loadFiles(t, tc.files)
+			r, err := Replay(context.Background(), d, planner.DefaultConfig(), NightOptions{}, 2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			follow, followMoves := directPlanner(t, d, true)
+			noSwap, noSwapMoves := directPlanner(t, d, false)
+			differ := false
+			for ni, n := range r.Nights {
+				if got := n.Controllers[rowNoSwap].Aggregate.OperatorMoves; got != 0 || noSwapMoves[ni] != 0 {
+					t.Errorf("%s: no-swap row OperatorMoves = %v (direct %v), want 0", n.Key, got, noSwapMoves[ni])
+				}
+				if got := n.Controllers[rowPlanner].Aggregate.OperatorMoves; got != followMoves[ni] {
+					t.Errorf("%s: planner row OperatorMoves = %v, direct run %v", n.Key, got, followMoves[ni])
+				}
+				if tc.wantSwaps && followMoves[ni] == 0 {
+					t.Errorf("%s: fixture produced no swap, it cannot pin the rows", n.Key)
+				}
+				for _, b := range n.PerBus {
+					f, s := follow[ni][b.ID], noSwap[ni][b.ID]
+					if b.PlannerFinalKWh != f.FinalSoCKWh || b.PlannerReady != f.Ready {
+						t.Errorf("%s/%s: planner = %v/%v, direct FollowSwaps=true run %v/%v", n.Key, b.ID, b.PlannerFinalKWh, b.PlannerReady, f.FinalSoCKWh, f.Ready)
+					}
+					if b.NoSwapFinalKWh != s.FinalSoCKWh || b.NoSwapReady != s.Ready {
+						t.Errorf("%s/%s: no-swap = %v/%v, direct FollowSwaps=false run %v/%v", n.Key, b.ID, b.NoSwapFinalKWh, b.NoSwapReady, s.FinalSoCKWh, s.Ready)
+					}
+					if f.FinalSoCKWh != s.FinalSoCKWh || f.Ready != s.Ready {
+						differ = true
+					}
+				}
+			}
+			if tc.wantSwaps && !differ {
+				t.Errorf("the two modes ended identically: the fixture cannot tell the rows apart")
+			}
+		})
+	}
+}
+
+// TestReplayZeroNights: every night over the 3000-minute cap leaves nothing to
+// replay; the report is empty but well formed (no panic, no nil slices, so the
+// JSON has [] and not null).
+func TestReplayZeroNights(t *testing.T) {
+	long := "onibus_id,capacidade_kwh,chegada,soc_chegada_pct,saida_prevista,soc_saida_exigido_pct,potencia_max_bateria_kw,soc_saida_real_pct,saida_real\n" +
+		"B01,300,2026-03-04 12:30,30,2026-03-05 05:00,90,150,,\n" +
+		"B02,300,2026-03-04 22:00,40,2026-03-06 12:31,85,150,,\n" // origin 11:00 + 3001 min: over the cap
+	files := withFile(without(demoFiles(t), FileSessoes, FilePotencia), FileOnibus, long)
+	for _, workers := range []int{1, 4} {
+		r := demoReplay(t, files, NightOptions{}, workers)
+		if r.Nights == nil || len(r.Nights) != 0 {
+			t.Fatalf("Nights = %#v, want empty non-nil", r.Nights)
+		}
+		if len(r.Aggregate) != len(ReplayNames) {
+			t.Fatalf("aggregate rows = %d, want %d", len(r.Aggregate), len(ReplayNames))
+		}
+		for i, ag := range r.Aggregate {
+			if ag.Name != ReplayNames[i] || ag.Seeds == nil || len(ag.Seeds) != 0 {
+				t.Errorf("aggregate[%d] = %s seeds=%#v, want %s and no seeds", i, ag.Name, ag.Seeds, ReplayNames[i])
+			}
+			if !reflect.DeepEqual(ag.Aggregate, sim.Metrics{}) {
+				t.Errorf("%s: aggregate = %+v, want zero Metrics", ag.Name, ag.Aggregate)
+			}
+		}
+		if r.RealAggregate.Buses != 0 || r.RealAggregate.EnergyKWh != nil || r.RealAggregate.PeakKW != nil || r.RealAggregate.CostBRL != nil {
+			t.Errorf("RealAggregate = %+v", r.RealAggregate)
+		}
+		if len(r.Warnings) == 0 || !strings.Contains(r.Warnings[len(r.Warnings)-1].Message, "3000") {
+			t.Errorf("warnings = %+v, want the omitted-night warning", r.Warnings)
+		}
+		if len(r.Assumptions) == 0 {
+			t.Errorf("assumptions are missing")
+		}
+		raw, err := json.Marshal(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(raw), `"nights":[]`) || !strings.Contains(string(raw), `"seeds":[]`) {
+			t.Errorf("empty slices must serialize as []: %s", raw)
+		}
+	}
+}
+
+// tripCtx is a context that reports context.Canceled from its n-th Err() call on.
+// Replay and sim.RunContext poll Err() (never Done()), so this cancels in the
+// middle of a run without goroutines or sleeps.
+type tripCtx struct {
+	context.Context
+	after int64
+	calls atomic.Int64
+}
+
+func (c *tripCtx) Err() error {
+	if c.calls.Add(1) > c.after {
+		return context.Canceled
+	}
+	return nil
+}
+
+func TestReplayCancelledMidFlight(t *testing.T) {
+	d := loadFiles(t, demoFiles(t))
+	// the demo needs far more than 5000 polls (6 controllers x 2 nights x ~600 minutes)
+	for _, workers := range []int{1, 3} {
+		ctx := &tripCtx{Context: context.Background(), after: 500}
+		r, err := Replay(ctx, d, planner.DefaultConfig(), NightOptions{}, workers)
+		if !errors.Is(err, context.Canceled) || r != nil {
+			t.Fatalf("workers=%d: got %v, %v; want nil, context.Canceled", workers, r, err)
+		}
+		if n := ctx.calls.Load(); n <= 500 || n > 600 {
+			t.Errorf("workers=%d: ctx polled %d times, want it to stop right after the 500th", workers, n)
+		}
+	}
+	// the same dataset completes when the context never trips
+	ok := &tripCtx{Context: context.Background(), after: 1 << 40}
+	if r, err := Replay(ok, d, planner.DefaultConfig(), NightOptions{}, 2); err != nil || r == nil {
+		t.Fatalf("untripped: %v, %v", r, err)
+	} else if ok.calls.Load() < 5000 {
+		t.Errorf("a full replay polled the context only %d times; the mid-flight test would not be mid-flight", ok.calls.Load())
+	}
+}
+
+func TestFiniteBusRow(t *testing.T) {
+	f := func(v float64) *float64 { return &v }
+	good := BusRow{ID: "B01", CapacityKWh: 300, TargetKWh: 270, RealFinalKWh: f(273), PlannerFinalKWh: 281, NoSwapFinalKWh: 280}
+	if !finiteBusRow(good) {
+		t.Fatalf("finite row rejected")
+	}
+	if !finiteBusRow(BusRow{ID: "B02"}) {
+		t.Errorf("nil real outcome must be accepted")
+	}
+	nan, inf := math.NaN(), math.Inf(1)
+	bad := []BusRow{good, good, good, good, good}
+	bad[0].CapacityKWh = nan
+	bad[1].TargetKWh = inf
+	bad[2].PlannerFinalKWh = nan
+	bad[3].NoSwapFinalKWh = math.Inf(-1)
+	bad[4].RealFinalKWh = f(inf)
+	for i, b := range bad {
+		if finiteBusRow(b) {
+			t.Errorf("row %d with a non-finite value was accepted: %+v", i, b)
+		}
 	}
 }

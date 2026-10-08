@@ -29,6 +29,10 @@ type SeedResult struct {
 // ControllerResult mirrors sim.ControllerResult with JSON tags: one controller
 // over the runs it was given (per night: the single run, Seed 1; over all
 // nights: one run per night, Seed = night index + 1) and their mean.
+//
+// LayerTicks: a per-night Aggregate keeps the layer counts of its single run;
+// the cross-night Report.Aggregate[i].Aggregate.LayerTicks is null (sim.Aggregate
+// does not sum maps), and the per-night counts live in Seeds[k].Metrics.LayerTicks.
 type ControllerResult struct {
 	Name      string       `json:"name"`
 	Aggregate sim.Metrics  `json:"aggregate"`
@@ -178,6 +182,13 @@ func Replay(ctx context.Context, d *Dataset, cfg planner.Config, o NightOptions,
 			perRow[ri] = append(perRow[ri], m)
 		}
 		nr.PerBus = busRows(n.BusReal, outs[base+rowPlanner].outcomes, outs[base+rowNoSwap].outcomes)
+		for _, b := range nr.PerBus {
+			// a non-finite number must never reach the JSON (encoding/json fails on it):
+			// like finiteMetrics above, report it as an error instead of clamping it.
+			if !finiteBusRow(b) {
+				return nil, fmt.Errorf("noite %s, ônibus %s: o simulador devolveu um número que não é finito", n.Key, b.ID)
+			}
+		}
 		rep.Nights = append(rep.Nights, nr)
 	}
 	for ri, name := range ReplayNames {
@@ -214,6 +225,20 @@ func finiteMetrics(m sim.Metrics) bool {
 	return true
 }
 
+// finiteBusRow: every float of the row is a finite number (nil real outcome is fine).
+func finiteBusRow(b BusRow) bool {
+	vs := []float64{b.CapacityKWh, b.TargetKWh, b.PlannerFinalKWh, b.NoSwapFinalKWh}
+	if b.RealFinalKWh != nil {
+		vs = append(vs, *b.RealFinalKWh)
+	}
+	for _, v := range vs {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return false
+		}
+	}
+	return true
+}
+
 func busRows(real []BusReal, planner, noSwap []sim.BusOutcome) []BusRow {
 	byID := func(os []sim.BusOutcome) map[string]sim.BusOutcome {
 		m := make(map[string]sim.BusOutcome, len(os))
@@ -240,7 +265,7 @@ func busRows(real []BusReal, planner, noSwap []sim.BusOutcome) []BusRow {
 
 func realAggregate(nights []Night) Real {
 	var a Real
-	var readyN, outN int
+	var outN int
 	var eSum, pSum, cSum float64
 	var eN, pN, cN int
 	for _, n := range nights {
@@ -251,7 +276,6 @@ func realAggregate(nights []Night) Real {
 		if r.WithOutcome > 0 {
 			a.ReadyPct += r.ReadyPct
 			a.ShortfallKWh += r.ShortfallKWh
-			readyN++
 			outN++
 		}
 		if r.EnergyKWh != nil {
@@ -269,8 +293,8 @@ func realAggregate(nights []Night) Real {
 			a.CostEstimated = a.CostEstimated || r.CostEstimated
 		}
 	}
-	if readyN > 0 {
-		a.ReadyPct /= float64(readyN)
+	if outN > 0 {
+		a.ReadyPct /= float64(outN)
 		a.ShortfallKWh /= float64(outN)
 	}
 	mean := func(sum float64, n int) *float64 {
