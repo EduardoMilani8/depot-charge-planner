@@ -26,12 +26,20 @@ var FileNames = []string{FileGaragem, FileCarregadores, FileOnibus, FileSessoes,
 
 // Limits of the real-data importer (the simulator's own limits apply on top).
 const (
+	// maxRowsPerFile is applied after parsing; the real memory guard is
+	// ReadTable's cap on columns x rows (maxCells).
 	maxRowsPerFile   = 1_000_000
 	maxBusesPerNight = 1000
 	maxNights        = 366
-	maxChargerKW     = 5000
-	maxCapacityKWh   = 2000
-	maxBatteryKW     = 5000
+	maxChargerKW     = 5000 // potencia_max_kw of a charger
+	maxCapacityKWh   = 2000 // capacidade_kwh of a bus
+	maxBatteryKW     = 5000 // potencia_max_bateria_kw
+
+	// Sanity caps against typos (year 9999, 1e308) that would otherwise build
+	// an enormous horizon or turn into Inf/NaN downstream.
+	maxSessionKWh = 1e6            // energia_kwh of one session
+	maxReadingKW  = 1e5            // potencia_kw of one reading (above 2x charger max is only a warning)
+	maxStay       = 48 * time.Hour // saida_prevista/saida_real minus chegada; fim minus inicio of a session
 
 	defaultMinKW      = 5.0
 	defaultEfficiency = 0.94
@@ -82,10 +90,13 @@ type PowerSample struct {
 
 // Dataset is the validated content of the five spreadsheets.
 type Dataset struct {
-	Garage                Garage
-	Chargers              []Charger
-	Buses                 []Bus
-	Sessions              []Session     // nil if sessoes.csv absent
+	Garage   Garage
+	Chargers []Charger
+	Buses    []Bus
+	Sessions []Session // nil if sessoes.csv absent
+	// Power is sorted by time within each charger but NOT globally: samples of
+	// different chargers keep file order (a global sort happens only if some charger
+	// was out of order), so consumers must not assume global time order.
 	Power                 []PowerSample // nil if potencia.csv absent
 	HasSessions, HasPower bool
 	Warnings              []Warning
@@ -163,7 +174,7 @@ func Load(files map[string][]byte) (*Dataset, error) {
 		}
 		if len(ds.Sessions) == 0 {
 			ds.Sessions = nil
-			t.warn(0, "sem sessões: tratado como se o arquivo não existisse")
+			// ReadTable already warned "sem linhas de dados"; treated as absent.
 		}
 		ds.HasSessions = ds.Sessions != nil
 		ds.Warnings = append(ds.Warnings, t.Warnings...)
@@ -178,7 +189,7 @@ func Load(files map[string][]byte) (*Dataset, error) {
 		}
 		if len(ds.Power) == 0 {
 			ds.Power = nil
-			t.warn(0, "sem leituras: tratado como se o arquivo não existisse")
+			// ReadTable already warned "sem linhas de dados"; treated as absent.
 		}
 		ds.HasPower = ds.Power != nil
 		ds.Warnings = append(ds.Warnings, t.Warnings...)
@@ -189,7 +200,7 @@ func Load(files map[string][]byte) (*Dataset, error) {
 // LoadDir reads only the five fixed file names inside dir and calls Load.
 func LoadDir(dir string) (*Dataset, error) {
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
-		return nil, &FieldError{Message: "pasta não encontrada: " + shorten(dir)}
+		return nil, &FieldError{Message: "pasta não encontrada ou inacessível"}
 	}
 	files := map[string][]byte{}
 	for _, name := range FileNames {
@@ -198,7 +209,8 @@ func LoadDir(dir string) (*Dataset, error) {
 			continue
 		}
 		if err != nil {
-			return nil, &FieldError{File: name, Message: "não foi possível ler o arquivo: " + err.Error()}
+			// no raw OS text: it carries the absolute path
+			return nil, &FieldError{File: name, Message: "não foi possível ler " + name + " (confira se é um arquivo comum e se há permissão de leitura)"}
 		}
 		files[name] = b
 	}
@@ -213,7 +225,7 @@ func readFixed(path string) ([]byte, error) {
 		return nil, err
 	}
 	if !info.Mode().IsRegular() {
-		return nil, errors.New("não é um arquivo comum")
+		return nil, errors.New("not a regular file")
 	}
 	f, err := os.Open(path)
 	if err != nil {
@@ -437,7 +449,7 @@ func loadChargers(t *Table) ([]Charger, error) {
 	}
 	var parts []string
 	if defMin > 0 {
-		parts = append(parts, fmt.Sprintf("potencia_min_kw = 5 kW em %s", plural(defMin, "carregador", "carregadores")))
+		parts = append(parts, fmt.Sprintf("potencia_min_kw = 5 kW (ou a potência máxima do carregador, se for menor) em %s", plural(defMin, "carregador", "carregadores")))
 	}
 	if defEff > 0 {
 		parts = append(parts, fmt.Sprintf("eficiencia = 0,94 em %s", plural(defEff, "carregador", "carregadores")))
@@ -494,6 +506,9 @@ func loadBuses(t *Table) ([]Bus, error) {
 		if !b.Departure.After(b.Arrival) {
 			return nil, t.fieldErr(r, "saida_prevista", "a saída prevista precisa ser depois da chegada")
 		}
+		if b.Departure.Sub(b.Arrival) > maxStay {
+			return nil, t.fieldErr(r, "saida_prevista", "a permanência (saída prevista menos chegada) passa de 48 horas: confira a data")
+		}
 		if b.RequiredPct, ferr = reqFloat(t, r, "soc_saida_exigido_pct"); ferr != nil {
 			return nil, ferr
 		}
@@ -531,6 +546,9 @@ func loadBuses(t *Table) ([]Bus, error) {
 		if ok {
 			if !rd.After(b.Arrival) {
 				return nil, t.fieldErr(r, "saida_real", "a saída real precisa ser depois da chegada")
+			}
+			if rd.Sub(b.Arrival) > maxStay {
+				return nil, t.fieldErr(r, "saida_real", "a permanência (saída real menos chegada) passa de 48 horas: confira a data")
 			}
 			b.RealDeparture = &rd
 		}
@@ -592,11 +610,17 @@ func loadSessions(t *Table, ds *Dataset) ([]Session, error) {
 		if !s.End.After(s.Start) {
 			return nil, t.fieldErr(r, "fim", "o fim da sessão precisa ser depois do início")
 		}
+		if s.End.Sub(s.Start) > maxStay {
+			return nil, t.fieldErr(r, "fim", "a sessão dura mais de 48 horas: confira a data")
+		}
 		if s.EnergyKWh, ferr = reqFloat(t, r, "energia_kwh"); ferr != nil {
 			return nil, ferr
 		}
 		if s.EnergyKWh < 0 {
 			return nil, t.fieldErr(r, "energia_kwh", fmt.Sprintf("energia %g kWh negativa: deve ser maior ou igual a 0", s.EnergyKWh))
+		}
+		if s.EnergyKWh > maxSessionKWh {
+			return nil, t.fieldErr(r, "energia_kwh", fmt.Sprintf("energia %g kWh acima do máximo aceito por sessão (%g kWh): confira a unidade", s.EnergyKWh, maxSessionKWh))
 		}
 		night := NightKey(s.Start)
 		if !buses[s.BusID+"\x00"+night] {
@@ -623,6 +647,12 @@ func loadPower(t *Table, ds *Dataset) ([]PowerSample, error) {
 	}
 	out := make([]PowerSample, 0, len(t.Rows))
 	last := map[string]time.Time{}
+	type readingKey struct {
+		id string
+		at int64
+	}
+	seen := make(map[readingKey]bool, len(t.Rows))
+	dupFirst, dupN := 0, 0
 	unsortedLine, unsorted := 0, false
 	highFirst, highN := 0, 0
 	for _, r := range t.Rows {
@@ -644,6 +674,9 @@ func loadPower(t *Table, ds *Dataset) ([]PowerSample, error) {
 		if p.KW < 0 {
 			return nil, t.fieldErr(r, "potencia_kw", fmt.Sprintf("potência %g kW negativa: deve ser maior ou igual a 0", p.KW))
 		}
+		if p.KW > maxReadingKW {
+			return nil, t.fieldErr(r, "potencia_kw", fmt.Sprintf("potência %g kW acima do máximo aceito por leitura (%g kW): confira a unidade", p.KW, maxReadingKW))
+		}
 		if p.KW > powerFactorWarn*cmax {
 			if highN == 0 {
 				highFirst = r.Line
@@ -654,10 +687,21 @@ func loadPower(t *Table, ds *Dataset) ([]PowerSample, error) {
 			unsorted, unsortedLine = true, r.Line
 		}
 		last[p.ChargerID] = p.At
+		k := readingKey{p.ChargerID, p.At.UnixNano()}
+		if seen[k] {
+			if dupN == 0 {
+				dupFirst = r.Line
+			}
+			dupN++
+		}
+		seen[k] = true
 		out = append(out, p)
 	}
 	if highN > 0 {
 		t.warn(highFirst, fmt.Sprintf("%s acima de 2× a potência máxima do carregador (a primeira está nesta linha); confira as unidades", plural(highN, "leitura", "leituras")))
+	}
+	if dupN > 0 {
+		t.warn(dupFirst, fmt.Sprintf("%s repetida(s) para o mesmo carregador e instante (a primeira repetição está nesta linha); somas por instante podem ficar duplicadas", plural(dupN, "leitura", "leituras")))
 	}
 	if unsorted {
 		sort.SliceStable(out, func(i, j int) bool { return out[i].At.Before(out[j].At) })

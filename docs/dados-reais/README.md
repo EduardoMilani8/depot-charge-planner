@@ -31,6 +31,16 @@ Os arquivos em `modelos/` são **fictícios**, só mostram o formato. Nada neste
 - Uma "noite" é identificada pela chegada menos 12 horas (chegadas de 12:00 a 23:59 pertencem ao dia; de 00:00 a 11:59, ao dia anterior).
 - Cabeçalhos exatamente como nos modelos; colunas extras são ignoradas.
 
+## Limites aceitos
+
+Valores fora destes limites são recusados com o arquivo, a linha e a coluna do problema (quase sempre é erro de digitação ou de unidade):
+
+- Cada arquivo: até 8 MB, até 64 colunas e até 1.000.000 de linhas de dados.
+- Capacidade do ônibus: 1 a 2000 kWh. Potência máxima do carregador: mais de 0 e até 5000 kW. Potência máxima da bateria: mais de 0 e até 5000 kW.
+- Permanência do ônibus (`saida_prevista` e `saida_real` menos `chegada`): até 48 horas. Duração de uma sessão (`fim` menos `inicio`): até 48 horas.
+- Energia de uma sessão (`energia_kwh`): até 1.000.000 kWh. Potência de uma leitura (`potencia_kw`): até 100.000 kW (leitura acima de 2 vezes a potência máxima do carregador só gera aviso).
+- Até 1000 ônibus por noite, 366 noites e 10.000 ônibus ou carregadores no total.
+
 ## Cuidados com privacidade (LGPD)
 
 - Não são necessários dados pessoais. Peça **sem** nome de motorista, placa ou matrícula; ônibus e carregadores podem ter códigos anonimizados.

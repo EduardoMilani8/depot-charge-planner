@@ -616,7 +616,7 @@ func TestLoadNeverPanicsOnRandomBytes(t *testing.T) {
 				// valid file with a few corrupted bytes
 				b := append([]byte(nil), demo[n]...)
 				for k := rng.Intn(6); k >= 0 && len(b) > 0; k-- {
-					b[rng.Intn(len(b))] = randBytes0(rng)
+					b[rng.Intn(len(b))] = byte(rng.Intn(256))
 				}
 				m[n] = b
 			default:
@@ -644,6 +644,218 @@ func TestLoadNeverPanicsOnRandomBytes(t *testing.T) {
 	}
 }
 
-func randBytes0(rng *rand.Rand) byte {
-	return byte(rng.Intn(256))
+func wantFieldErr(t *testing.T, err error, file string, line int, col string) {
+	t.Helper()
+	var fe *FieldError
+	if !errors.As(err, &fe) {
+		t.Fatalf("want *FieldError, got %v", err)
+	}
+	if fe.File != file || fe.Line != line || fe.Column != col || fe.Message == "" {
+		t.Errorf("got %s/%d/%s (%q), want %s/%d/%s", fe.File, fe.Line, fe.Column, fe.Message, file, line, col)
+	}
+}
+
+// Caps on magnitudes: an accepted value at the cap, an error one step above.
+func TestLoadMagnitudeCaps(t *testing.T) {
+	demo := demoFiles(t)
+	type tc struct {
+		name, file, old, ok, bad, col string
+		line                          int
+	}
+	cases := []tc{
+		{"energia por sessao", FileSessoes, "2026-03-05 00:00,200", "2026-03-05 00:00,1000000", "2026-03-05 00:00,1000001", "energia_kwh", 2},
+		{"energia absurda", FileSessoes, "2026-03-05 00:00,200", "2026-03-05 00:00,1000000", "2026-03-05 00:00,1e308", "energia_kwh", 2},
+		{"potencia da leitura", FilePotencia, "22:00,C01,100", "22:00,C01,100000", "22:00,C01,100001", "potencia_kw", 2},
+		{"potencia absurda", FilePotencia, "22:00,C01,100", "22:00,C01,100000", "22:00,C01,1e308", "potencia_kw", 2},
+		{"permanencia prevista", FileOnibus, "2026-03-05 05:00,90", "2026-03-06 20:00,90", "2026-03-06 20:01,90", "saida_prevista", 2},
+		{"ano errado na saida prevista", FileOnibus, "2026-03-05 05:00,90", "2026-03-06 20:00,90", "9999-03-05 05:00,90", "saida_prevista", 2},
+		{"permanencia real", FileOnibus, "2026-03-05 05:02", "2026-03-06 20:00", "2026-03-06 20:01", "saida_real", 2},
+		{"duracao da sessao", FileSessoes, "2026-03-05 00:00,200", "2026-03-06 20:00,200", "2026-03-06 20:01,200", "fim", 2},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := Load(mutate(t, demo, c.file, c.old, c.ok)); err != nil {
+				t.Errorf("at the cap must be accepted: %v", err)
+			}
+			_, err := Load(mutate(t, demo, c.file, c.old, c.bad))
+			wantFieldErr(t, err, c.file, c.line, c.col)
+		})
+	}
+}
+
+func TestLoadRangeBoundaries(t *testing.T) {
+	demo := demoFiles(t)
+	type tc struct {
+		name, file, old, new, col string
+		line                      int
+		ok                        bool
+	}
+	cases := []tc{
+		{"capacidade 1", FileOnibus, "B02,300,2026-03-04 22:00", "B02,1,2026-03-04 22:00", "capacidade_kwh", 3, true},
+		{"capacidade 2000", FileOnibus, "B02,300,2026-03-04 22:00", "B02,2000,2026-03-04 22:00", "capacidade_kwh", 3, true},
+		{"capacidade 0.9", FileOnibus, "B02,300,2026-03-04 22:00", "B02,0.9,2026-03-04 22:00", "capacidade_kwh", 3, false},
+		{"capacidade 2001", FileOnibus, "B02,300,2026-03-04 22:00", "B02,2001,2026-03-04 22:00", "capacidade_kwh", 3, false},
+		{"soc chegada 0", FileOnibus, "2026-03-04 23:30,20,", "2026-03-04 23:30,0,", "soc_chegada_pct", 4, true},
+		{"soc chegada 100", FileOnibus, "2026-03-04 23:30,20,", "2026-03-04 23:30,100,", "soc_chegada_pct", 4, true},
+		{"bateria 5000", FileOnibus, "05:30,90,150,90", "05:30,90,5000,90", "potencia_max_bateria_kw", 4, true},
+		{"bateria 5001", FileOnibus, "05:30,90,150,90", "05:30,90,5001,90", "potencia_max_bateria_kw", 4, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := Load(mutate(t, demo, c.file, c.old, c.new))
+			if c.ok {
+				if err != nil {
+					t.Errorf("want accepted, got %v", err)
+				}
+				return
+			}
+			wantFieldErr(t, err, c.file, c.line, c.col)
+		})
+	}
+}
+
+func TestLoadPeakWindowEmptyIsError(t *testing.T) {
+	_, err := Load(mutate(t, demoFiles(t), FileGaragem, "18:00,21:00", "18:00,18:00"))
+	wantFieldErr(t, err, FileGaragem, 2, "ponta_fim")
+}
+
+func TestLoadGarageExtraRowsWarningLine(t *testing.T) {
+	m := mutate(t, demoFiles(t), FileGaragem, "400,18:00,21:00,2.70,0.90\n", "400,18:00,21:00,2.70,0.90\n999,,,,\n")
+	d, err := Load(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range d.Warnings {
+		if w.File == FileGaragem && strings.Contains(w.Message, "primeira") {
+			if w.Line != 3 {
+				t.Errorf("warning line = %d, want 3", w.Line)
+			}
+			return
+		}
+	}
+	t.Errorf("no extra-rows warning: %v", d.Warnings)
+}
+
+func TestLoadHeaderOnlyOptionalFilesOneWarning(t *testing.T) {
+	m := demoFiles(t)
+	m[FileSessoes] = []byte("onibus_id,carregador_id,inicio,fim,energia_kwh\n")
+	m[FilePotencia] = []byte("instante,carregador_id,potencia_kw\n")
+	d, err := Load(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.HasSessions || d.HasPower || d.Sessions != nil || d.Power != nil {
+		t.Errorf("must be treated as absent: %+v", d)
+	}
+	for _, f := range []string{FileSessoes, FilePotencia} {
+		if n := countWarnings(d, f, ""); n != 1 {
+			t.Errorf("%s: %d warnings, want exactly 1: %v", f, n, d.Warnings)
+		}
+	}
+}
+
+func TestLoadDuplicatePowerReadingsWarn(t *testing.T) {
+	m := demoFiles(t)
+	m[FilePotencia] = []byte(strings.Join([]string{
+		"instante,carregador_id,potencia_kw",
+		"2026-03-05 22:00,C01,100",
+		"2026-03-05 22:00,C02,20",
+		"2026-03-05 22:15,C01,100",
+		"2026-03-05 22:00,C01,90", // line 5: second reading of C01 at 22:00
+	}, "\n") + "\n")
+	d, err := Load(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []Warning
+	for _, w := range d.Warnings {
+		if w.File == FilePotencia && strings.Contains(w.Message, "repetid") {
+			got = append(got, w)
+		}
+	}
+	if len(got) != 1 || got[0].Line != 5 {
+		t.Errorf("want one duplicate warning at line 5, got %v (all: %v)", got, d.Warnings)
+	}
+	// the demo has the same instant for different chargers only: no warning
+	d, _ = Load(demoFiles(t))
+	if n := countWarnings(d, FilePotencia, "repetid"); n != 0 {
+		t.Errorf("demo warned about duplicates: %v", d.Warnings)
+	}
+}
+
+// Power is sorted per charger, not globally: interleaved chargers whose samples
+// are each in order stay in file order, even when that is not global time order.
+func TestLoadPowerNotGloballySorted(t *testing.T) {
+	m := demoFiles(t)
+	m[FilePotencia] = []byte(strings.Join([]string{
+		"instante,carregador_id,potencia_kw",
+		"2026-03-05 22:30,C01,10",
+		"2026-03-05 22:00,C02,20",
+	}, "\n") + "\n")
+	d, err := Load(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Power) != 2 || d.Power[0].ChargerID != "C01" || countWarnings(d, FilePotencia, "ordem") != 0 {
+		t.Errorf("per-charger order must be kept untouched: %+v %v", d.Power, d.Warnings)
+	}
+}
+
+func TestLoadDefaultMinWordingMentionsSmallCharger(t *testing.T) {
+	m := demoFiles(t)
+	m[FileCarregadores] = []byte("carregador_id,potencia_max_kw\nC01,150\nC02,150\nC03,3\n")
+	d, err := Load(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Chargers[2].MinKW != 3 || d.Chargers[0].MinKW != 5 {
+		t.Errorf("min defaults = %+v", d.Chargers)
+	}
+	for _, w := range d.Warnings {
+		if w.File == FileCarregadores && strings.Contains(w.Message, "padrões usados") {
+			if !strings.Contains(w.Message, "potência máxima do carregador") || !strings.Contains(w.Message, "menor") {
+				t.Errorf("wording must state min(5, potencia_max_kw): %q", w.Message)
+			}
+			return
+		}
+	}
+	t.Errorf("no defaults warning: %v", d.Warnings)
+}
+
+func TestLoadDirErrorHidesPathAndOSText(t *testing.T) {
+	dir := t.TempDir()
+	for n, b := range demoFiles(t) {
+		if err := os.WriteFile(filepath.Join(dir, n), b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	os.Remove(filepath.Join(dir, FileOnibus))
+	if err := os.Mkdir(filepath.Join(dir, FileOnibus), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadDir(dir)
+	var fe *FieldError
+	if !errors.As(err, &fe) || fe.File != FileOnibus {
+		t.Fatalf("err = %v", err)
+	}
+	if strings.Contains(err.Error(), dir) || strings.Contains(strings.ToLower(err.Error()), "no such") || strings.Contains(err.Error(), "/") {
+		t.Errorf("error leaks path or OS text: %q", err.Error())
+	}
+	// unreadable file: the OS error text carries the absolute path
+	os.Remove(filepath.Join(dir, FileOnibus))
+	if err := os.WriteFile(filepath.Join(dir, FileOnibus), []byte("x"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	if f, oerr := os.Open(filepath.Join(dir, FileOnibus)); oerr == nil {
+		f.Close() // running as root: permissions do not apply
+	} else {
+		_, err = LoadDir(dir)
+		if !errors.As(err, &fe) || fe.File != FileOnibus || strings.Contains(err.Error(), dir) || strings.Contains(err.Error(), "permission") {
+			t.Errorf("unreadable file error leaks path or OS text: %v", err)
+		}
+	}
+	_, err = LoadDir(filepath.Join(dir, "nao-existe"))
+	if err == nil || strings.Contains(err.Error(), "nao-existe") || strings.Contains(err.Error(), dir) {
+		t.Errorf("missing dir error leaks path: %v", err)
+	}
 }
