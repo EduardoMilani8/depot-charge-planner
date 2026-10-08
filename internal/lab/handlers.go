@@ -131,12 +131,22 @@ type runRequest struct {
 	Params
 	Seed       int64  `json:"seed"`
 	Controller string `json:"controller"`
+	// Files and Night open one night of imported real data (see runNight): the form's
+	// generator parameters are then ignored, and Controller may also be "planner (sem rodízio)".
+	Files map[string]string `json:"files,omitempty"`
+	Night string            `json:"night,omitempty"`
 }
 
 func (s *Server) run(r *http.Request) (any, *apiError) {
 	req := runRequest{Params: defaultParams(), Seed: 1, Controller: "planner"}
 	if e := decodeBody(r, &req); e != nil {
 		return nil, e
+	}
+	if req.Files != nil {
+		return s.runNight(r, req)
+	}
+	if req.Night != "" {
+		return nil, &apiError{status: http.StatusBadRequest, Field: "night", Message: "A noite só vale junto com as planilhas (files)."}
 	}
 	p := req.Params
 	if e := p.validate(); e != nil {

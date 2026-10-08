@@ -1,4 +1,4 @@
-// Package lab is the HTTP server of the simulation laboratory: three JSON routes plus
+// Package lab is the HTTP server of the simulation laboratory: five JSON routes plus
 // the embedded web interface. It holds no planning logic.
 package lab
 
@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"mime"
@@ -22,7 +23,8 @@ import (
 )
 
 const (
-	maxBody       = 64 << 10
+	maxBody       = 64 << 10 // every route but the real-data ones
+	maxBodyReal   = 16 << 20 // /api/import, /api/replay and /api/run: the spreadsheets travel in the body
 	maxConcurrent = 2
 )
 
@@ -46,9 +48,11 @@ func New() *Server {
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/defaults", s.route(http.MethodGet, s.defaults))
-	mux.HandleFunc("/api/compare", s.route(http.MethodPost, s.compare))
-	mux.HandleFunc("/api/run", s.route(http.MethodPost, s.run))
+	mux.HandleFunc("/api/defaults", s.route(http.MethodGet, maxBody, s.defaults))
+	mux.HandleFunc("/api/compare", s.route(http.MethodPost, maxBody, s.compare))
+	mux.HandleFunc("/api/run", s.route(http.MethodPost, maxBodyReal, s.run))
+	mux.HandleFunc("/api/import", s.route(http.MethodPost, maxBodyReal, s.importFiles))
+	mux.HandleFunc("/api/replay", s.route(http.MethodPost, maxBodyReal, s.replay))
 	mux.Handle("/", s.static)
 	return guard(mux)
 }
@@ -120,8 +124,8 @@ func guard(next http.Handler) http.Handler {
 
 type handlerFunc func(r *http.Request) (any, *apiError)
 
-// route wraps a JSON handler: method, content type, body limit, response encoding.
-func (s *Server) route(method string, h handlerFunc) http.HandlerFunc {
+// route wraps a JSON handler: method, content type, body limit (bytes), response encoding.
+func (s *Server) route(method string, limit int64, h handlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != method {
 			w.Header().Set("Allow", method)
@@ -134,7 +138,7 @@ func (s *Server) route(method string, h handlerFunc) http.HandlerFunc {
 				writeError(w, &apiError{status: http.StatusUnsupportedMediaType, Message: "Envie o corpo como application/json."})
 				return
 			}
-			r.Body = http.MaxBytesReader(w, r.Body, maxBody)
+			r.Body = http.MaxBytesReader(w, r.Body, limit)
 		}
 		body, aerr := h(r)
 		if aerr != nil {
@@ -156,7 +160,7 @@ func decodeBody(r *http.Request, v any) *apiError {
 		}
 		var tooBig *http.MaxBytesError
 		if errors.As(err, &tooBig) {
-			return &apiError{status: http.StatusRequestEntityTooLarge, Message: "Corpo da requisição grande demais (limite de 64 KB)."}
+			return tooLarge(tooBig)
 		}
 		return &apiError{status: http.StatusBadRequest, Message: "JSON inválido: " + err.Error()}
 	}
@@ -164,11 +168,21 @@ func decodeBody(r *http.Request, v any) *apiError {
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		var tooBig *http.MaxBytesError
 		if errors.As(err, &tooBig) {
-			return &apiError{status: http.StatusRequestEntityTooLarge, Message: "Corpo da requisição grande demais (limite de 64 KB)."}
+			return tooLarge(tooBig)
 		}
 		return &apiError{status: http.StatusBadRequest, Message: "JSON inválido: há dados depois do objeto."}
 	}
 	return nil
+}
+
+// tooLarge is the 413 answer; the message names the limit of the route that was exceeded.
+func tooLarge(e *http.MaxBytesError) *apiError {
+	limit := fmt.Sprintf("%d KB", e.Limit>>10)
+	if e.Limit >= 1<<20 && e.Limit%(1<<20) == 0 {
+		limit = fmt.Sprintf("%d MB", e.Limit>>20)
+	}
+	return &apiError{status: http.StatusRequestEntityTooLarge,
+		Message: "Corpo da requisição grande demais (limite de " + limit + ")."}
 }
 
 // acceptsGzip reports whether the request's Accept-Encoding allows gzip (q=0 forbids it).

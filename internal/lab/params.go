@@ -52,6 +52,10 @@ type apiError struct {
 	status  int
 	Message string `json:"error"`
 	Field   string `json:"field,omitempty"`
+	// File, Line and Column locate a spreadsheet error (imported real data).
+	File   string `json:"file,omitempty"`
+	Line   int    `json:"line,omitempty"`
+	Column string `json:"column,omitempty"`
 }
 
 // jsonField maps sim.FieldError names (simrun flag names) to the API's JSON keys.

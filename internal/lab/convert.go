@@ -108,6 +108,7 @@ type runResponse struct {
 	Params     Params        `json:"params"`
 	Seed       int64         `json:"seed"`
 	Controller string        `json:"controller"`
+	Source     string        `json:"source,omitempty"` // set only for an imported night
 	Metrics    sim.Metrics   `json:"metrics"`
 	Scenario   scenarioDTO   `json:"scenario"`
 	Series     seriesDTO     `json:"series"`
