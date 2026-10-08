@@ -114,3 +114,7 @@ Como ler esses números:
 Os cenários são sintéticos e usam premissas de dados públicos ainda não validadas com operadoras reais, então esses números mostram a comparação entre controladores, não o desempenho esperado em campo.
 
 Todas as premissas de carga vêm de dados públicos e ainda precisam de validação com operadoras reais.
+
+## Licença
+
+MIT. Veja o arquivo [LICENSE](LICENSE).
