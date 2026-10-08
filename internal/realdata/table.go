@@ -15,7 +15,11 @@ import (
 	"unicode/utf8"
 )
 
-const maxFileBytes = 8 << 20
+const (
+	maxFileBytes = 8 << 20
+	maxColumns   = 64
+	maxCells     = 2_000_000 // columns x rows; rows are padded, so bytes alone do not bound memory
+)
 
 // FieldError is a data error pointing at a file, line and column.
 type FieldError struct {
@@ -75,6 +79,9 @@ func ReadTable(file string, data []byte) (*Table, error) {
 	if len(data) > maxFileBytes {
 		return fail(0, "arquivo maior que 8 MB")
 	}
+	if bytes.HasPrefix(data, []byte{0xFF, 0xFE}) || bytes.HasPrefix(data, []byte{0xFE, 0xFF}) {
+		return fail(0, "arquivo em UTF-16 não é suportado: salve como CSV UTF-8")
+	}
 	data = bytes.TrimPrefix(data, []byte("\xEF\xBB\xBF"))
 	t := &Table{File: file}
 	if !utf8.Valid(data) {
@@ -83,6 +90,9 @@ func ReadTable(file string, data []byte) (*Table, error) {
 	}
 	comma := detectComma(data)
 	t.semicolon = comma == ';'
+	if ferr := checkShape(file, data, byte(comma)); ferr != nil {
+		return nil, ferr
+	}
 
 	r := csv.NewReader(bytes.NewReader(data))
 	r.Comma = comma
@@ -132,8 +142,13 @@ func ReadTable(file string, data []byte) (*Table, error) {
 			}
 			rec = rec[:len(t.Header)]
 		}
-		for len(rec) < len(t.Header) {
-			rec = append(rec, "")
+		if len(t.Rows)+1 > maxCells/len(t.Header) {
+			return fail(line, "o arquivo é grande demais (máximo de 2 milhões de células)")
+		}
+		if len(rec) < len(t.Header) {
+			padded := make([]string, len(t.Header)) // one allocation, no append growth
+			copy(padded, rec)
+			rec = padded
 		}
 		t.Rows = append(t.Rows, Row{Line: line, Fields: rec})
 	}
@@ -193,6 +208,43 @@ done:
 		return ';'
 	}
 	return ','
+}
+
+// checkShape rejects records with more than maxColumns fields before
+// encoding/csv allocates them (a line of millions of separators would
+// otherwise cost memory far beyond the file size). Quotes are tracked the same
+// way csv does for well-formed input; malformed input fails later in the reader.
+func checkShape(file string, data []byte, comma byte) *FieldError {
+	line, fields := 1, 1
+	inQuote, content, headerSeen := false, false, false
+	for _, b := range data {
+		switch {
+		case b == '"':
+			inQuote = !inQuote
+			content = true
+		case inQuote:
+			if b == '\n' {
+				line++
+			}
+		case b == comma:
+			fields++
+			if fields > maxColumns {
+				if headerSeen {
+					return &FieldError{File: file, Line: line, Message: "a linha tem campos demais (máximo 64)"}
+				}
+				return &FieldError{File: file, Line: line, Message: "o arquivo tem colunas demais (máximo 64)"}
+			}
+		case b == '\n':
+			if content {
+				headerSeen = true
+			}
+			line++
+			fields, content = 1, false
+		case b != ' ' && b != '\t' && b != '\r':
+			content = true
+		}
+	}
+	return nil
 }
 
 // cp1252 maps bytes 0x80-0x9F; undefined slots keep their C1 control code point.
@@ -275,38 +327,39 @@ func (t *Table) Float(r Row, col string) (v float64, present bool, err *FieldErr
 	if s == "" {
 		return 0, false, nil
 	}
+	orig := s
 	if strings.Contains(s, ",") {
 		if !t.semicolon {
-			return 0, false, t.fieldErr(r, col, fmt.Sprintf("número %s inválido: use ponto decimal", shorten(s)))
+			return 0, false, t.fieldErr(r, col, fmt.Sprintf("número %s inválido: use ponto decimal", shorten(orig)))
 		}
 		if strings.Contains(s, ".") {
-			return 0, false, t.fieldErr(r, col, fmt.Sprintf("número %s inválido: não use separador de milhar", shorten(s)))
+			return 0, false, t.fieldErr(r, col, fmt.Sprintf("número %s inválido: não use separador de milhar", shorten(orig)))
 		}
 		s = strings.Replace(s, ",", ".", 1)
 	}
 	if strings.IndexFunc(s, func(c rune) bool { return !strings.ContainsRune("0123456789+-.eE", c) }) >= 0 {
-		return 0, false, t.fieldErr(r, col, fmt.Sprintf("%s não é um número", shorten(s)))
+		return 0, false, t.fieldErr(r, col, fmt.Sprintf("%s não é um número", shorten(orig)))
 	}
 	f, perr := strconv.ParseFloat(s, 64)
 	if perr != nil {
 		if errors.Is(perr, strconv.ErrRange) {
-			return 0, false, t.fieldErr(r, col, fmt.Sprintf("número %s fora do intervalo", shorten(s)))
+			return 0, false, t.fieldErr(r, col, fmt.Sprintf("número %s fora do intervalo", shorten(orig)))
 		}
-		return 0, false, t.fieldErr(r, col, fmt.Sprintf("%s não é um número", shorten(s)))
+		return 0, false, t.fieldErr(r, col, fmt.Sprintf("%s não é um número", shorten(orig)))
 	}
 	if math.IsNaN(f) || math.IsInf(f, 0) {
-		return 0, false, t.fieldErr(r, col, fmt.Sprintf("número %s fora do intervalo", shorten(s)))
+		return 0, false, t.fieldErr(r, col, fmt.Sprintf("número %s fora do intervalo", shorten(orig)))
 	}
 	return f, true, nil
 }
 
 var timeLayouts = []string{
-	"2006-01-02 15:04",
-	"2006-01-02T15:04",
-	"2006-01-02 15:04:05",
-	"2006-01-02T15:04:05",
-	"02/01/2006 15:04",
-	"02/01/2006 15:04:05",
+	"2006-1-2 15:04",
+	"2006-1-2T15:04",
+	"2006-1-2 15:04:05",
+	"2006-1-2T15:04:05",
+	"2/1/2006 15:04",
+	"2/1/2006 15:04:05",
 }
 
 // Time parses a local date-time without zone; it is read as UTC with the

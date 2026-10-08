@@ -3,6 +3,8 @@ package realdata
 import (
 	"math/rand"
 	"reflect"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -372,4 +374,180 @@ func FuzzReadTable(f *testing.F) {
 			}
 		}
 	})
+}
+
+func header64() string {
+	cols := make([]string, 64)
+	for i := range cols {
+		cols[i] = "c" + strconv.Itoa(i)
+	}
+	return strings.Join(cols, ",") + "\n"
+}
+
+func allocDelta(f func()) uint64 {
+	var a, b runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&a)
+	f()
+	runtime.ReadMemStats(&b)
+	return b.TotalAlloc - a.TotalAlloc
+}
+
+func wantFieldError(t *testing.T, err error, msg string) *FieldError {
+	t.Helper()
+	fe, ok := err.(*FieldError)
+	if !ok {
+		t.Fatalf("expected *FieldError, got %T (%v)", err, err)
+	}
+	if !strings.Contains(fe.Message, msg) {
+		t.Errorf("message = %q, want contain %q", fe.Message, msg)
+	}
+	return fe
+}
+
+func TestReadTableHostileShapesBoundedMemory(t *testing.T) {
+	const limit = 50 << 20
+	wide := strings.Repeat("c,", 19999) + "c\n" + strings.Repeat("x\n", 500)
+	empties := strings.Repeat(",", maxFileBytes-16) + "\nx\n"
+	wideRow := "a,b\n" + strings.Repeat(",", 100000) + "\n"
+	many := header64() + strings.Repeat("x\n", 40000)
+	cases := []struct {
+		name, in, msg string
+		line          int
+	}{
+		{"20000 columns", wide, "colunas demais (máximo 64)", 1},
+		{"8 MB of empty columns", empties, "colunas demais (máximo 64)", 1},
+		{"65 columns", strings.TrimSuffix(header64(), "\n") + ",extra\n", "colunas demais (máximo 64)", 1},
+		{"data row too wide", wideRow, "campos demais (máximo 64)", 2},
+		{"too many cells", many, "máximo de 2 milhões de células", 31252},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var err error
+			start := time.Now()
+			alloc := allocDelta(func() { _, err = ReadTable("x.csv", []byte(c.in)) })
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			fe := wantFieldError(t, err, c.msg)
+			if fe.Line != c.line || fe.File != "x.csv" {
+				t.Errorf("err = %+v, want line %d", fe, c.line)
+			}
+			if alloc > limit {
+				t.Errorf("allocated %d MB, want < 50", alloc>>20)
+			}
+			if d := time.Since(start); d > 5*time.Second {
+				t.Errorf("took %v", d)
+			}
+		})
+	}
+}
+
+func TestReadTableCellCapBoundary(t *testing.T) {
+	header := header64()
+	ok := header + strings.Repeat("x\n", 31250) // 64 x 31250 = 2,000,000 cells
+	tb, err := ReadTable("x.csv", []byte(ok))
+	if err != nil {
+		t.Fatalf("under the cap: %v", err)
+	}
+	if len(tb.Rows) != 31250 || len(tb.Rows[0].Fields) != 64 {
+		t.Fatalf("rows = %d, fields = %d", len(tb.Rows), len(tb.Rows[0].Fields))
+	}
+	_, err = ReadTable("x.csv", []byte(header+strings.Repeat("x\n", 31251)))
+	wantFieldError(t, err, "células")
+}
+
+func TestTimeNoLeadingZeros(t *testing.T) {
+	tb := mustTable(t, "id;t\na;4/3/2026 9:10\nb;2026-3-4 21:10\nc;2/1/2006 15:04\nd;2026-3-4T9:05:07\nf;31/2/2026 10:00\ng;2026-2-30 1:00\nh;2026-3-4 24:00\n")
+	want := map[string]time.Time{
+		"a": time.Date(2026, 3, 4, 9, 10, 0, 0, time.UTC),
+		"b": time.Date(2026, 3, 4, 21, 10, 0, 0, time.UTC),
+		"c": time.Date(2006, 1, 2, 15, 4, 0, 0, time.UTC),
+		"d": time.Date(2026, 3, 4, 9, 5, 7, 0, time.UTC),
+	}
+	for _, r := range tb.Rows {
+		id := tb.Str(r, "id")
+		tm, ok, err := tb.Time(r, "t")
+		if w, good := want[id]; good {
+			if err != nil || !ok || !tm.Equal(w) {
+				t.Errorf("%s: %v %v %v", id, tm, ok, err)
+			}
+			continue
+		}
+		if err == nil || ok {
+			t.Errorf("%s: expected error, got %v", id, tm)
+		}
+	}
+}
+
+func TestFloatErrorQuotesOriginalCell(t *testing.T) {
+	tb := mustTable(t, "id;v\na;\"12,5,3\"\nb;1,2x\n")
+	_, _, err := tb.Float(tb.Rows[0], "v")
+	if err == nil || !strings.Contains(err.Message, `"12,5,3"`) {
+		t.Errorf("err = %+v", err)
+	}
+	_, _, err = tb.Float(tb.Rows[1], "v")
+	if err == nil || !strings.Contains(err.Message, `"1,2x"`) {
+		t.Errorf("err = %+v", err)
+	}
+}
+
+func TestReadTableUTF16Rejected(t *testing.T) {
+	for _, bom := range []string{"\xFF\xFE", "\xFE\xFF"} {
+		_, err := ReadTable("x.csv", []byte(bom+"i\x00d\x00\n\x00"))
+		fe := wantFieldError(t, err, "UTF-16 não é suportado")
+		if fe.Line != 0 || !strings.Contains(fe.Message, "UTF-8") {
+			t.Errorf("err = %+v", fe)
+		}
+	}
+}
+
+func TestExcelBrasilEqualsPlain(t *testing.T) {
+	br := mustTable(t, "\xEF\xBB\xBFid;cap;nome\r\nb1;12,5;a\xE7\xE3o\r\nb2;3;x\r\n\r\n;;\r\n\r\n")
+	plain := mustTable(t, "id,cap,nome\nb1,12.5,ação\nb2,3,x\n")
+	if !reflect.DeepEqual(br.Header, plain.Header) {
+		t.Fatalf("headers: %v vs %v", br.Header, plain.Header)
+	}
+	if len(br.Rows) != len(plain.Rows) {
+		t.Fatalf("rows: %d vs %d", len(br.Rows), len(plain.Rows))
+	}
+	for i := range br.Rows {
+		if br.Rows[i].Line != plain.Rows[i].Line {
+			t.Errorf("row %d line %d vs %d", i, br.Rows[i].Line, plain.Rows[i].Line)
+		}
+		for _, c := range []string{"id", "nome"} {
+			if br.Str(br.Rows[i], c) != plain.Str(plain.Rows[i], c) {
+				t.Errorf("row %d %s: %q vs %q", i, c, br.Str(br.Rows[i], c), plain.Str(plain.Rows[i], c))
+			}
+		}
+		a, ao, aerr := br.Float(br.Rows[i], "cap")
+		b, bo, berr := plain.Float(plain.Rows[i], "cap")
+		if a != b || ao != bo || aerr != nil || berr != nil {
+			t.Errorf("row %d cap: %v %v %v vs %v %v %v", i, a, ao, aerr, b, bo, berr)
+		}
+	}
+}
+
+func TestReadTableOddShapes(t *testing.T) {
+	// NUL bytes do not panic.
+	tb := mustTable(t, "id,v\na,\x00b\n\x00,1\n")
+	for _, r := range tb.Rows {
+		tb.Float(r, "v")
+		tb.Time(r, "v")
+	}
+	// ';' inside quotes with ',' delimiter stays in the field.
+	tb = mustTable(t, "id,nome\nb1,\"a;b;c;d;e\"\n")
+	if tb.Str(tb.Rows[0], "nome") != "a;b;c;d;e" || len(tb.Header) != 2 {
+		t.Errorf("header %v rows %+v", tb.Header, tb.Rows)
+	}
+	// Quoted comma in the header.
+	tb = mustTable(t, "\"id, x\";cap\nb1;2\n")
+	if !reflect.DeepEqual(tb.Header, []string{"id, x", "cap"}) {
+		t.Errorf("header = %q", tb.Header)
+	}
+	// Single column.
+	tb = mustTable(t, "id\nb1\nb2\n")
+	if len(tb.Header) != 1 || len(tb.Rows) != 2 || tb.Rows[1].Fields[0] != "b2" || tb.Rows[1].Line != 3 {
+		t.Errorf("single column: %+v", tb)
+	}
 }
