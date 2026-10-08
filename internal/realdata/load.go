@@ -687,7 +687,7 @@ func loadPower(t *Table, ds *Dataset) ([]PowerSample, error) {
 			unsorted, unsortedLine = true, r.Line
 		}
 		last[p.ChargerID] = p.At
-		k := readingKey{p.ChargerID, p.At.UnixNano()}
+		k := readingKey{p.ChargerID, p.At.Unix()} // minute-resolution readings; UnixNano is undefined outside 1678-2262
 		if seen[k] {
 			if dupN == 0 {
 				dupFirst = r.Line

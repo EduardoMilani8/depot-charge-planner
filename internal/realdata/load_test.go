@@ -859,3 +859,28 @@ func TestLoadDirErrorHidesPathAndOSText(t *testing.T) {
 		t.Errorf("missing dir error leaks path: %v", err)
 	}
 }
+
+func TestLoadDuplicateKeyFarFutureYear(t *testing.T) {
+	// readings outside the years UnixNano can represent (1678-2262) must neither
+	// collide with each other nor lose a true duplicate
+	power := "instante,carregador_id,potencia_kw\n" +
+		"2300-01-01 10:00,C01,10\n" +
+		"2300-01-01 10:01,C01,10\n" +
+		"9999-12-31 23:59,C01,10\n" +
+		"1500-06-01 10:00,C01,10\n" +
+		"1500-06-01 10:00,C02,10\n"
+	d, err := Load(withFile(demoFiles(t), FilePotencia, power))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countWarnings(d, FilePotencia, "repetida"); n != 0 {
+		t.Errorf("false duplicate warning: %v", d.Warnings)
+	}
+	d, err = Load(withFile(demoFiles(t), FilePotencia, power+"2300-01-01 10:00,C01,20\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countWarnings(d, FilePotencia, "repetida"); n != 1 {
+		t.Errorf("true duplicate in year 2300 not reported: %v", d.Warnings)
+	}
+}
