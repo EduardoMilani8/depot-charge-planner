@@ -3,6 +3,7 @@ package realdata
 import (
 	"encoding/json"
 	"math"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -506,5 +507,42 @@ func TestNightsDoesNotMutateDataset(t *testing.T) {
 		if power[i] != d.Power[i] {
 			t.Fatalf("Power[%d] changed", i)
 		}
+	}
+}
+
+func TestNightsBusesSortedByArrivalThenID(t *testing.T) {
+	// shuffled input rows (and an arrival tie) never change the scenario
+	orig := demoFiles(t)
+	m := mutate(t, orig, FileOnibus, "B02,300,2026-03-04 22:00", "B02,300,2026-03-04 20:00")
+	lines := strings.Split(strings.TrimRight(string(m[FileOnibus]), "\n"), "\n")
+	shuffled := []string{lines[0]}
+	for i := len(lines) - 1; i >= 1; i-- {
+		shuffled = append(shuffled, lines[i])
+	}
+	sh := withFile(m, FileOnibus, strings.Join(shuffled, "\n")+"\n")
+
+	a, _ := demoNights(t, m, NightOptions{})
+	b, _ := demoNights(t, sh, NightOptions{})
+	for i := range a {
+		if !reflect.DeepEqual(a[i].Scenario, b[i].Scenario) {
+			t.Errorf("night %s: scenario depends on row order", a[i].Key)
+		}
+	}
+	got := []string{}
+	for _, bs := range b[0].Scenario.Buses {
+		got = append(got, bs.Bus.ID)
+	}
+	if !reflect.DeepEqual(got, []string{"B01", "B02", "B03"}) { // B01 and B02 tie at 20:00
+		t.Errorf("order = %v", got)
+	}
+	// ArrivalMin is non-decreasing even when IDs say otherwise
+	m2 := mutate(t, orig, FileOnibus, "B01,300,2026-03-04 20:00", "B01,300,2026-03-04 23:00")
+	c, _ := demoNights(t, m2, NightOptions{})
+	got = got[:0]
+	for _, bs := range c[0].Scenario.Buses {
+		got = append(got, bs.Bus.ID)
+	}
+	if !reflect.DeepEqual(got, []string{"B02", "B01", "B03"}) {
+		t.Errorf("order by arrival = %v", got)
 	}
 }

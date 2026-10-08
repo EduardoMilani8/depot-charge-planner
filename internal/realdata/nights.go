@@ -162,6 +162,15 @@ func (d *Dataset) Nights(o NightOptions) ([]Night, []Warning) {
 				TrueTargetKWh: target,
 			})
 		}
+		// The simulator breaks ties by the order of Buses: fix it so the order of
+		// the rows in onibus.csv never changes a result.
+		sort.SliceStable(specs, func(i, j int) bool {
+			a, b := specs[i].Bus, specs[j].Bus
+			if a.ArrivalMin != b.ArrivalMin {
+				return a.ArrivalMin < b.ArrivalMin
+			}
+			return a.ID < b.ID
+		})
 		if horizon > maxHorizonMin {
 			line := buses[0].Line
 			for _, b := range buses {

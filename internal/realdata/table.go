@@ -48,9 +48,9 @@ func (e *FieldError) Error() string {
 
 // Warning is a non-fatal remark about a file (Line 0 = general).
 type Warning struct {
-	File    string
-	Line    int
-	Message string
+	File    string `json:"file"`
+	Line    int    `json:"line"`
+	Message string `json:"message"`
 }
 
 // Table is a parsed CSV: Header (normalized names) and Rows with their source line numbers.
