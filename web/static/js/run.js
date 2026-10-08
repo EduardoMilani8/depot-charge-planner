@@ -6,8 +6,8 @@ import { renderPowerChart } from './charts/power.js';
 import { renderBusTimeline, renderChargerTimeline } from './charts/gantt.js';
 import { renderDecisionPanel } from './decisionPanel.js';
 import { fmtNum, fmtPct, fmtBRL, clock } from './format.js';
-import { CONTROLLERS } from './params.js';
-import { describeFault, describeParams, CONTROLLER_HELP } from './glossary.js';
+import { runRequestBody, controllerOptions, controllerHelp } from './realdata.js';
+import { describeFault, describeParams } from './glossary.js';
 import { nextFocusTarget, restoreFocus } from './focus.js';
 import { createPlayer, countingText } from './motion.js';
 import { feedUpdate } from './events.js';
@@ -75,15 +75,18 @@ export function createRunView(root, hooks) {
     return btn;
   }
 
-  // controls draws the controller and seed pickers; `sel` is { controller, seed }.
+  // controls draws the controller and seed pickers; `sel` is { controller, seed, imported }. A night
+  // of imported real data has no seed (it is one fixed night) and also offers the planner without
+  // swaps; its runs are reloaded with the same files, so both pickers keep working.
   function controls(sel) {
     const select = h('select', { id: 'run-controller', 'aria-label': 'Controlador' },
-      CONTROLLERS.map((c) => h('option', { value: c, selected: c === sel.controller }, c)));
-    const seed = h('input', { id: 'run-seed', type: 'number', step: 1, value: sel.seed, 'aria-label': 'Semente' });
+      controllerOptions(sel.imported).map((c) => h('option', { value: c, selected: c === sel.controller }, c)));
+    const seed = sel.imported ? null : h('input', { id: 'run-seed', type: 'number', step: 1, value: sel.seed, 'aria-label': 'Semente' });
     // Empty, the hint is hidden so it does not take a blank row of the flex layout.
     const hint = h('span', { class: 'field-error', role: 'alert', hidden: true });
     const setHint = (text) => { hint.textContent = text; hint.hidden = text === ''; };
     const open = () => {
+      if (!seed) { hooks.onSelect(select.value, 1); return; }
       const n = Number(seed.value);
       // Any whole number goes to the server, which answers out-of-range seeds in Portuguese.
       if (seed.value.trim() === '' || !Number.isInteger(n)) { setHint('A semente deve ser um número inteiro.'); return; }
@@ -91,10 +94,10 @@ export function createRunView(root, hooks) {
       hooks.onSelect(select.value, n);
     };
     select.addEventListener('change', open);
-    seed.addEventListener('change', open);
+    seed?.addEventListener('change', open);
     return h('div', { class: 'run-controls' },
-      h('label', {}, 'Controlador ', select), h('label', {}, 'Semente ', seed), hint,
-      h('span', { class: 'note', title: CONTROLLER_HELP[sel.controller] }, CONTROLLER_HELP[sel.controller]));
+      h('label', {}, 'Controlador ', select), seed ? h('label', {}, 'Semente ', seed) : null, hint,
+      h('span', { class: 'note', title: controllerHelp(sel.controller) }, controllerHelp(sel.controller)));
   }
 
   function cursorRow(data, cursor, play) {
@@ -118,6 +121,13 @@ export function createRunView(root, hooks) {
   // The heading takes focus (tabindex -1) when a run is opened from a seed dot.
   const heading = () => h('h2', { tabindex: -1 }, 'Execução');
 
+  // Imported nights say where they come from; the button leads back to the tab that opened them.
+  function sourceLine(data) {
+    if (!data.source) return null;
+    return h('p', { class: 'run-source' }, h('strong', {}, data.source), ' · os dados ficam só neste computador ',
+      hooks.onBack ? h('button', { type: 'button', class: 'chip', onclick: hooks.onBack }, '← Voltar a Dados reais') : null);
+  }
+
   function settleFocus() {
     restoreFocus(root, focusTarget);
     focusTarget = null;
@@ -135,8 +145,9 @@ export function createRunView(root, hooks) {
     const decisionPanel = h('div', { class: 'panel', id: 'panel-decision' });
     clear(root).append(
       heading(),
+      sourceLine(data),
       h('p', { class: 'note run-params' }, `Parâmetros: ${describeParams(data.params)}.`),
-      controls(data),
+      controls({ ...data, imported: Boolean(data.source) }),
       summaryLine(data.metrics),
       faultList(data),
       h('div', { class: 'transport' }, playerRow(player), cursorRow(data, cursor, playButton(player))),
@@ -192,7 +203,7 @@ export function createRunView(root, hooks) {
     current = null;
     loading = true;
     try {
-      const r = await latest((signal) => apiRun({ ...state.params, seed: state.seed, controller: state.controller }, signal));
+      const r = await latest((signal) => apiRun(runRequestBody(state), signal));
       if (r.stale) return;
       loading = false;
       render(r.value);
@@ -200,7 +211,7 @@ export function createRunView(root, hooks) {
       loading = false;
       const msg = e instanceof ApiError ? e.message : 'Erro inesperado: ' + e.message;
       // Keep the pickers so the seed or controller can be corrected right here.
-      clear(root).append(heading(), controls(state), h('div', { class: 'banner-inline', role: 'alert' }, msg));
+      clear(root).append(heading(), controls({ ...state, imported: Boolean(state.real) }), h('div', { class: 'banner-inline', role: 'alert' }, msg));
       settleFocus();
     }
   }

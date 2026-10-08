@@ -1,4 +1,4 @@
-export const TABS = ['scenario', 'compare', 'run'];
+export const TABS = ['scenario', 'compare', 'real', 'run'];
 export const CONTROLLERS = ['fifo', 'edf', 'fifo-unplug', 'safe', 'planner'];
 
 // nextTab returns the tab a key moves to (arrows wrap, Home/End jump), or null for other keys.
@@ -60,9 +60,11 @@ export function hashToState(hash, defaults) {
 // linkState is the state a link must carry. On the run tab that is the run on screen
 // (`run` = { params, controller, seed }, or null when none): `state.params` may already hold
 // the parameters of a newer comparison, and the link has to reproduce what the person sees.
-// Other tabs show what `state` holds.
+// Other tabs show what `state` holds. A run of imported real data (`run.real`) cannot be rebuilt
+// from a link, because the files stay on this computer: its link only names the "Dados reais" tab.
 export function linkState(state, run) {
   if (state.tab !== 'run' || !run) return state;
+  if (run.real) return { ...state, tab: 'real' };
   return { ...state, params: run.params, controller: run.controller, seed: run.seed };
 }
 

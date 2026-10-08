@@ -3,6 +3,7 @@ import { hashToState, decideHashAction, stateToHash, linkState, nextTab, TABS } 
 import { createForm } from './form.js';
 import { renderCompare } from './compare.js';
 import { createRunView } from './run.js';
+import { createRealView } from './realdataView.js';
 import { h } from './dom.js';
 import { applyMotionClass, setAnimations, animationsEnabled } from './motion.js';
 
@@ -11,11 +12,14 @@ let state;
 let defaultParams; // the flat `params` of the /api/defaults reply
 let form;
 let runView;
+let realView;
 let compareView = null; // { dispose } of the comparison on screen
 // What the Execução tab shows can differ from `state.params` (a newer comparison replaces those
 // without touching the run on screen), so the screen's own values are tracked: the link and the
 // run view's reloads use them, and a seed dot opens a run with the comparison's.
-let runSel = null; // { params, controller, seed } of the run on screen (or loading), null when none
+// `real` ({ files, night }) marks a night of imported data: it is reloaded with the same files and
+// has no link, since the files stay in this page's memory.
+let runSel = null; // { params, controller, seed, real? } of the run on screen (or loading), null when none
 let compareParams = null; // params of the comparison on screen, null when none
 const $ = (id) => document.getElementById(id);
 
@@ -78,6 +82,14 @@ async function runCompare(params) {
   }
 }
 
+// openRealRun shows one imported night (`real` = { files, night }) in the Execução tab. The form's
+// state is left alone: the link of this screen only names the "Dados reais" tab.
+function openRealRun(real, controller, opts = { heading: true }) {
+  runSel = { params: state.params, controller, seed: 1, real };
+  showTab('run');
+  runView.load({ params: state.params, controller, seed: 1, real }, opts);
+}
+
 // openRun shows one run. `params` default to the form's; `opts.heading` moves focus to the run's
 // heading once it is drawn (a seed dot was activated).
 export function openRun(controller, seed, params = state.params, opts = {}) {
@@ -98,11 +110,15 @@ function toast(message) {
 }
 
 async function copyLink() {
+  if (state.tab === 'run' && runSel?.real) {
+    toast('Execuções de dados reais não geram link: os dados ficam só neste computador.');
+    return;
+  }
   syncHash();
   const url = location.href;
   try {
     await navigator.clipboard.writeText(url);
-    toast('Link copiado.');
+    toast(state.tab === 'real' ? 'Link copiado (só a aba; os dados não vão no link).' : 'Link copiado.');
   } catch {
     window.prompt('Copie o link:', url); // clipboard blocked: let the user copy it by hand
   }
@@ -122,6 +138,7 @@ function applyState(next) {
   const wanted = state.tab; // showTab overwrites state.tab, so remember the link's view first
   showTab('scenario');
   if (wanted === 'compare') runCompare(state.params);
+  if (wanted === 'real') showTab('real'); // only the tab comes from a link, never the data
   if (wanted === 'run') openRun(state.controller, state.seed);
 }
 
@@ -164,11 +181,18 @@ async function init() {
   form = createForm($('tab-scenario'), defaults, { onRun: runCompare });
   runView = createRunView($('run-out'), {
     // The pickers of the run on screen reload it with the parameters it was computed with.
-    onSelect: (controller, seed) => openRun(controller, seed, runSel?.params ?? state.params),
+    onSelect: (controller, seed) => (runSel?.real
+      ? openRealRun(runSel.real, controller, {})
+      : openRun(controller, seed, runSel?.params ?? state.params)),
+    onBack: () => { showTab('real'); document.querySelector('[data-tab="real"]').focus(); },
     onRendered: ({ data }) => {
-      runSel = { params: data.params, controller: data.controller, seed: data.seed };
+      runSel = { params: data.params, controller: data.controller, seed: data.seed, real: data.source ? runSel?.real : undefined };
       if (state.tab === 'run') syncHash();
     },
+  });
+  realView = createRealView({
+    filesRoot: $('real-files'), outRoot: $('real-out'),
+    onOpenRun: ({ files, night, controller }) => openRealRun({ files, night }, controller),
   });
   for (const b of document.querySelectorAll('nav.tabs button')) b.addEventListener('click', () => showTab(b.dataset.tab));
   // Keyboard pattern of tabs: arrows (with wrap), Home and End move focus and activate the tab.

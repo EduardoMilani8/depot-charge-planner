@@ -19,6 +19,7 @@
     <ul>
       <li><strong>Cenário:</strong> escolha o tamanho da garagem, o limite de potência da rede e o perfil de falhas, e clique em Rodar.</li>
       <li><strong>Comparação:</strong> o planejador contra quatro referências, na média de várias garagens simuladas (sementes). “Violações do plano” deve ser sempre 0.</li>
+      <li><strong>Dados reais:</strong> importe as planilhas de uma garagem de verdade e compare o que aconteceu com o que o planejador e as referências teriam feito. Os arquivos ficam só neste computador.</li>
       <li><strong>Execução:</strong> um dia de uma garagem simulada, minuto a minuto. Arraste o cursor para ver a potência contra o limite, a carga de cada ônibus, os carregadores e a decisão tomada. Clique num ônibus para saber por que ele saiu pronto ou não.</li>
       <li>Os dados são sintéticos: mostram o comportamento do algoritmo, não o de uma garagem real. A premissa de que os operadores executam os rodízios recomendados precisa ser validada com operadores reais.</li>
     </ul>
@@ -27,12 +28,14 @@
 <nav class="tabs" id="tablist" role="tablist" aria-label="Seções">
   <button role="tab" id="t-scenario" aria-controls="tab-scenario" data-tab="scenario" aria-selected="true">Cenário</button>
   <button role="tab" id="t-compare" aria-controls="tab-compare" data-tab="compare" aria-selected="false">Comparação</button>
+  <button role="tab" id="t-real" aria-controls="tab-real" data-tab="real" aria-selected="false">Dados reais</button>
   <button role="tab" id="t-run" aria-controls="tab-run" data-tab="run" aria-selected="false">Execução</button>
 </nav>
 <div id="banner" class="banner" role="alert" hidden></div>
 <main>
   <section id="tab-scenario" role="tabpanel" aria-labelledby="t-scenario"></section>
   <section id="tab-compare" role="tabpanel" aria-labelledby="t-compare" hidden><div id="compare-out"><p class="note">Rode um cenário para ver a comparação.</p></div></section>
+  <section id="tab-real" role="tabpanel" aria-labelledby="t-real" hidden><div id="real-files"></div><div id="real-out"></div></section>
   <section id="tab-run" role="tabpanel" aria-labelledby="t-run" hidden><div id="run-out"><p class="note">Nenhuma execução aberta. Rode um cenário e, na Comparação, clique num ponto de semente para ver aquela execução minuto a minuto.</p></div></section>
 </main>
 <div id="toast" class="toast" role="status" aria-live="polite"></div>

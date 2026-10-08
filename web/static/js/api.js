@@ -1,9 +1,13 @@
 export class ApiError extends Error {
-  constructor(message, field = '', status = 0) {
+  // `where` is the location of a spreadsheet error: { file, line, column }.
+  constructor(message, field = '', status = 0, where = {}) {
     super(message);
     this.name = 'ApiError';
     this.field = field;
     this.status = status;
+    this.file = where.file || '';
+    this.line = where.line || 0;
+    this.column = where.column || '';
   }
 }
 
@@ -21,13 +25,20 @@ async function request(method, url, body, signal) {
   }
   let data = null;
   try { data = await resp.json(); } catch { /* not JSON */ }
-  if (!resp.ok) throw new ApiError((data && data.error) || `Erro ${resp.status}`, (data && data.field) || '', resp.status);
+  if (!resp.ok) {
+    throw new ApiError((data && data.error) || `Erro ${resp.status}`, (data && data.field) || '', resp.status,
+      { file: data?.file, line: data?.line, column: data?.column });
+  }
   return data;
 }
 
 export const getDefaults = (signal) => request('GET', '/api/defaults', null, signal);
 export const compare = (params, signal) => request('POST', '/api/compare', params, signal);
 export const run = (req, signal) => request('POST', '/api/run', req, signal);
+// The real-data routes receive the text of the spreadsheets in every request ({files: {name: text}}):
+// the server keeps nothing between calls.
+export const importFiles = (files, signal) => request('POST', '/api/import', { files }, signal);
+export const replay = (req, signal) => request('POST', '/api/replay', req, signal);
 
 // createLatest returns latest(fn): it runs fn(signal), aborts the previous call and
 // delivers only the latest call's result ({stale:true} for the others).

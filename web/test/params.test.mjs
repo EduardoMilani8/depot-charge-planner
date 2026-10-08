@@ -42,7 +42,7 @@ test('coerce rejects what is not the kind', () => {
 });
 
 test('constants list the views and controllers', () => {
-  assert.deepEqual(TABS, ['scenario', 'compare', 'run']);
+  assert.deepEqual(TABS, ['scenario', 'compare', 'real', 'run']);
   assert.deepEqual(CONTROLLERS, ['fifo', 'edf', 'fifo-unplug', 'safe', 'planner']);
 });
 
@@ -61,15 +61,30 @@ test('field specs take their bounds from the server limits', () => {
 test('nextTab implements the keyboard pattern of tabs', async () => {
   const { nextTab } = await import('../static/js/params.js');
   assert.equal(nextTab('scenario', 'ArrowRight'), 'compare');
-  assert.equal(nextTab('compare', 'ArrowRight'), 'run');
+  assert.equal(nextTab('compare', 'ArrowRight'), 'real');
+  assert.equal(nextTab('real', 'ArrowRight'), 'run');
   assert.equal(nextTab('run', 'ArrowRight'), 'scenario'); // wraps
   assert.equal(nextTab('scenario', 'ArrowLeft'), 'run');  // wraps
-  assert.equal(nextTab('run', 'ArrowLeft'), 'compare');
+  assert.equal(nextTab('run', 'ArrowLeft'), 'real');
+  assert.equal(nextTab('real', 'ArrowLeft'), 'compare');
   assert.equal(nextTab('compare', 'Home'), 'scenario');
   assert.equal(nextTab('compare', 'End'), 'run');
+  assert.equal(nextTab('real', 'End'), 'run');
   assert.equal(nextTab('compare', 'a'), null);
   assert.equal(nextTab('compare', 'Enter'), null);
   assert.equal(nextTab('bogus', 'ArrowRight'), null);
+});
+
+test('#tab=real is a valid view: the tab goes into the hash, never the data', () => {
+  const s = hashToState('#tab=real&buses=12', defaults);
+  assert.equal(s.tab, 'real');
+  assert.equal(s.params.buses, 12);
+  assert.ok(stateToHash(s).startsWith('#tab=real&'));
+  assert.deepEqual(hashToState(stateToHash(s), defaults), s);
+  // nothing of an imported run (files, night, a controller name outside the list) is ever read from a hash
+  const odd = hashToState('#tab=run&controller=planner%20(sem%20rod%C3%ADzio)&night=2026-03-04&files=x', defaults);
+  assert.equal(odd.controller, 'planner');
+  assert.equal(stateToHash(odd).includes('night'), false);
 });
 
 // The shape of the real /api/defaults reply: the parameters are nested under `params`.
@@ -136,4 +151,24 @@ test('a hash that describes the run on screen needs no action even when state.pa
   const hash = stateToHash(linkState(newer, onScreen));
   assert.equal(decideHashAction(hash, linkState(newer, onScreen), defaults), null);
   assert.notEqual(decideHashAction(hash, newer, defaults), null); // without linkState it would re-run
+});
+
+// A run of imported real data cannot be rebuilt from a link (the files stay on this computer): the
+// link of that screen leads to the "Dados reais" tab, never to a run of the generator.
+test('linkState: a run of imported data links to the Dados reais tab', () => {
+  const real = { params: onScreen.params, controller: 'planner (sem rodízio)', seed: 1, real: { night: '2026-03-04' } };
+  const l = linkState({ ...newer, tab: 'run' }, real);
+  assert.equal(l.tab, 'real');
+  assert.deepEqual(l.params, newer.params); // the form's parameters, not those of the imported run
+  assert.equal(l.controller, newer.controller);
+  const hash = stateToHash(l);
+  assert.ok(hash.startsWith('#tab=real&'));
+  assert.equal(hash.includes('2026-03-04'), false);
+  assert.equal(decideHashAction(hash, l, defaults), null);
+});
+
+test('linkState: an imported run only matters on the run tab', () => {
+  const real = { params: onScreen.params, controller: 'planner', seed: 1, real: { night: '2026-03-04' } };
+  assert.equal(linkState({ ...newer, tab: 'real' }, real).tab, 'real');
+  assert.equal(linkState({ ...newer, tab: 'compare' }, real).tab, 'compare');
 });
