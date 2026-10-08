@@ -37,6 +37,17 @@ Os arquivos em `modelos/` são **fictícios**, só mostram o formato. Nada neste
 - Combine por escrito para que fim os dados serão usados e quem tem acesso (peça à operadora se ela exige acordo de confidencialidade).
 - Não coloque dados reais neste repositório: ele é público no GitHub. Guarde-os fora da pasta do projeto.
 
+## Onde procurar (pesquisa de 2026-10-08)
+
+Não encontrei, até agora, nenhum conjunto **público** com ônibus por ônibus numa garagem (chegada, saída, carga e potência). O que apareceu:
+
+- Perfis de demanda de garagens de ônibus elétricos dos EUA, modelados e por hora (NREL, `data.nrel.gov`, DOI 10.7799/2565433) e estatísticas nacionais de operação de garagens (catálogo `data.gov`): servem para comparar a **forma** da curva de carga, não para testar o planejador ônibus a ônibus.
+- Relatórios de avaliação de frotas de ônibus elétricos nos EUA (NREL/FTA, por exemplo King County Metro): dados agregados e quase sempre só em PDF.
+- Conjunto do projeto OPTIMISE Prime (Londres, licença Creative Commons Attribution), com dados de carregadores de depósitos: a página fala de veículos comerciais e de aplicativo, não confirma ônibus. Vale abrir a documentação antes de descartar.
+- Um conjunto no Mendeley Data da Universidade de Coimbra sobre carga inteligente de frotas de ônibus elétricos (CC BY 4.0). Não consegui abrir o conteúdo; pode ser entrada de um estudo de otimização, o que ainda ajuda para criar cenários mais realistas.
+
+Conclusão prática: o caminho mais provável é **pedir por e-mail**. Quem costuma ter esse dado: operadoras de ônibus elétricos (em São Paulo, as concessionárias contratadas pela SPTrans), prefeituras e empresas de transporte público nos EUA e na Europa que publicam relatórios de projeto, e fabricantes de ônibus e de carregadores (que têm telemetria). Universidades que escreveram sobre o tema também costumam compartilhar dados mediante pedido ao autor.
+
 ## O que este kit não resolve
 
 - A premissa de que os operadores seguem os rodízios continua sendo suposição; o relatório mostra o planejador com e sem rodízios.

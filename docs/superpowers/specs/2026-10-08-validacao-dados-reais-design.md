@@ -1,6 +1,6 @@
 # Validação com dados reais — especificação
 
-Status: **rascunho para revisão do autor** (2026-10-08). Passo 1 do roadmap (`docs/superpowers/plans/2026-10-08-proximos-passos.md`). Nada disto foi implementado ainda.
+Status: aprovado pelo autor para implementação da parte independente de dados reais (2026-10-08). Passo 1 do roadmap (`docs/superpowers/plans/2026-10-08-proximos-passos.md`). Nada disto foi implementado ainda.
 
 ## 1. Objetivo e para quem
 
@@ -92,8 +92,8 @@ Escolher arquivos (ou arrastar a pasta) → lista de avisos (o que foi suposto) 
 5. **Dados importados não vão para o link.** Evita expor dados da operadora em endereço; custa não poder compartilhar o link de uma noite real. Quem quiser compartilha a pasta anonimizada.
 6. **Nada sai da máquina.** O navegador lê os arquivos localmente e fala só com `127.0.0.1`.
 
-## 10. Perguntas abertas para o autor
+## 10. Respostas do autor (2026-10-08)
 
-1. Já existe uma operadora ou garagem em mente para pedir os dados? (Muda o tom do kit e quais colunas serão realistas.)
-2. A tarifa da garagem real é "horária" simples (ponta/fora da ponta) ou já tem demanda contratada e ultrapassagem? (A v1 só trata a primeira; o Plano 3 amplia.)
-3. Posso começar já pela parte que independe de dados, isto é, o kit de pedido, o leitor e o `replay` com o conjunto fictício?
+1. **Sem operadora em mente.** Eduardo imagina que só São Paulo, EUA e Europa teriam esse dado; aceita pedir por e-mail. A pesquisa inicial (ver `docs/dados-reais/README.md`) não achou conjunto público ônibus a ônibus. Consequência: o kit e o formato continuam como estão, e o código é feito e testado com um conjunto fictício até os dados chegarem.
+2. **Tarifa:** a pergunta não ficou clara para o autor, então a decisão é: a v1 trata só preço por horário (ponta e fora da ponta), como o simulador já faz; demanda contratada e ultrapassagem ficam para o Plano 3.
+3. **Autorizado a começar** pela parte que não depende de dados reais: leitor de planilhas, `replay` e aba "Dados reais", testados com o conjunto fictício.
