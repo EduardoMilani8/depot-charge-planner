@@ -5,6 +5,8 @@ import {
   worstBuses, busStatus, summarizeImport, pickRows, columns, runRequestBody, controllerOptions, controllerHelp,
   compareButtonState, checkSizes, pickOption, importStatusText, errorStatusText, fmtSize, MAX_FILE_BYTES, MAX_BODY_BYTES,
   bodySize, checkBody, describeFailure, failureStatusText, partialText,
+  UTF16_MESSAGE, UnsupportedEncodingError, looksUtf16, readFailureText, fairText, lateText, AGGREGATE_NOTE, LATE_MINUTES,
+  busTableRows, createSequence, dropsRun,
 } from '../static/js/realdata.js';
 import { ApiError } from '../static/js/api.js';
 
@@ -241,9 +243,10 @@ const night1 = { key: '2026-03-04', buses: 3, real, controllers: [{ name: 'plann
 const report = { nights: [night1, { key: '2026-03-05' }], aggregate: [{ name: 'agg' }], real_aggregate: { buses: 6 }, cost_comparable: true };
 
 test('pickRows: "all" is the mean over nights, a key is that night', () => {
-  assert.deepEqual(pickRows(report, 'all'), { real: report.real_aggregate, controllers: report.aggregate, night: null });
+  assert.deepEqual(pickRows(report, 'all'), { real: report.real_aggregate, controllers: report.aggregate, matched: report.matched_aggregate, night: null });
   const one = pickRows(report, '2026-03-04');
   assert.equal(one.real, real);
+  assert.equal(one.matched, night1.matched);
   assert.equal(one.controllers, night1.controllers);
   assert.equal(one.night, night1);
   assert.equal(pickRows(report, '1999-01-01'), null);
@@ -520,4 +523,113 @@ test('errorStatusText: the failure says what failed once, with the location when
 test('failureStatusText: the failure and the refusal note in one announced sentence', () => {
   assert.equal(failureStatusText('Sem rede.'), 'A importação falhou: Sem rede.');
   assert.equal(failureStatusText('Sem rede.', 'b.csv recusado.'), 'A importação falhou: Sem rede. b.csv recusado.');
+});
+
+// ---- UTF-16 (I5) ----
+
+const utf16le = (text, bom = true) => {
+  const out = [];
+  if (bom) out.push(0xff, 0xfe);
+  for (const ch of text) out.push(ch.charCodeAt(0) & 0xff, ch.charCodeAt(0) >> 8);
+  return new Uint8Array(out);
+};
+
+test('readFileText refuses UTF-16 with the same message as the command line', () => {
+  assert.equal(UTF16_MESSAGE, 'arquivo em UTF-16 não é suportado: salve como CSV UTF-8');
+  for (const buf of [utf16le('limite_kw\n400\n'), new Uint8Array([0xfe, 0xff, 0, 0x6c, 0, 0x69])]) {
+    assert.throws(() => readFileText(buf), (e) => e instanceof UnsupportedEncodingError && e.message === UTF16_MESSAGE);
+  }
+});
+
+test('readFileText refuses UTF-16 without a byte order mark by its NUL bytes', () => {
+  const buf = utf16le('onibus_id,capacidade_kwh,chegada\nB01,300,2026-03-04 20:00\n', false);
+  assert.equal(looksUtf16(buf), true);
+  assert.throws(() => readFileText(buf.buffer), UnsupportedEncodingError);
+});
+
+test('looksUtf16 does not take ordinary spreadsheets for UTF-16', () => {
+  assert.equal(looksUtf16(new TextEncoder().encode('onibus_id;capacidade\nB01;300\n')), false);
+  assert.equal(looksUtf16(new Uint8Array([0x61, 0xe7, 0xe3, 0x6f])), false); // Windows-1252
+  assert.equal(looksUtf16(new Uint8Array([0xef, 0xbb, 0xbf, 0x61])), false); // UTF-8 BOM
+  assert.equal(looksUtf16(new Uint8Array(0)), false);
+  assert.equal(looksUtf16(new Uint8Array([0xff])), false);
+  // a stray NUL in a large file is not UTF-16
+  const text = new TextEncoder().encode('x'.repeat(1000));
+  text[10] = 0;
+  assert.equal(looksUtf16(text), false);
+  assert.equal(readFileText(new TextEncoder().encode('a,b').buffer), 'a,b');
+});
+
+test('readFailureText names the file and the reason for a UTF-16 file, and a generic one otherwise', () => {
+  assert.equal(readFailureText('garagem.csv', new UnsupportedEncodingError()), 'garagem.csv: arquivo em UTF-16 não é suportado: salve como CSV UTF-8.');
+  assert.match(readFailureText('onibus.csv', new Error('x')), /^Não consegui ler onibus\.csv\./);
+});
+
+// ---- the fair comparison and the late departures (I3, I4) ----
+
+test('fairText puts the planner on the same buses as the real figures', () => {
+  const real = { ready_pct: 66.667, shortfall_kwh: 45 };
+  const matched = { buses: 3, planner_ready_pct: 100, planner_shortfall_kwh: 0, no_swap_ready_pct: 90.5, no_swap_shortfall_kwh: 2.26 };
+  assert.equal(fairText(real, matched),
+    'Comparação justa (mesmos 3 ônibus do real): real 66,7% | planner 100,0% | sem rodízio 90,5% (déficit em kWh: real 45,0 | planner 0,0 | sem rodízio 2,3)');
+});
+
+test('fairText is empty when no bus has a real outcome or the data is missing', () => {
+  assert.equal(fairText({ ready_pct: 0, shortfall_kwh: 0 }, { buses: 0 }), '');
+  assert.equal(fairText({}, undefined), '');
+  assert.equal(fairText(undefined, { buses: 2 }), '');
+});
+
+test('lateText counts late departures, singular and plural, with the 15 minute rule', () => {
+  assert.equal(LATE_MINUTES, 15);
+  assert.equal(lateText(0), '');
+  assert.equal(lateText(undefined), '');
+  assert.equal(lateText(1), '1 ônibus saiu mais de 15 min depois do previsto: conta como pronto se a carga estava completa na saída.');
+  assert.equal(lateText(3), '3 ônibus saíram mais de 15 min depois do previsto: contam como prontos se a carga estava completa na saída.');
+});
+
+test('AGGREGATE_NOTE says violations and minutes are sums and plan changes a truncated mean', () => {
+  for (const want of ['médias por noite', 'violações do plano', 'minutos acima do limite', 'somas', 'mudanças de plano', 'para baixo']) {
+    assert.ok(AGGREGATE_NOTE.includes(want), want);
+  }
+});
+
+// ---- the per-bus table (M3) ----
+
+test('busTableRows writes the kWh with one decimal and, by default, only the buses not ready in reality', () => {
+  const rows = busTableRows({ per_bus: perBus });
+  assert.deepEqual(rows.map((r) => r.id), ['B10', 'B02', 'B09']);
+  assert.deepEqual(rows[1], {
+    id: 'B02', target: '255,0',
+    real: { ready: false, kwh: '210,0' }, planner: { ready: true, kwh: '255,0' }, noSwap: { ready: true, kwh: '255,0' },
+  });
+  assert.equal(busTableRows({ per_bus: [{ id: 'X', target_kwh: 268.14, real_final_kwh: 281.84, real_ready: false, planner_final_kwh: 268.06, planner_ready: true, no_swap_final_kwh: 1234.56, no_swap_ready: true }] })[0].noSwap.kwh, '1.234,6');
+});
+
+test('busTableRows with showAll lists every bus, an unknown real outcome with no kWh', () => {
+  const rows = busTableRows({ per_bus: perBus }, true);
+  assert.equal(rows.length, 5);
+  const b04 = rows.find((r) => r.id === 'B04');
+  assert.deepEqual(b04.real, { ready: null, kwh: null });
+  assert.deepEqual(busTableRows(null), []);
+  assert.deepEqual(busTableRows({}), []);
+});
+
+// ---- sequence guard and clearing (H4, H8) ----
+
+test('createSequence: a newer start or a bump makes the earlier one stale', () => {
+  const seq = createSequence();
+  const a = seq.next();
+  assert.equal(seq.current(a), true);
+  const b = seq.next();
+  assert.equal(seq.current(a), false);
+  assert.equal(seq.current(b), true);
+  seq.bump(); // clearAll / invalidate
+  assert.equal(seq.current(b), false);
+});
+
+test('dropsRun: clearing the data removes the run on screen only if it is an imported night', () => {
+  assert.equal(dropsRun({ params: {}, controller: 'planner', seed: 1, real: { files: {}, night: '2026-03-04' } }), true);
+  assert.equal(dropsRun({ params: {}, controller: 'planner', seed: 1 }), false);
+  assert.equal(dropsRun(null), false);
 });

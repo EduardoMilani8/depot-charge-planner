@@ -6,7 +6,7 @@ import { renderPowerChart } from './charts/power.js';
 import { renderBusTimeline, renderChargerTimeline } from './charts/gantt.js';
 import { renderDecisionPanel } from './decisionPanel.js';
 import { fmtNum, fmtPct, fmtBRL, clock } from './format.js';
-import { runRequestBody, controllerOptions, controllerHelp } from './realdata.js';
+import { runRequestBody, controllerOptions, controllerHelp, describeFailure, bodySize } from './realdata.js';
 import { describeFault, describeParams } from './glossary.js';
 import { nextFocusTarget, restoreFocus } from './focus.js';
 import { createPlayer, countingText } from './motion.js';
@@ -209,7 +209,10 @@ export function createRunView(root, hooks) {
       render(r.value);
     } catch (e) {
       loading = false;
-      const msg = e instanceof ApiError ? e.message : 'Erro inesperado: ' + e.message;
+      // An imported night re-sends the spreadsheets: its failures read like those of the Dados reais tab
+      // (a 413 says the send passed the server's limit instead of a bare "Erro 413").
+      const msg = state.real ? describeFailure(e, bodySize(state.real.files)).message
+        : e instanceof ApiError ? e.message : 'Erro inesperado: ' + e.message;
       // Keep the pickers so the seed or controller can be corrected right here.
       clear(root).append(heading(), controls({ ...state, imported: Boolean(state.real) }), h('div', { class: 'banner-inline', role: 'alert' }, msg));
       settleFocus();
@@ -228,6 +231,17 @@ export function createRunView(root, hooks) {
     return true;
   }
 
+  // reset drops the run on screen and any load in flight, back to the idle note (the imported data it
+  // came from was cleared).
+  function reset() {
+    latest.cancel();
+    teardown();
+    loading = false;
+    focusTarget = null;
+    current = null;
+    clear(root).append(h('p', { class: 'note' }, IDLE_NOTE));
+  }
+
   // pause stops the day playing (leaving the tab, hiding the page, a new link); the run stays.
   function pause() {
     player?.pause();
@@ -244,5 +258,5 @@ export function createRunView(root, hooks) {
   // A hidden page gets no frames; on return the clock would have jumped, so stop instead.
   document.addEventListener('visibilitychange', () => { if (document.hidden) pause(); });
 
-  return { load, cancel, pause, getCurrent: () => current };
+  return { load, cancel, reset, pause, getCurrent: () => current };
 }

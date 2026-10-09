@@ -176,6 +176,7 @@ table.metrics.small th[scope=row] { font-weight: 600; }
 .real-compare .field { max-width: 26rem; }
 .real-compare input[type=number] { padding: 7px 8px; border: 1px solid var(--control-border); border-radius: 6px; background: var(--bg); color: var(--fg); font: inherit; width: 8rem; }
 .real-banner { margin: 8px 0; padding: 10px 14px; font-weight: 600; background: color-mix(in srgb, var(--accent) 10%, var(--card)); border-left: 4px solid var(--accent); }
+.real-fair { margin: 8px 0; padding: 8px 14px; background: color-mix(in srgb, var(--accent) 6%, var(--card)); border-left: 4px solid var(--control-border); }
 .real-night { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0; }
 .real-night select, .real-open select { padding: 5px 8px; border: 1px solid var(--control-border); border-radius: 6px; background: var(--bg); color: var(--fg); font: inherit; }
 table.real-table tr.real-row th, table.real-table tr.real-row td { border-bottom: 2px solid var(--control-border); font-weight: 600; }

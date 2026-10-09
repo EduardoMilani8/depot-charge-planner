@@ -19,15 +19,44 @@ export const FILE_SPECS = [
 const KNOWN = new Set(FILE_SPECS.map((f) => f.name));
 const DASH = '—';
 
+// The server's own message for a UTF-16 file (internal/realdata/table.go): the browser would decode such
+// a file as Windows-1252 (every other byte is NUL), the server would never see it and the error would be nonsense.
+export const UTF16_MESSAGE = 'arquivo em UTF-16 não é suportado: salve como CSV UTF-8';
+
+export class UnsupportedEncodingError extends Error {
+  constructor(message = UTF16_MESSAGE) {
+    super(message);
+    this.name = 'UnsupportedEncodingError';
+  }
+}
+
+// looksUtf16: a UTF-16 byte order mark (FF FE or FE FF), or a lot of NUL bytes at the start (UTF-16
+// text of Latin letters is a NUL every other byte; a spreadsheet in any 8-bit encoding has none).
+export function looksUtf16(bytes) {
+  if (bytes.length >= 2 && ((bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0xfe && bytes[1] === 0xff))) return true;
+  const n = Math.min(bytes.length, 4096);
+  let nuls = 0;
+  for (let i = 0; i < n; i++) if (bytes[i] === 0) nuls++;
+  return n >= 4 && nuls * 5 >= n; // at least a fifth of the first 4 KB
+}
+
 // readFileText decodes the bytes of a spreadsheet: UTF-8 (a byte order mark is dropped) and, when
-// the bytes are not valid UTF-8, Windows-1252, which is what Excel writes in Brazil.
+// the bytes are not valid UTF-8, Windows-1252, which is what Excel writes in Brazil. UTF-16 is refused
+// (UnsupportedEncodingError) like the command line does.
 export function readFileText(buf) {
   const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  if (looksUtf16(bytes)) throw new UnsupportedEncodingError();
   try {
     return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
   } catch {
     return new TextDecoder('windows-1252').decode(bytes);
   }
+}
+
+// readFailureText: why a file could not be read, for the list of what was left out of a choice.
+export function readFailureText(name, err) {
+  if (err instanceof UnsupportedEncodingError) return `${name}: ${err.message}.`;
+  return `Não consegui ler ${name}. Se o arquivo mudou ou foi movido, escolha-o de novo.`;
 }
 
 const baseName = (name) => String(name).split(/[\\/]/).pop();
@@ -144,9 +173,35 @@ export function controllerCells(controller, costComparable) {
 // null when the report has no such night.
 export function pickRows(report, key) {
   if (!report) return null;
-  if (key === 'all') return { real: report.real_aggregate, controllers: report.aggregate, night: null };
+  if (key === 'all') return { real: report.real_aggregate, controllers: report.aggregate, matched: report.matched_aggregate, night: null };
   const night = (report.nights || []).find((n) => n.key === key);
-  return night ? { real: night.real, controllers: night.controllers, night } : null;
+  return night ? { real: night.real, controllers: night.controllers, matched: night.matched, night } : null;
+}
+
+// aggregateNote: what the "all nights" rows are. Most columns are means per night, but sim.Aggregate
+// sums the violations and the minutes over the limit and cuts the plan changes to a whole number.
+export const AGGREGATE_NOTE = 'Nas linhas de todas as noites, os valores são médias por noite, exceto violações do plano e minutos acima do limite, que são somas das noites, e mudanças de plano, que é a média arredondada para baixo.';
+
+// fairText: the comparison over the same buses. The simulated rows cover every bus, the real ready%
+// only the buses with a measured departure; this line puts the planner on those same buses. "" when
+// there is no bus with a measured outcome (nothing to compare).
+export function fairText(real, matched) {
+  if (!matched || !(matched.buses > 0) || !real) return '';
+  const pct = (v) => fmtPct(v);
+  const kwh = (v) => fmtNum(v, 1);
+  return `Comparação justa (mesmos ${matched.buses} ônibus do real): real ${pct(real.ready_pct)} | planner ${pct(matched.planner_ready_pct)} | sem rodízio ${pct(matched.no_swap_ready_pct)} `
+    + `(déficit em kWh: real ${kwh(real.shortfall_kwh)} | planner ${kwh(matched.planner_shortfall_kwh)} | sem rodízio ${kwh(matched.no_swap_shortfall_kwh)})`;
+}
+
+// A bus that left more than this many minutes after the planned time is a late departure (the server's
+// realdata.LateDepartureTolerance).
+export const LATE_MINUTES = 15;
+
+// lateText: what late departures mean for the "pronto" of the real row. "" when there are none.
+export function lateText(n) {
+  if (!(n > 0)) return '';
+  if (n === 1) return `1 ônibus saiu mais de ${LATE_MINUTES} min depois do previsto: conta como pronto se a carga estava completa na saída.`;
+  return `${n} ônibus saíram mais de ${LATE_MINUTES} min depois do previsto: contam como prontos se a carga estava completa na saída.`;
 }
 
 // busStatus: "pronto", "não pronto" or a dash when the outcome is unknown.
@@ -165,6 +220,31 @@ export function worstBuses(night) {
     }))
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
+
+// busTableRows: the rows of the per-bus table of a night, with the kWh at one decimal like the
+// command line. Only the buses that were not ready in reality, or all of them with `showAll`.
+export function busTableRows(night, showAll = false) {
+  const kwh = (v) => (typeof v === 'number' && Number.isFinite(v) ? fmtNum(v, 1) : null);
+  return ((night && night.per_bus) || [])
+    .filter((b) => showAll || b.real_ready === false)
+    .map((b) => ({
+      id: b.id, target: fmtNum(b.target_kwh, 1),
+      real: { ready: b.real_ready ?? null, kwh: kwh(b.real_final_kwh) },
+      planner: { ready: b.planner_ready ?? null, kwh: kwh(b.planner_final_kwh) },
+      noSwap: { ready: b.no_swap_ready ?? null, kwh: kwh(b.no_swap_final_kwh) },
+    }));
+}
+
+// createSequence numbers the runs of an async action, so one that was superseded (or cleared) can tell
+// after each await that it must stop: `const my = seq.next(); await …; if (!seq.current(my)) return;`.
+export function createSequence() {
+  let n = 0;
+  return { next: () => ++n, bump: () => { n++; }, current: (mine) => mine === n };
+}
+
+// dropsRun: does clearing the imported data also remove the run on screen? The detailed run of an
+// imported night re-sends the files, so it is removed with them.
+export const dropsRun = (runSel) => Boolean(runSel && runSel.real);
 
 // summarizeImport: what the import answer says, ready to draw.
 export function summarizeImport(res) {

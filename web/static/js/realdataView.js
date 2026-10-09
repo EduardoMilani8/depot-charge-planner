@@ -8,6 +8,7 @@ import {
   FILE_SPECS, readFileText, pickKnownFiles, formatImportError, columns, realRowCells, controllerCells,
   pickRows, worstBuses, busStatus, summarizeImport, controllerOptions, controllerHelp,
   compareButtonState, SEAL_PARTIAL, partialText, checkSizes, checkBody, bodySize, describeFailure, pickOption, importStatusText, errorStatusText, failureStatusText, fmtSize,
+  fairText, lateText, AGGREGATE_NOTE, busTableRows, createSequence, readFailureText,
 } from './realdata.js';
 
 const MAX_DROPPED = 1000; // files read from a dropped folder, so a huge folder cannot hang the page
@@ -57,8 +58,9 @@ const helpBlock = () => h('details', { class: 'howto real-help' },
       h('em', {}, 'planner'), ' supõe que os operadores executam todos os rodízios recomendados (o “sem rodízio” supõe nenhum). O resultado vale para esta garagem e estes dias.')));
 
 // createRealView builds the tab into filesRoot (choosing and checking the files) and outRoot (the
-// comparison). onOpenRun({ files, night, controller }) opens an imported night in the Execução tab.
-export function createRealView({ filesRoot, outRoot, onOpenRun }) {
+// comparison). onOpenRun({ files, night, controller }) opens an imported night in the Execução tab;
+// onClear() is called by "Limpar tudo", so the page can drop the imported run it still shows there.
+export function createRealView({ filesRoot, outRoot, onOpenRun, onClear }) {
   const latest = createLatest(); // the import and the comparison share it: a new action drops the previous one
   const cache = new WeakMap(); // File -> its text, so a file is decoded once
   let held = {}; // canonical name -> File
@@ -78,6 +80,7 @@ export function createRealView({ filesRoot, outRoot, onOpenRun }) {
   let importing = false;
   let comparing = false;
   let seq = 0;
+  const ingestSeq = createSequence(); // a choice of files being read stops when another choice or "Limpar tudo" comes first
 
   // ---- the file chooser (built once, so focus and the noise value survive every redraw) ----
 
@@ -239,7 +242,7 @@ export function createRealView({ filesRoot, outRoot, onOpenRun }) {
     return t;
   }
 
-  const unreadable = (name) => new ApiError(`Não consegui ler ${name}. Se o arquivo mudou ou foi movido, escolha-o de novo.`, 'files', 400);
+  const unreadable = (name, err) => new ApiError(readFailureText(name, err), 'files', 400);
 
   // readAll returns the text of every held file.
   async function readAll(signal) {
@@ -247,9 +250,9 @@ export function createRealView({ filesRoot, outRoot, onOpenRun }) {
     for (const [name, f] of Object.entries(held)) {
       try {
         out[name] = await textOf(f);
-      } catch {
+      } catch (e) {
         if (held[name] === f) delete held[name]; // it must not stay in the list; a newer file of this name is left alone
-        throw unreadable(name);
+        throw unreadable(name, e);
       }
       if (signal.aborted) throw abortError();
     }
@@ -266,6 +269,7 @@ export function createRealView({ filesRoot, outRoot, onOpenRun }) {
   function invalidate() {
     latest.cancel();
     seq++;
+    ingestSeq.bump();
     importing = false;
     comparing = false;
     imported = null;
@@ -277,6 +281,7 @@ export function createRealView({ filesRoot, outRoot, onOpenRun }) {
   function clearAll() {
     invalidate();
     held = {}; ignored = []; texts = {}; choiceNote = '';
+    onClear?.(); // the detailed run of an imported night re-sends these files: it goes too
     noiseErr.textContent = '';
     noise.removeAttribute('aria-invalid');
     setStatus(EMPTY_STATUS);
@@ -297,6 +302,7 @@ export function createRealView({ filesRoot, outRoot, onOpenRun }) {
       paint();
       return;
     }
+    const my = ingestSeq.next();
     const notes = [];
     const raw = checkSizes(Object.fromEntries(Object.entries(known).map(([n, f]) => [n, f.size])));
     for (const name of raw.drop) delete known[name];
@@ -306,10 +312,11 @@ export function createRealView({ filesRoot, outRoot, onOpenRun }) {
     for (const [name, f] of Object.entries(known)) {
       try {
         incoming[name] = await textOf(f);
-      } catch {
+      } catch (e) {
         delete known[name];
-        notes.push(unreadable(name).message);
+        notes.push(readFailureText(name, e));
       }
+      if (!ingestSeq.current(my)) return; // cleared, or another choice started, while this file was read
     }
     // The real size of the request is that of the JSON text, not of the files on disk.
     const heldTexts = Object.fromEntries(Object.entries(held).map(([n, f]) => [n, cache.get(f)]));
@@ -340,12 +347,12 @@ export function createRealView({ filesRoot, outRoot, onOpenRun }) {
     setStatus(`Lendo ${Object.keys(held).length} ${plural(Object.keys(held).length, 'arquivo', 'arquivos')}…`);
     paint();
     if (refocus) statusEl.focus({ preventScroll: true });
-    let sent = 0; // bytes of the body of the request in flight
+    let sentFiles = null; // the files of the request in flight; their size is computed only if it fails
     try {
       const r = await latest(async (signal) => {
         const t = await readAll(signal);
         if (!signal.aborted) setStatus('Conferindo as planilhas neste computador…');
-        sent = bodySize(t);
+        sentFiles = t;
         return { t, res: await importFiles(t, signal) };
       });
       if (r.stale) return;
@@ -358,7 +365,7 @@ export function createRealView({ filesRoot, outRoot, onOpenRun }) {
         importError = formatImportError(e);
         setStatus(errorStatusText(e, choiceNote));
       } else {
-        const f = describeFailure(e, sent);
+        const f = describeFailure(e, sentFiles ? bodySize(sentFiles) : 0);
         failure = { message: f.message, retry: f.retry ? runImport : null };
         setStatus(failureStatusText(f.message, choiceNote));
       }
@@ -463,9 +470,12 @@ export function createRealView({ filesRoot, outRoot, onOpenRun }) {
       h('thead', {}, head), h('tbody', {}, realRow, sims)));
   }
 
-  function tableNotes(real) {
+  function tableNotes({ real, night }) {
     const partial = partialText(real);
+    const late = lateText(real && real.late_departures);
     return [
+      late ? h('p', { class: 'note' }, h('span', { class: 'seal' }, 'saída atrasada'), ' ', late) : null,
+      night ? null : h('p', { class: 'note' }, AGGREGATE_NOTE),
       partial ? h('p', { class: 'note' }, h('span', { class: 'seal' }, 'parcial'), ' ', partial) : null,
       h('p', { class: 'note' }, h('strong', {}, '—'), ' = a planilha não traz esse dado. ', h('span', { class: 'seal' }, 'estimado'),
         ' = calculado com as sessões de carga espalhadas uniformemente no tempo (subestima o pico); com potencia.csv o valor é medido. ',
@@ -475,15 +485,14 @@ export function createRealView({ filesRoot, outRoot, onOpenRun }) {
     ];
   }
 
-  const statusCell = (ready, kwh) => h('td', {},
+  const statusCell = ({ ready, kwh }) => h('td', {},
     ready === null || ready === undefined ? noData() : [h('span', { 'aria-hidden': 'true' }, ready ? '✓ ' : '✗ '), busStatus(ready)],
-    typeof kwh === 'number' ? ` · ${fmtNum(kwh, 0)} kWh` : null);
+    kwh ? ` · ${kwh} kWh` : null);
 
   function busesBlock(night) {
     if (!night) return h('p', { class: 'note' }, 'Escolha uma noite para ver, ônibus a ônibus, quem saiu pronto na realidade, no planejador e no planejador sem rodízio.');
     const worst = worstBuses(night);
-    const ids = new Set(worst.map((b) => b.id));
-    const rows = (night.per_bus || []).filter((b) => showAllBuses || ids.has(b.id));
+    const rows = busTableRows(night, showAllBuses);
     const ok = (key) => worst.filter((b) => b[key] === 'pronto').length;
     let line;
     if (night.real.with_outcome === 0) line = 'Esta noite não tem a carga de saída real (soc_saida_real_pct): não dá para comparar ônibus a ônibus com a realidade.';
@@ -495,10 +504,8 @@ export function createRealView({ filesRoot, outRoot, onOpenRun }) {
       h('caption', { class: 'sr' }, `Ônibus da noite ${night.key}: realidade, planejador e planejador sem rodízio`),
       h('thead', {}, h('tr', {}, ['ônibus', 'carga exigida (kWh)', 'na realidade', 'planejador', 'planejador sem rodízio'].map((t) => h('th', { scope: 'col' }, t)))),
       h('tbody', {}, rows.map((b) => h('tr', {},
-        h('th', { scope: 'row' }, b.id), h('td', {}, fmtNum(b.target_kwh, 0)),
-        statusCell(b.real_ready, b.real_final_kwh),
-        statusCell(b.planner_ready, b.planner_final_kwh),
-        statusCell(b.no_swap_ready, b.no_swap_final_kwh))))));
+        h('th', { scope: 'row' }, b.id), h('td', {}, b.target),
+        statusCell(b.real), statusCell(b.planner), statusCell(b.noSwap))))));
     return h('div', { class: 'real-buses' },
       h('p', { class: 'summary' }, line),
       h('label', { class: 'check-inline' }, toggle, ' mostrar todos os ônibus da noite'),
@@ -525,8 +532,10 @@ export function createRealView({ filesRoot, outRoot, onOpenRun }) {
   function renderBody() {
     const rows = pickRows(report, selected);
     if (!rows) return;
-    put(body, 
-      metricsTable(rows), tableNotes(rows.real),
+    const fair = fairText(rows.real, rows.matched);
+    put(body,
+      fair ? h('p', { class: 'real-fair' }, h('strong', {}, 'Comparação justa'), fair.slice('Comparação justa'.length)) : null,
+      metricsTable(rows), tableNotes(rows),
       h('h3', {}, 'Ônibus a ônibus'), busesBlock(rows.night),
       openBlock(rows.night));
   }

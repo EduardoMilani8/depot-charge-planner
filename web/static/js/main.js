@@ -4,6 +4,7 @@ import { createForm } from './form.js';
 import { renderCompare } from './compare.js';
 import { createRunView } from './run.js';
 import { createRealView } from './realdataView.js';
+import { dropsRun } from './realdata.js';
 import { h } from './dom.js';
 import { applyMotionClass, setAnimations, animationsEnabled } from './motion.js';
 
@@ -193,6 +194,13 @@ async function init() {
   realView = createRealView({
     filesRoot: $('real-files'), outRoot: $('real-out'),
     onOpenRun: ({ files, night, controller }) => openRealRun({ files, night }, controller),
+    // "Limpar tudo" forgets the files, so the imported run in the Execução tab goes with them.
+    onClear: () => {
+      if (!dropsRun(runSel)) return;
+      runView.reset();
+      runSel = null;
+      syncHash();
+    },
   });
   for (const b of document.querySelectorAll('nav.tabs button')) b.addEventListener('click', () => showTab(b.dataset.tab));
   // Keyboard pattern of tabs: arrows (with wrap), Home and End move focus and activate the tab.
