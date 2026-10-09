@@ -342,8 +342,12 @@ func realAggregate(nights []Night) Real {
 	var outN int
 	var eSum, pSum, cSum float64
 	var eN, pN, cN int
+	figureNights := 0 // nights that have at least one real energy, peak or cost figure
 	for _, n := range nights {
 		r := n.Real
+		if r.EnergyKWh != nil || r.PeakKW != nil || r.CostBRL != nil {
+			figureNights++
+		}
 		a.Buses += r.Buses
 		a.LateDepartures += r.LateDepartures
 		a.CoveredBuses += r.CoveredBuses
@@ -382,8 +386,16 @@ func realAggregate(nights []Night) Real {
 		return &v
 	}
 	a.EnergyKWh, a.PeakKW, a.CostBRL = mean(eSum, eN), mean(pSum, pN), mean(cSum, cN)
+	// The figures are a mean over the nights that have them: when only some nights do, the
+	// aggregate must not read as complete (the simulated rows cover every night).
+	nightsGap := figureNights > 0 && figureNights < len(nights)
+	if nightsGap {
+		a.Partial = true
+	}
 	if a.Partial {
-		if a.CoveredBuses < a.Buses {
+		if nightsGap && a.CoveredBuses >= a.Buses {
+			a.PartialNote = fmt.Sprintf("parcial: energia, pico e custo reais existem em só %d de %d noites", figureNights, len(nights))
+		} else if a.CoveredBuses < a.Buses {
 			a.PartialNote = fmt.Sprintf("parcial: %d de %d ônibus", a.CoveredBuses, a.Buses)
 		} else {
 			a.PartialNote = "parcial: sessões e leituras de potência divergem em alguma noite"

@@ -687,3 +687,20 @@ func TestReplayMatchedJSONKeys(t *testing.T) {
 		t.Error("real_aggregate lacks late_departures")
 	}
 }
+
+func TestRealAggregateSealsAMeanOverOnlySomeNights(t *testing.T) {
+	e, p, c := 300.0, 62.0, 300.0
+	full := Night{Key: "2026-03-10", Real: Real{Buses: 3, CoveredBuses: 3, EnergyKWh: &e, PeakKW: &p, CostBRL: &c, PeakEstimated: true, CostEstimated: true}}
+	blank := Night{Key: "2026-03-11", Real: Real{Buses: 3, CoveredBuses: 3}} // no figure at all that night
+	a := realAggregate([]Night{full, blank})
+	if !a.Partial || a.PartialNote != "parcial: energia, pico e custo reais existem em só 1 de 2 noites" {
+		t.Errorf("aggregate = %+v", a)
+	}
+	// every night has figures, or none does: nothing to seal
+	if a := realAggregate([]Night{full, full}); a.Partial {
+		t.Errorf("all nights with figures: %+v", a)
+	}
+	if a := realAggregate([]Night{blank, blank}); a.Partial {
+		t.Errorf("no night with figures: %+v", a)
+	}
+}
