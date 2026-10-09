@@ -4,7 +4,7 @@ import {
   FILE_SPECS, NO_SWAP, readFileText, pickKnownFiles, formatImportError, realRowCells, controllerCells,
   worstBuses, busStatus, summarizeImport, pickRows, columns, runRequestBody, controllerOptions, controllerHelp,
   compareButtonState, checkSizes, pickOption, importStatusText, errorStatusText, fmtSize, MAX_FILE_BYTES, MAX_BODY_BYTES,
-  bodySize, checkBody, describeFailure, failureStatusText,
+  bodySize, checkBody, describeFailure, failureStatusText, partialText,
 } from '../static/js/realdata.js';
 import { ApiError } from '../static/js/api.js';
 
@@ -155,6 +155,32 @@ test('realRowCells: null figures are dashes and never sealed', () => {
     assert.equal(c[k].text, '—', k);
     assert.equal(c[k].estimated, false, k);
   }
+});
+
+test('realRowCells: a partial night seals energy, peak and cost with the note, and only those', () => {
+  const c = byKey(realRowCells({ ...real, partial: true, covered_buses: 2, partial_note: 'parcial: 2 de 3 ônibus' }));
+  for (const k of ['energy_kwh', 'peak_kw', 'cost_brl']) assert.equal(c[k].partial, 'parcial: 2 de 3 ônibus', k);
+  for (const k of ['ready_pct', 'shortfall_kwh', 'plan_violations']) assert.equal(c[k].partial, '', k);
+  // the value is kept (sealed, not nulled) and the estimated seal is independent
+  assert.equal(c.energy_kwh.text, '812');
+  assert.equal(c.peak_kw.estimated, true);
+  // a complete night, or a report without the field, has no partial seal
+  for (const r of [real, { ...real, partial: false, partial_note: '' }]) {
+    for (const cell of realRowCells(r)) assert.equal(cell.partial, '', cell.key);
+  }
+  // a figure the spreadsheets cannot give stays a plain dash
+  const n = byKey(realRowCells({ ...real, partial: true, partial_note: 'parcial: 2 de 3 ônibus', cost_brl: null }));
+  assert.equal(n.cost_brl.text, '—');
+  assert.equal(n.cost_brl.partial, '');
+});
+
+test('partialText explains a partial real row and is empty otherwise', () => {
+  assert.equal(partialText(real), '');
+  assert.equal(partialText(null), '');
+  assert.equal(partialText({ ...real, partial: false }), '');
+  const t = partialText({ ...real, partial: true, partial_note: 'parcial: 2 de 3 ônibus' });
+  assert.match(t, /parcial: 2 de 3 ônibus/);
+  assert.match(t, /não são comparáveis/);
 });
 
 test('realRowCells: a night with no measured departures has no readiness and no shortfall', () => {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/EduardoMilani8/depot-charge-planner/internal/model"
@@ -16,6 +17,10 @@ const (
 	maxHorizonMin = 3000
 	originPadMin  = 60 // the scenario starts this long before the first arrival hour
 	horizonPadMin = 30 // and ends this long after the last departure
+
+	// energyMismatch: when a night has both sessions and power readings and their
+	// energies differ by more than this fraction of the larger one, the night is Partial.
+	energyMismatch = 0.20
 )
 
 // Real is what the depot measured on one night (the "real" column of the
@@ -32,6 +37,14 @@ type Real struct {
 	PeakEstimated bool     `json:"peak_estimated"`
 	CostBRL       *float64 `json:"cost_brl"` // nil = no tariff or no energy data
 	CostEstimated bool     `json:"cost_estimated"`
+	// Partial: energy, peak and cost come from sessions or readings that do not cover
+	// every bus of the night (or the readings and the sessions disagree by more than
+	// energyMismatch). The values are kept, but they are not the whole night.
+	Partial bool `json:"partial"`
+	// CoveredBuses: of Buses, how many have at least one session in the night (equal to
+	// Buses when no gap was found, e.g. no sessoes.csv at all).
+	CoveredBuses int    `json:"covered_buses"`
+	PartialNote  string `json:"partial_note"` // short seal, "parcial: 2 de 3 ônibus"; "" when not Partial
 }
 
 // BusReal is the measured outcome of one bus (nil = soc_saida_real_pct missing).
@@ -193,7 +206,10 @@ func (d *Dataset) Nights(o NightOptions) ([]Night, []Warning) {
 			FollowSwaps:   true,
 		}
 
-		real, busReal := measured(buses, sessBy[k], powBy[k], g, cum)
+		real, busReal, notes := measured(buses, sessBy[k], powBy[k], g, cum, d.HasSessions)
+		for _, msg := range notes {
+			ws = append(ws, Warning{File: FileSessoes, Message: "noite " + k + ": " + msg})
+		}
 		if !real.finite() {
 			ws = append(ws, Warning{File: FileOnibus, Line: buses[0].Line, Message: fmt.Sprintf("noite %s omitida: o resultado real não é um número finito (confira as unidades)", k)})
 			continue
@@ -272,9 +288,12 @@ func priceSpan(cum *[1441]float64, startClock, n int) float64 {
 
 func clockOf(t time.Time) int { return t.Hour()*60 + t.Minute() }
 
-// measured computes the Real figures of one night and the per-bus outcomes.
-func measured(buses []Bus, sess []Session, pow []PowerSample, g Garage, cum [1441]float64) (Real, []BusReal) {
-	r := Real{Buses: len(buses)}
+// measured computes the Real figures of one night and the per-bus outcomes. The
+// strings are warnings about how much of the night the figures cover (Partial).
+// hasSessions says whether sessoes.csv exists at all: a night without sessions in a
+// file that has them for other nights is a gap, one in a dataset without the file is not.
+func measured(buses []Bus, sess []Session, pow []PowerSample, g Garage, cum [1441]float64, hasSessions bool) (Real, []BusReal, []string) {
+	r := Real{Buses: len(buses), CoveredBuses: len(buses)}
 	busReal := make([]BusReal, 0, len(buses))
 	for _, b := range buses {
 		br := BusReal{ID: b.ID}
@@ -334,7 +353,56 @@ func measured(buses []Bus, sess []Session, pow []PowerSample, g Garage, cum [144
 			r.CostBRL, r.CostEstimated = &c, true
 		}
 	}
-	return r, busReal
+	return r, busReal, markPartial(&r, buses, sess, sampled, len(pow) > 0, hasSessions)
+}
+
+// markPartial decides whether the energy, peak and cost of a night cover all of it:
+//   - sessions exist for the night but some buses have none (CoveredBuses < Buses), or
+//     sessoes.csv exists but has nothing for this night while the figures come from readings;
+//   - sessions and readings both exist and their energies differ by more than energyMismatch.
+//
+// It returns the warnings to show; nothing is changed when there is no energy figure at all.
+func markPartial(r *Real, buses []Bus, sess []Session, sampled sampleStats, hasPower, hasSessions bool) []string {
+	if r.EnergyKWh == nil && r.PeakKW == nil && r.CostBRL == nil {
+		return nil
+	}
+	var notes, parts []string
+	if len(sess) > 0 {
+		have := map[string]bool{}
+		for _, s := range sess {
+			have[s.BusID] = true
+		}
+		r.CoveredBuses = 0
+		for _, b := range buses {
+			if have[b.ID] {
+				r.CoveredBuses++
+			}
+		}
+		if missing := r.Buses - r.CoveredBuses; missing > 0 {
+			notes = append(notes, fmt.Sprintf("%d de %d ônibus sem sessão: energia, pico e custo reais cobrem só os demais", missing, r.Buses))
+			parts = append(parts, fmt.Sprintf("%d de %d ônibus", r.CoveredBuses, r.Buses))
+		}
+	} else if hasSessions {
+		r.CoveredBuses = 0
+		notes = append(notes, "nenhuma sessão em sessoes.csv nesta noite: energia, pico e custo reais vêm só das leituras de potência e podem não cobrir todos os ônibus")
+		parts = append(parts, fmt.Sprintf("0 de %d ônibus", r.Buses))
+	}
+	if len(sess) > 0 && hasPower {
+		se := 0.0
+		for _, s := range sess {
+			se += s.EnergyKWh
+		}
+		if hi := math.Max(se, sampled.energy); hi > 0 && math.Abs(se-sampled.energy) > energyMismatch*hi {
+			notes = append(notes, fmt.Sprintf("a energia das sessões (%.0f kWh) e a das leituras de potência (%.0f kWh) diferem em mais de %d%%: sessões ou leituras podem não cobrir a noite toda",
+				se, sampled.energy, int(energyMismatch*100)))
+			parts = append(parts, "sessões e leituras de potência divergem")
+		}
+	}
+	if len(notes) > 0 {
+		r.Partial = true
+		r.PartialNote = "parcial: " + strings.Join(parts, "; ")
+	}
+	return notes
 }
 
 func (r Real) finite() bool {

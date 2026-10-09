@@ -79,16 +79,21 @@ const SEAL_PEAK = 'Estimado: não há leituras de potência nesta noite; o pico 
 const SEAL_COST = 'Estimado: o custo vem das sessões de carga espalhadas uniformemente entre o início e o fim de cada uma. Com potencia.csv ele é medido.';
 const NO_COST = 'Sem custo simulado comparável: faltam as colunas de tarifa em garagem.csv ou a janela de ponta atravessa a meia-noite, que o simulador não representa.';
 
-const cell = (key, text, extra = {}) => ({ key, text, estimated: false, detail: '', title: '', bad: false, ...extra });
+export const SEAL_PARTIAL = 'Parcial: a energia, o pico e o custo reais vêm de sessões ou leituras que não cobrem todos os ônibus (ou que divergem entre si). O valor é medido, mas é de parte da noite: não o compare, sem ressalva, com as linhas simuladas, que cobrem todos os ônibus.';
+
+const cell = (key, text, extra = {}) => ({ key, text, estimated: false, partial: '', detail: '', title: '', bad: false, ...extra });
 
 // realRowCells: the cells of the `real` row, in the order of columns(). A figure the spreadsheets
 // cannot give is a dash; an estimated one carries `estimated: true`, which the table draws as a
-// visible "estimado" seal (never by colour alone). Plan violations, minutes over the limit, plan
+// visible "estimado" seal (never by colour alone); one whose sessions or readings cover only part of
+// the night carries `partial` ("parcial: 2 de 3 ônibus"), drawn as a seal too. Plan violations, minutes over the limit, plan
 // changes and operator moves are not measured by a depot's spreadsheets: always a dash.
 export function realRowCells(real) {
   const r = real || {};
   const measured = r.with_outcome > 0;
   const num = (v, col) => (typeof v === 'number' && Number.isFinite(v) ? col.fmt(v) : DASH);
+  // the partial seal goes with a figure that exists, never with a dash
+  const partial = (text) => (text !== DASH && r.partial ? String(r.partial_note || 'parcial') : '');
   const by = Object.fromEntries(columns().map((c) => [c.key, c]));
   return columns().map((col) => {
     switch (col.key) {
@@ -101,19 +106,28 @@ export function realRowCells(real) {
       case 'peak_kw': {
         const text = num(r.peak_kw, col);
         const estimated = text !== DASH && Boolean(r.peak_estimated);
-        return cell(col.key, text, { estimated, title: estimated ? SEAL_PEAK : '' });
+        return cell(col.key, text, { estimated, partial: partial(text), title: estimated ? SEAL_PEAK : '' });
       }
-      case 'energy_kwh':
-        return cell(col.key, num(r.energy_kwh, col));
+      case 'energy_kwh': {
+        const text = num(r.energy_kwh, col);
+        return cell(col.key, text, { partial: partial(text) });
+      }
       case 'cost_brl': {
         const text = num(r.cost_brl, col);
         const estimated = text !== DASH && Boolean(r.cost_estimated);
-        return cell(col.key, text, { estimated, title: estimated ? SEAL_COST : '' });
+        return cell(col.key, text, { estimated, partial: partial(text), title: estimated ? SEAL_COST : '' });
       }
       default:
         return cell(col.key, DASH);
     }
   });
+}
+
+// partialText: the sentence under the table when the real energy, peak and cost cover only part of
+// the night(s) ("" when they cover everything).
+export function partialText(real) {
+  if (!real || !real.partial) return '';
+  return `Energia, pico e custo reais são parciais (${String(real.partial_note || 'parcial').replace(/^parcial:\s*/, 'parcial: ')}): vêm de sessões ou leituras que não cobrem todos os ônibus, então cobrem só parte da noite e não são comparáveis com as linhas simuladas, que cobrem todos os ônibus. O valor está na tabela com o selo “parcial”.`;
 }
 
 // controllerCells: the cells of a simulated row. Cost is a dash when the report says the simulated

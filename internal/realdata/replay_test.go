@@ -165,6 +165,29 @@ func TestReplayRealAggregate(t *testing.T) {
 	}
 }
 
+func TestReplayRealAggregatePartial(t *testing.T) {
+	r := demoReplay(t, demoFiles(t), NightOptions{}, 2)
+	a := r.RealAggregate
+	// night 1 covers 3 of 3 buses, night 2 covers 2 of 3: the aggregate is partial (OR) and sums the buses
+	if !a.Partial || a.CoveredBuses != 5 || a.Buses != 6 || a.PartialNote != "parcial: 5 de 6 ônibus" {
+		t.Errorf("aggregate = %+v", a)
+	}
+	if r.Nights[0].Real.Partial || !r.Nights[1].Real.Partial {
+		t.Errorf("per night: %v / %v", r.Nights[0].Real.Partial, r.Nights[1].Real.Partial)
+	}
+	// complete sessions everywhere: not partial
+	m := withFile(demoFiles(t), FileSessoes, string(demoFiles(t)[FileSessoes])+"B03,C03,2026-03-06 01:00,2026-03-06 01:30,0\n")
+	if r := demoReplay(t, m, NightOptions{}, 2); r.RealAggregate.Partial || r.RealAggregate.PartialNote != "" || r.RealAggregate.CoveredBuses != 6 {
+		t.Errorf("aggregate = %+v", r.RealAggregate)
+	}
+	// only a divergence: the aggregate note says so (covered == buses)
+	m = withFile(demoFiles(t), FileSessoes, string(demoFiles(t)[FileSessoes])+"B03,C03,2026-03-06 01:00,2026-03-06 02:00,100\n")
+	if r := demoReplay(t, m, NightOptions{}, 2); !r.RealAggregate.Partial || r.RealAggregate.CoveredBuses != 6 ||
+		r.RealAggregate.PartialNote != "parcial: sessões e leituras de potência divergem em alguma noite" {
+		t.Errorf("aggregate = %+v", r.RealAggregate)
+	}
+}
+
 func TestReplayRealAggregateNoData(t *testing.T) {
 	// without sessions and power nothing is known about energy, peak and cost
 	r := demoReplay(t, without(demoFiles(t), FileSessoes, FilePotencia), NightOptions{}, 2)

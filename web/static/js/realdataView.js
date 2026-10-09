@@ -7,7 +7,7 @@ import { fmtNum } from './format.js';
 import {
   FILE_SPECS, readFileText, pickKnownFiles, formatImportError, columns, realRowCells, controllerCells,
   pickRows, worstBuses, busStatus, summarizeImport, controllerOptions, controllerHelp,
-  compareButtonState, checkSizes, checkBody, bodySize, describeFailure, pickOption, importStatusText, errorStatusText, failureStatusText, fmtSize,
+  compareButtonState, SEAL_PARTIAL, partialText, checkSizes, checkBody, bodySize, describeFailure, pickOption, importStatusText, errorStatusText, failureStatusText, fmtSize,
 } from './realdata.js';
 
 const MAX_DROPPED = 1000; // files read from a dropped folder, so a huge folder cannot hang the page
@@ -444,6 +444,7 @@ export function createRealView({ filesRoot, outRoot, onOpenRun }) {
       cell.bad ? '⚠ ' : null,
       cell.text === '—' ? noData() : cell.text,
       cell.estimated ? [' ', h('span', { class: 'seal', title: cell.title }, 'estimado')] : null,
+      cell.partial ? [' ', h('span', { class: 'seal', title: SEAL_PARTIAL }, cell.partial)] : null,
       cell.detail ? h('small', { class: 'detail' }, cell.detail) : null);
     return td;
   }
@@ -462,8 +463,10 @@ export function createRealView({ filesRoot, outRoot, onOpenRun }) {
       h('thead', {}, head), h('tbody', {}, realRow, sims)));
   }
 
-  function tableNotes() {
+  function tableNotes(real) {
+    const partial = partialText(real);
     return [
+      partial ? h('p', { class: 'note' }, h('span', { class: 'seal' }, 'parcial'), ' ', partial) : null,
       h('p', { class: 'note' }, h('strong', {}, '—'), ' = a planilha não traz esse dado. ', h('span', { class: 'seal' }, 'estimado'),
         ' = calculado com as sessões de carga espalhadas uniformemente no tempo (subestima o pico); com potencia.csv o valor é medido. ',
         'Violações do plano, minutos acima do limite, mudanças de plano e movimentações não são medidos na realidade. Cada linha simulada é uma execução por noite (ou a média das noites).'),
@@ -523,7 +526,7 @@ export function createRealView({ filesRoot, outRoot, onOpenRun }) {
     const rows = pickRows(report, selected);
     if (!rows) return;
     put(body, 
-      metricsTable(rows), tableNotes(),
+      metricsTable(rows), tableNotes(rows.real),
       h('h3', {}, 'Ônibus a ônibus'), busesBlock(rows.night),
       openBlock(rows.night));
   }

@@ -120,9 +120,11 @@ func TestRunPrintsRealVersusSimulatedTables(t *testing.T) {
 	if strings.Contains(strings.ToLower(out), "p99") {
 		t.Errorf("p99 must never be printed:\n%s", out)
 	}
-	// the only warning of the demo: B03 of night 2 has no measured outcome
-	if n := strings.Count(out, "aviso:"); n != 1 || !strings.HasPrefix(out, "aviso: onibus.csv: soc_saida_real_pct vazio em 1 ônibus") {
-		t.Errorf("want exactly the soc_saida_real_pct warning first (%d found):\n%s", n, out)
+	// the warnings of the demo: B03 of night 2 has no measured outcome (first, from the
+	// load) and no session (from the nights)
+	if n := strings.Count(out, "aviso:"); n != 2 || !strings.HasPrefix(out, "aviso: onibus.csv: soc_saida_real_pct vazio em 1 ônibus") ||
+		!strings.Contains(out, "aviso: sessoes.csv: noite 2026-03-05: 1 de 3 ônibus sem sessão: energia, pico e custo reais cobrem só os demais") {
+		t.Errorf("want the soc_saida_real_pct warning first and the partial one (%d found):\n%s", n, out)
 	}
 	tbs := tables(out)
 	if len(tbs) != 3 { // 2 nights + aggregate
@@ -156,9 +158,23 @@ func TestRunPrintsRealVersusSimulatedTables(t *testing.T) {
 			t.Errorf("real %s = %q, want —", c, real[col(t, hdr, c)])
 		}
 	}
-	// night 2 has measured power: the peak is not estimated
-	if p := tbs[1][1][col(t, hdr, "peak kW")]; p != "140" {
-		t.Errorf("night 2 real peak = %q, want the measured 140 (no seal)", p)
+	// night 2 has measured power: the peak is not estimated, but sessions cover only 2 of 3 buses
+	if p := tbs[1][1][col(t, hdr, "peak kW")]; p != "140 (parcial: 2 de 3 ônibus)" {
+		t.Errorf("night 2 real peak = %q, want the measured 140 sealed as partial", p)
+	}
+	for _, c := range []string{"energy kWh", "cost R$"} {
+		if v := tbs[1][1][col(t, hdr, c)]; !strings.HasSuffix(v, "(parcial: 2 de 3 ônibus)") {
+			t.Errorf("night 2 real %s = %q, want the partial seal", c, v)
+		}
+		if v := tbs[0][1][col(t, hdr, c)]; strings.Contains(v, "parcial") {
+			t.Errorf("night 1 covers its 3 buses, real %s = %q", c, v)
+		}
+	}
+	if v := tbs[2][1][col(t, hdr, "energy kWh")]; v != "272 (parcial: 5 de 6 ônibus)" {
+		t.Errorf("aggregate real energy = %q, want 272 sealed (5 of 6 buses)", v)
+	}
+	if !strings.Contains(out, "Nota: energia, pico e custo reais cobrem só parte da noite (parcial: 2 de 3 ônibus)") {
+		t.Errorf("partial note missing:\n%s", out)
 	}
 	// the not-ready list of night 1 comes before the night 2 heading
 	i1, i2 := strings.Index(out, "Ônibus não prontos"), strings.Index(out, "Noite 2026-03-05")

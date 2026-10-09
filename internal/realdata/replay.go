@@ -72,6 +72,8 @@ type Report struct {
 	// ReadyPct and ShortfallKWh are means over the nights that have an outcome;
 	// EnergyKWh, PeakKW and CostBRL are means over the nights that have the value
 	// (nil if none); the Estimated flags are true if any contributing night is.
+	// Partial is true if any night is; CoveredBuses is summed like Buses, and PartialNote
+	// says which kind of gap it is ("parcial: 5 de 6 ônibus", or the divergence note).
 	RealAggregate Real `json:"real_aggregate"`
 	// CostComparable is false when the simulated cost cannot be compared with the
 	// real one: no tariff, or a peak window that crosses midnight (sim.Tariff
@@ -271,6 +273,8 @@ func realAggregate(nights []Night) Real {
 	for _, n := range nights {
 		r := n.Real
 		a.Buses += r.Buses
+		a.CoveredBuses += r.CoveredBuses
+		a.Partial = a.Partial || r.Partial
 		a.WithOutcome += r.WithOutcome
 		a.Ready += r.Ready
 		if r.WithOutcome > 0 {
@@ -305,6 +309,13 @@ func realAggregate(nights []Night) Real {
 		return &v
 	}
 	a.EnergyKWh, a.PeakKW, a.CostBRL = mean(eSum, eN), mean(pSum, pN), mean(cSum, cN)
+	if a.Partial {
+		if a.CoveredBuses < a.Buses {
+			a.PartialNote = fmt.Sprintf("parcial: %d de %d ônibus", a.CoveredBuses, a.Buses)
+		} else {
+			a.PartialNote = "parcial: sessões e leituras de potência divergem em alguma noite"
+		}
+	}
 	return a
 }
 

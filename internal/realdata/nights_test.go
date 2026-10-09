@@ -87,7 +87,8 @@ func without(m map[string][]byte, files ...string) map[string][]byte {
 
 func TestNightsDemoFirstNight(t *testing.T) {
 	ns, ws := demoNights(t, demoFiles(t), NightOptions{})
-	if len(ws) != 0 {
+	// the only warning: night 2 has sessions for 2 of its 3 buses (TestNightsPartialCoverage)
+	if len(ws) != 1 || !strings.Contains(ws[0].Message, "1 de 3 ônibus sem sessão") {
 		t.Errorf("warnings: %v", ws)
 	}
 	if len(ns) != 2 || ns[0].Key != "2026-03-04" || ns[1].Key != "2026-03-05" {
@@ -329,7 +330,7 @@ func TestNightsHorizonCap(t *testing.T) {
 	}
 	// 11:00 on the 4th + 2970 min = 12:30 on the 6th -> horizon exactly 3000: kept
 	ns, ws := demoNights(t, build("2026-03-06 12:30"), NightOptions{})
-	if len(ns) != 2 || ns[0].Scenario.Horizon != 3000 || len(ws) != 0 {
+	if len(ns) != 2 || ns[0].Scenario.Horizon != 3000 || len(withoutPartial(ws)) != 0 {
 		t.Fatalf("horizon 3000: nights=%d ws=%v", len(ns), ws)
 	}
 	// one minute more -> 3001: omitted with a warning, the other night stays
@@ -337,7 +338,7 @@ func TestNightsHorizonCap(t *testing.T) {
 	if len(ns) != 1 || ns[0].Key != "2026-03-05" {
 		t.Fatalf("nights = %+v", ns)
 	}
-	if len(ws) != 1 || ws[0].File != FileOnibus || ws[0].Line == 0 ||
+	if ws = withoutPartial(ws); len(ws) != 1 || ws[0].File != FileOnibus || ws[0].Line == 0 ||
 		!strings.Contains(ws[0].Message, "2026-03-04") || !strings.Contains(ws[0].Message, "3000") {
 		t.Errorf("warnings = %+v", ws)
 	}
@@ -457,7 +458,8 @@ func TestNightsJSON(t *testing.T) {
 	if !ok {
 		t.Fatalf("real = %v", got["real"])
 	}
-	for _, k := range []string{"buses", "with_outcome", "ready", "ready_pct", "shortfall_kwh", "energy_kwh", "peak_kw", "peak_estimated", "cost_brl", "cost_estimated"} {
+	for _, k := range []string{"buses", "with_outcome", "ready", "ready_pct", "shortfall_kwh", "energy_kwh", "peak_kw", "peak_estimated", "cost_brl", "cost_estimated",
+		"partial", "covered_buses", "partial_note"} {
 		if _, ok := real[k]; !ok {
 			t.Errorf("real.%s missing: %v", k, real)
 		}
@@ -544,5 +546,105 @@ func TestNightsBusesSortedByArrivalThenID(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, []string{"B02", "B01", "B03"}) {
 		t.Errorf("order by arrival = %v", got)
+	}
+}
+
+// withoutPartial drops the "N de M ônibus sem sessão" warnings of the demo's night 2.
+func withoutPartial(ws []Warning) []Warning {
+	var out []Warning
+	for _, w := range ws {
+		if !strings.Contains(w.Message, "sem sessão") {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+func TestNightsPartialCoverage(t *testing.T) {
+	ns, ws := demoNights(t, demoFiles(t), NightOptions{})
+	n1, n2 := ns[0].Real, ns[1].Real
+	if n1.Partial || n1.CoveredBuses != 3 || n1.PartialNote != "" {
+		t.Errorf("night 1 has a session for each of its 3 buses: %+v", n1)
+	}
+	// night 2: sessions for B01 and B02 only; the power readings do not name buses
+	if !n2.Partial || n2.CoveredBuses != 2 || n2.Buses != 3 || n2.PartialNote != "parcial: 2 de 3 ônibus" {
+		t.Errorf("night 2: %+v", n2)
+	}
+	// the values stay (hand-computed in TestNightsDemoSecondNight), they are sealed, not nulled
+	wantPtr(t, "EnergyKWh", n2.EnergyKWh, 65)
+	wantPtr(t, "PeakKW", n2.PeakKW, 140)
+	if len(ws) != 1 || ws[0].File != FileSessoes ||
+		ws[0].Message != "noite 2026-03-05: 1 de 3 ônibus sem sessão: energia, pico e custo reais cobrem só os demais" {
+		t.Errorf("warnings = %+v", ws)
+	}
+}
+
+func TestNightsPartialNeedsSomethingToSeal(t *testing.T) {
+	// no sessoes.csv at all: nothing is known to be missing
+	ns, ws := demoNights(t, without(demoFiles(t), FileSessoes), NightOptions{})
+	for _, n := range ns {
+		if n.Real.Partial || n.Real.CoveredBuses != n.Real.Buses {
+			t.Errorf("%s without sessoes.csv: %+v", n.Key, n.Real)
+		}
+	}
+	if len(ws) != 0 {
+		t.Errorf("warnings = %+v", ws)
+	}
+	// neither sessions nor power: no figure, nothing to seal
+	ns, ws = demoNights(t, without(demoFiles(t), FileSessoes, FilePotencia), NightOptions{})
+	for _, n := range ns {
+		if n.Real.Partial {
+			t.Errorf("%s has no figure to be partial: %+v", n.Key, n.Real)
+		}
+	}
+	if len(ws) != 0 {
+		t.Errorf("warnings = %+v", ws)
+	}
+}
+
+func TestNightsPartialWhenSessionsFileHasNothingForTheNight(t *testing.T) {
+	// sessoes.csv only has night 1; night 2 gets its energy from the readings alone
+	m := withFile(demoFiles(t), FileSessoes, "onibus_id,carregador_id,inicio,fim,energia_kwh\n"+
+		"B01,C01,2026-03-04 20:00,2026-03-05 00:00,200\nB02,C02,2026-03-04 22:00,2026-03-05 02:00,120\nB03,C03,2026-03-04 23:30,2026-03-05 03:30,160\n")
+	ns, ws := demoNights(t, m, NightOptions{})
+	r := ns[1].Real
+	if !r.Partial || r.CoveredBuses != 0 || r.PartialNote != "parcial: 0 de 3 ônibus" {
+		t.Errorf("night 2: %+v", r)
+	}
+	wantPtr(t, "EnergyKWh", r.EnergyKWh, 65) // from the readings
+	if len(ws) != 1 || !strings.Contains(ws[0].Message, "nenhuma sessão") {
+		t.Errorf("warnings = %+v", ws)
+	}
+	// the same file without readings: no figure for night 2, nothing to warn about
+	ns, ws = demoNights(t, without(m, FilePotencia), NightOptions{})
+	if ns[1].Real.Partial || len(ws) != 0 {
+		t.Errorf("night 2 without data: %+v / %+v", ns[1].Real, ws)
+	}
+}
+
+func TestNightsPartialWhenReadingsAndSessionsDisagree(t *testing.T) {
+	// B03 gets a session too, so all 3 buses are covered; the sessions then add up
+	// to 165 kWh against 65 kWh integrated from the readings.
+	sess := string(demoFiles(t)[FileSessoes]) + "B03,C03,2026-03-06 01:00,2026-03-06 02:00,100\n"
+	m := withFile(demoFiles(t), FileSessoes, sess)
+	ns, ws := demoNights(t, m, NightOptions{})
+	r := ns[1].Real
+	if !r.Partial || r.CoveredBuses != 3 || r.PartialNote != "parcial: sessões e leituras de potência divergem" {
+		t.Errorf("night 2: %+v", r)
+	}
+	if len(ws) != 1 || !strings.Contains(ws[0].Message, "165 kWh") || !strings.Contains(ws[0].Message, "65 kWh") || !strings.Contains(ws[0].Message, "20%") {
+		t.Errorf("warnings = %+v", ws)
+	}
+	// a small difference (70 vs 65 kWh, 7%) is fine
+	sess = string(demoFiles(t)[FileSessoes]) + "B03,C03,2026-03-06 01:00,2026-03-06 02:00,5\n"
+	ns, ws = demoNights(t, withFile(demoFiles(t), FileSessoes, sess), NightOptions{})
+	if ns[1].Real.Partial || len(ws) != 0 {
+		t.Errorf("7%% apart must not warn: %+v / %+v", ns[1].Real, ws)
+	}
+	// both gaps at once: the note lists both
+	sess = string(demoFiles(t)[FileSessoes]) + "B01,C03,2026-03-06 01:00,2026-03-06 02:00,100\n"
+	ns, ws = demoNights(t, withFile(demoFiles(t), FileSessoes, sess), NightOptions{})
+	if n := ns[1].Real.PartialNote; n != "parcial: 2 de 3 ônibus; sessões e leituras de potência divergem" || len(ws) != 2 {
+		t.Errorf("note = %q, warnings = %+v", n, ws)
 	}
 }

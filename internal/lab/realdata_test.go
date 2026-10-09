@@ -356,6 +356,43 @@ func TestReplayDemo(t *testing.T) {
 	}
 }
 
+func TestReplaySealsPartialRealFigures(t *testing.T) {
+	s := New()
+	rec := do(s, newReq("POST", "/api/replay", body(t, demoFiles(t), nil)))
+	if rec.Code != 200 {
+		t.Fatalf("status %d: %.300s", rec.Code, rec.Body)
+	}
+	type realJSON struct {
+		Partial      bool   `json:"partial"`
+		CoveredBuses int    `json:"covered_buses"`
+		PartialNote  string `json:"partial_note"`
+	}
+	var r struct {
+		Nights []struct {
+			Real realJSON `json:"real"`
+		} `json:"nights"`
+		RealAggregate realJSON           `json:"real_aggregate"`
+		Warnings      []realdata.Warning `json:"warnings"`
+	}
+	decode(t, rec, &r)
+	if r.Nights[0].Real.Partial || r.Nights[0].Real.CoveredBuses != 3 {
+		t.Errorf("night 1: %+v", r.Nights[0].Real)
+	}
+	if n := r.Nights[1].Real; !n.Partial || n.CoveredBuses != 2 || n.PartialNote != "parcial: 2 de 3 ônibus" {
+		t.Errorf("night 2: %+v", n)
+	}
+	if a := r.RealAggregate; !a.Partial || a.PartialNote != "parcial: 5 de 6 ônibus" {
+		t.Errorf("aggregate: %+v", a)
+	}
+	found := false
+	for _, w := range r.Warnings {
+		found = found || strings.Contains(w.Message, "1 de 3 ônibus sem sessão")
+	}
+	if !found {
+		t.Errorf("warnings = %+v", r.Warnings)
+	}
+}
+
 func TestReplaySoCNoiseChangesTheResult(t *testing.T) {
 	s := New()
 	plain := do(s, newReq("POST", "/api/replay", body(t, demoFiles(t), nil)))

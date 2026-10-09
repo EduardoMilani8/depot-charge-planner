@@ -179,8 +179,8 @@ func printTable(w io.Writer, real realdata.Real, rows []realdata.ControllerResul
 	}
 	fmt.Fprintf(tw, "real\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 		ready, shortfall,
-		optional(real.PeakKW, real.PeakEstimated), dash, dash,
-		optional(real.EnergyKWh, false), optional(real.CostBRL, real.CostEstimated), dash, dash)
+		optional(real.PeakKW, real.PeakEstimated, real), dash, dash,
+		optional(real.EnergyKWh, false, real), optional(real.CostBRL, real.CostEstimated, real), dash, dash)
 	for _, r := range rows {
 		a := r.Aggregate
 		cost := dash
@@ -194,8 +194,9 @@ func printTable(w io.Writer, real realdata.Real, rows []realdata.ControllerResul
 }
 
 // optional formats a measured value with no decimals: "—" when unknown, with the
-// "(estimado)" seal when it was derived from the sessions instead of measured.
-func optional(v *float64, est bool) string {
+// "(estimado)" seal when it was derived from the sessions instead of measured and
+// the "(parcial: X de Y ônibus)" seal when the figures do not cover the whole night.
+func optional(v *float64, est bool, r realdata.Real) string {
 	if v == nil || math.IsNaN(*v) || math.IsInf(*v, 0) {
 		return dash
 	}
@@ -203,11 +204,17 @@ func optional(v *float64, est bool) string {
 	if est {
 		s += estimated
 	}
+	if r.Partial {
+		s += " (" + r.PartialNote + ")"
+	}
 	return s
 }
 
 // printRealNote explains the "real" row when it covers only part of the buses.
 func printRealNote(w io.Writer, r realdata.Real) {
+	if r.Partial {
+		fmt.Fprintf(w, "Nota: energia, pico e custo reais cobrem só parte da noite (%s) e não são comparáveis com as linhas simuladas, que cobrem todos os ônibus (veja os avisos).\n", r.PartialNote)
+	}
 	switch {
 	case r.Buses > 0 && r.WithOutcome == 0:
 		fmt.Fprintf(w, "Nota: nenhum dos %d ônibus tem soc_saida_real_pct: ready%% e shortfall reais são desconhecidos.\n", r.Buses)
