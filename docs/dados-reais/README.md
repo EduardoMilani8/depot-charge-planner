@@ -46,8 +46,9 @@ No laboratório web (`go run ./cmd/lab`), a aba "Dados reais" faz a mesma compar
 ## Formato
 
 - Arquivos CSV em UTF-8. Separador `,` ou `;` (Excel brasileiro gera `;` com vírgula decimal, e isso é aceito).
-- Datas e horas locais, sem fuso: `AAAA-MM-DD HH:MM` (também aceitamos `DD/MM/AAAA HH:MM`).
-- Percentuais de carga em 0 a 100 (`soc_chegada_pct`, `soc_saida_exigido_pct`, `soc_saida_real_pct`).
+- Datas e horas locais, sem fuso: `AAAA-MM-DD HH:MM` (também aceitamos `DD/MM/AAAA HH:MM`, com o ano em 4 dígitos). Não aceitamos `Z`, `+00:00` nem ano com 2 dígitos.
+- Percentuais de carga em 0 a 100 (`soc_chegada_pct`, `soc_saida_exigido_pct`, `soc_saida_real_pct`); uma célula como `30%` também é aceita. Uma coluna cujos valores são todos 0 a 1 (frações, como `0.30` para 30%) é recusada, porque cada ônibus ficaria com uma necessidade de poucos kWh: multiplique por 100.
+- Arquivos em UTF-16 (o "Unicode" do Excel) não são aceitos: salve como CSV UTF-8.
 - Uma "noite" é identificada pela chegada menos 12 horas (chegadas de 12:00 a 23:59 pertencem ao dia; de 00:00 a 11:59, ao dia anterior). As sessões e as leituras de potência são atribuídas à noite pelo mesmo critério, aplicado ao início da sessão e ao instante da leitura (veja "Limitações dos números").
 - Cabeçalhos exatamente como nos modelos; colunas extras são ignoradas.
 
@@ -60,6 +61,8 @@ Valores fora destes limites são recusados com o arquivo, a linha e a coluna do 
 - Permanência do ônibus (`saida_prevista` e `saida_real` menos `chegada`): até 48 horas. Duração de uma sessão (`fim` menos `inicio`): até 48 horas.
 - Energia de uma sessão (`energia_kwh`): até 1.000.000 kWh. Potência de uma leitura (`potencia_kw`): até 100.000 kW (leitura acima de 2 vezes a potência máxima do carregador só gera aviso).
 - Até 1000 ônibus por noite, 366 noites e 10.000 ônibus ou carregadores no total.
+- Uma noite que dura mais de 3000 minutos (da hora cheia anterior à primeira chegada, menos 1 hora, até a última saída prevista ou real mais 30 minutos) é omitida com um aviso: confira as datas de saída.
+- No laboratório web, cada requisição tem limite de 60 segundos e o corpo, de 16 MB. Uma comparação de 10.000 ônibus levou 19 s em 16 núcleos; num notebook pequeno pode passar de 60 s e dar erro de tempo esgotado. Para conjuntos grandes use a linha de comando (`replay`), que não tem esse limite.
 
 ## Limitações dos números
 
@@ -72,6 +75,9 @@ Leia isto antes de tirar conclusões de um relatório:
 - **Janela de ponta que atravessa a meia-noite** (por exemplo 22:00 a 06:00). O simulador só aceita janelas dentro do mesmo dia e trata o horário como fora de ponta; por isso o custo simulado não é comparável com o custo real e aparece como `—` nas linhas simuladas. O custo real continua calculado com a janela correta.
 - **Potência máxima da bateria.** Se `potencia_max_bateria_kw` não vem na planilha, vale a potência de carregador mais comum em `carregadores.csv` (em empate, a maior).
 - **Definição de "pronto".** O ônibus saiu pronto se a carga real na saída (`soc_saida_real_pct`) é pelo menos a exigida menos 1e-6 kWh, a mesma regra do simulador. A necessidade nunca passa da capacidade. O `ready%` de uma noite é a porcentagem dos ônibus **com** `soc_saida_real_pct`; o `ready%` agregado é a **média** dos percentuais de cada noite (não o total de ônibus prontos sobre o total de ônibus). Ônibus sem resultado real nunca contam como não prontos; se nenhum ônibus da noite tem `soc_saida_real_pct`, o relatório diz que o resultado real é desconhecido.
+- **Comparação justa (mesmos ônibus).** As linhas simuladas cobrem todos os ônibus da noite, mas o `ready%` e o `shortfall` reais só os que têm `soc_saida_real_pct`. Por isso, sob cada tabela, a linha "Comparação justa (mesmos N ônibus do real)" mostra `ready%` e `shortfall` do `planner` e do `planner (sem rodízio)` só para esses N ônibus: é essa a linha para comparar com o `real`. No agregado, N é a soma dos ônibus e os percentuais são médias das noites que têm pelo menos um desses ônibus.
+- **Saída real atrasada.** Um ônibus cuja `saida_real` é mais de 15 minutos depois da `saida_prevista` conta como pronto se a carga estava completa na saída (a simulação o tira no horário previsto). O relatório avisa, por noite, quantos foram: o "pronto" desses pode dever-se ao tempo extra ligado.
+- **Agregado.** Nas linhas de todas as noites, a maioria das colunas é a média por noite, mas `plan violations` e `overshoot min` são somas das noites e `plan changes` é a média arredondada para baixo.
 - **A comparação é contrafactual.** O simulador reproduz as condições da noite (chegadas, saídas, cargas, limite), mas a operação real tomou decisões (ordem de ligação, rodízios manuais) que o planejador não vê; o limite da garagem é fixo e as leituras de carga são perfeitas, a menos que se use `-soc-noise`.
 
 ## Cuidados com privacidade (LGPD)
