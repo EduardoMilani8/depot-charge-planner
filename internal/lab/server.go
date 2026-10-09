@@ -162,6 +162,9 @@ func decodeBody(r *http.Request, v any) *apiError {
 		if errors.As(err, &tooBig) {
 			return tooLarge(tooBig)
 		}
+		if errors.As(err, new(tooManyFilesError)) {
+			return errTooManyFiles()
+		}
 		return &apiError{status: http.StatusBadRequest, Message: "JSON inválido: " + err.Error()}
 	}
 	// Nothing but whitespace may follow the object.
@@ -173,6 +176,18 @@ func decodeBody(r *http.Request, v any) *apiError {
 		return &apiError{status: http.StatusBadRequest, Message: "JSON inválido: há dados depois do objeto."}
 	}
 	return nil
+}
+
+// countingBody counts the bytes read from a request body.
+type countingBody struct {
+	io.ReadCloser
+	n int64
+}
+
+func (c *countingBody) Read(p []byte) (int, error) {
+	n, err := c.ReadCloser.Read(p)
+	c.n += int64(n)
+	return n, err
 }
 
 // tooLarge is the 413 answer; the message names the limit of the route that was exceeded.

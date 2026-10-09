@@ -7,9 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -234,10 +237,10 @@ func TestBigRoutesAccept16MBAndOthersStay64KB(t *testing.T) {
 			t.Errorf("%s: message %q", route, e.Error)
 		}
 	}
-	// Other routes (/api/run takes 16 MB for every request, with or without files): 70 KB is
-	// still too much, and the message still says 64 KB.
+	// Other routes, and /api/run without "files": 70 KB is too much, and the message says 64 KB
+	// (/api/run is read with the 16 MB limit, the 64 KB one is enforced on the bytes it received).
 	small := `{"buses":10` + strings.Repeat(" ", 70<<10) + `}`
-	for _, route := range []string{"/api/compare"} {
+	for _, route := range []string{"/api/compare", "/api/run"} {
 		rec := do(New(), newReq("POST", route, small))
 		if rec.Code != http.StatusRequestEntityTooLarge {
 			t.Fatalf("%s: status %d, want 413", route, rec.Code)
@@ -738,4 +741,174 @@ func TestRunWithoutFilesIsUnchanged(t *testing.T) {
 			t.Errorf("%s: \"source\" must be absent without files", c)
 		}
 	}
+}
+
+func TestRunWithoutFilesKeeps64KBButFilesMayBeBig(t *testing.T) {
+	// no "files": the old 64 KB contract, with the 64 KB message, also for trailing blanks
+	for name, b := range map[string]string{
+		"padded":   `{"buses":10` + strings.Repeat(" ", 70<<10) + `}`,
+		"trailing": `{}` + strings.Repeat(" ", 70<<10),
+	} {
+		rec := do(New(), newReq("POST", "/api/run", b))
+		var e errBody
+		decode(t, rec, &e)
+		if rec.Code != http.StatusRequestEntityTooLarge || !strings.Contains(e.Error, "64 KB") || strings.Contains(e.Error, "16 MB") {
+			t.Errorf("%s: %d %q", name, rec.Code, e.Error)
+		}
+	}
+	// just under the limit is fine
+	if rec := do(New(), newReq("POST", "/api/run", `{"buses":3,"chargers":2}`+strings.Repeat(" ", 60<<10))); rec.Code != 200 {
+		t.Errorf("60 KB: %d %.200s", rec.Code, rec.Body)
+	}
+	// with "files" the body may be big (an ignored 1 MB file still gets to the night lookup)
+	files := demoFiles(t)
+	files["notas.txt"] = strings.Repeat("a", 1<<20)
+	rec := do(New(), newReq("POST", "/api/run", body(t, files, map[string]any{"night": "2026-03-04"})))
+	if rec.Code != 200 {
+		t.Errorf("1 MB with files: %d %.200s", rec.Code, rec.Body)
+	}
+}
+
+func TestFilesObjectWithTooManyKeysIsRefusedWhileDecoding(t *testing.T) {
+	flood := func(n int) string {
+		var sb strings.Builder
+		sb.WriteString(`{"files":{`)
+		for i := 0; i < n; i++ {
+			if i > 0 {
+				sb.WriteByte(',')
+			}
+			fmt.Fprintf(&sb, `"k%d":""`, i)
+		}
+		sb.WriteString(`}`)
+		return sb.String()
+	}
+	for _, route := range []string{"/api/import", "/api/replay", "/api/run"} {
+		// 32 keys are still accepted by the decoder (the run then fails on its own business: 400 for the
+		// missing spreadsheets); 33 are refused with the message about too many files
+		rec := do(New(), newReq("POST", route, flood(33)+`}`))
+		var e errBody
+		decode(t, rec, &e)
+		if rec.Code != 400 || e.Field != "files" || !strings.Contains(e.Error, "Arquivos demais") {
+			t.Errorf("%s: 33 keys: %d %+v", route, rec.Code, e)
+		}
+		rec = do(New(), newReq("POST", route, flood(32)+`}`))
+		decode(t, rec, &e)
+		if strings.Contains(e.Error, "Arquivos demais") {
+			t.Errorf("%s: 32 keys refused: %+v", route, e)
+		}
+	}
+	// a null or an absent "files" is "no files"; other types are a JSON error
+	for _, b := range []string{`{"files":null}`, `{}`} {
+		rec := do(New(), newReq("POST", "/api/import", b))
+		var e errBody
+		decode(t, rec, &e)
+		if rec.Code != 400 || e.File != "garagem.csv" {
+			t.Errorf("%s: %d %+v", b, rec.Code, e)
+		}
+	}
+	for _, b := range []string{`{"files":[]}`, `{"files":"x"}`, `{"files":{"a":1}}`, `{"files":{"a":"x",}}`} {
+		if rec := do(New(), newReq("POST", "/api/import", b)); rec.Code != 400 {
+			t.Errorf("%s: %d", b, rec.Code)
+		}
+	}
+	// two million tiny keys in 16 MB: refused without building the map (it used to cost ~140 MB)
+	var sb strings.Builder
+	sb.WriteString(`{"files":{`)
+	for i := 0; sb.Len() < 15<<20; i++ {
+		sb.WriteString(`"`)
+		sb.WriteString(strconv.Itoa(i))
+		sb.WriteString(`":"",`)
+	}
+	sb.WriteString(`"z":""}}`)
+	big := sb.String()
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	rec := do(New(), newReq("POST", "/api/import", big))
+	runtime.ReadMemStats(&after)
+	if rec.Code != 400 {
+		t.Fatalf("flood: %d %.200s", rec.Code, rec.Body)
+	}
+	used := (after.TotalAlloc - before.TotalAlloc) >> 20
+	t.Logf("key flood allocated %d MB", used)
+	if used > 80 {
+		t.Errorf("the key flood allocated %d MB", used)
+	}
+}
+
+func TestLoadErrorMessageIsBounded(t *testing.T) {
+	long := strings.Repeat("ã", 5000)
+	e := loadError(&realdata.FieldError{File: "onibus.csv", Line: 3, Column: "chegada", Message: long})
+	if n := len([]rune(e.Message)); n > maxErrorRunes+1 || e.File != "onibus.csv" || e.Line != 3 || e.Column != "chegada" {
+		t.Errorf("message of %d runes: %+v", n, e)
+	}
+	if e := loadError(&realdata.FieldError{File: "onibus.csv", Message: "curta"}); e.Message != "onibus.csv: curta" {
+		t.Errorf("short message changed: %q", e.Message)
+	}
+}
+
+// The detailed run of "planner (sem rodízio)" is the replay's no-swap row, bus by bus.
+func TestRunRealNoSwapMatchesTheReplayNoSwapRow(t *testing.T) {
+	// a single charger for three buses: swaps matter, so the two planner rows differ
+	files := demoFiles(t)
+	files["carregadores.csv"] = "carregador_id,potencia_max_kw\nC01,150\n"
+	files["sessoes.csv"] = strings.Join(slicesWithout(strings.Split(files["sessoes.csv"], "\n"), "C02", "C03"), "\n")
+	files["potencia.csv"] = strings.Join(slicesWithout(strings.Split(files["potencia.csv"], "\n"), "C02", "C03"), "\n")
+	rec := do(New(), newReq("POST", "/api/replay", body(t, files, nil)))
+	if rec.Code != 200 {
+		t.Fatalf("replay: %d %.300s", rec.Code, rec.Body)
+	}
+	var rep realdata.Report
+	decode(t, rec, &rep)
+	night := rep.Nights[0]
+	differs := false
+	for _, b := range night.PerBus {
+		differs = differs || math.Abs(b.PlannerFinalKWh-b.NoSwapFinalKWh) > 0.1
+	}
+	if !differs {
+		t.Fatal("fixture: swaps do not matter, the check would prove nothing")
+	}
+	for _, c := range []struct {
+		controller string
+		final      func(realdata.BusRow) float64
+	}{
+		{"planner (sem rodízio)", func(b realdata.BusRow) float64 { return b.NoSwapFinalKWh }},
+		{"planner", func(b realdata.BusRow) float64 { return b.PlannerFinalKWh }},
+	} {
+		rec := do(New(), newReq("POST", "/api/run", body(t, files, map[string]any{"night": night.Key, "controller": c.controller})))
+		if rec.Code != 200 {
+			t.Fatalf("%s: %d %.300s", c.controller, rec.Code, rec.Body)
+		}
+		var run struct {
+			Outcomes []struct {
+				ID          string  `json:"id"`
+				FinalSoCKWh float64 `json:"final_soc_kwh"`
+			} `json:"outcomes"`
+		}
+		decode(t, rec, &run)
+		if len(run.Outcomes) != len(night.PerBus) {
+			t.Fatalf("%s: %d outcomes", c.controller, len(run.Outcomes))
+		}
+		for _, o := range run.Outcomes {
+			for _, b := range night.PerBus {
+				if b.ID == o.ID && math.Abs(o.FinalSoCKWh-c.final(b)) > 0.051 { // the run rounds to 0.1 kWh
+					t.Errorf("%s/%s: run %.1f kWh, replay %.3f kWh", c.controller, o.ID, o.FinalSoCKWh, c.final(b))
+				}
+			}
+		}
+	}
+}
+
+func slicesWithout(lines []string, subs ...string) []string {
+	var out []string
+	for _, l := range lines {
+		keep := true
+		for _, s := range subs {
+			keep = keep && !strings.Contains(l, s)
+		}
+		if keep {
+			out = append(out, l)
+		}
+	}
+	return out
 }

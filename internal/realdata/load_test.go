@@ -1108,3 +1108,16 @@ func TestLoadEchoedUserTextIsBounded(t *testing.T) {
 		t.Errorf("unknown-bus error: %d runes", len([]rune(fmt.Sprint(err))))
 	}
 }
+
+func TestIsKnownFile(t *testing.T) {
+	for _, n := range FileNames {
+		if !IsKnownFile(n) {
+			t.Errorf("%s is not known", n)
+		}
+	}
+	for _, n := range []string{"", "Onibus.csv", "onibus.csv ", "../onibus.csv", "notas.txt"} {
+		if IsKnownFile(n) {
+			t.Errorf("%q is known", n)
+		}
+	}
+}

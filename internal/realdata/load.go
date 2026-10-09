@@ -119,7 +119,7 @@ func Load(files map[string][]byte) (*Dataset, error) {
 
 	var extra []string
 	for name := range files {
-		if !isKnownFile(name) {
+		if !IsKnownFile(name) {
 			extra = append(extra, name)
 		}
 	}
@@ -240,7 +240,8 @@ func readFixed(path string) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(f, maxFileBytes+1))
 }
 
-func isKnownFile(name string) bool {
+// IsKnownFile reports whether name is one of the five fixed spreadsheet names.
+func IsKnownFile(name string) bool {
 	for _, n := range FileNames {
 		if n == name {
 			return true

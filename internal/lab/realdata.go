@@ -1,10 +1,13 @@
 package lab
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"runtime"
 
 	"github.com/EduardoMilani8/depot-charge-planner/internal/planner"
@@ -30,19 +33,15 @@ const (
 // other name is ignored by realdata.Load with a warning (its content is never copied).
 func loadFiles(files map[string]string) (*realdata.Dataset, *apiError) {
 	if len(files) > maxFileEntries {
-		return nil, &apiError{status: http.StatusBadRequest, Field: "files",
-			Message: fmt.Sprintf("Arquivos demais: envie no máximo as %d planilhas do kit.", len(realdata.FileNames))}
+		return nil, errTooManyFiles()
 	}
 	in := make(map[string][]byte, len(files))
 	for name, content := range files {
-		if knownFile(name) {
+		if realdata.IsKnownFile(name) {
 			in[name] = []byte(content)
 			continue
 		}
-		if r := []rune(name); len(r) > maxEchoedName {
-			name = string(r[:maxEchoedName]) + "…"
-		}
-		in[name] = nil
+		in[clipText(name, maxEchoedName)] = nil
 	}
 	d, err := realdata.Load(in)
 	if err != nil {
@@ -51,20 +50,69 @@ func loadFiles(files map[string]string) (*realdata.Dataset, *apiError) {
 	return d, nil
 }
 
-func knownFile(name string) bool {
-	for _, n := range realdata.FileNames {
-		if n == name {
-			return true
-		}
+// maxErrorRunes bounds the message of a spreadsheet error: it echoes text the user wrote
+// (a header, a bus id) and must never come back unbounded.
+const maxErrorRunes = 400
+
+// clipText cuts s to n runes, with an ellipsis when it was longer.
+func clipText(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n]) + "…"
 	}
-	return false
+	return s
+}
+
+func errTooManyFiles() *apiError {
+	return &apiError{status: http.StatusBadRequest, Field: "files",
+		Message: fmt.Sprintf("Arquivos demais: envie no máximo as %d planilhas do kit.", len(realdata.FileNames))}
+}
+
+// fileSet is the "files" object of a request: name -> text. It is decoded token by token so
+// that a body with a million tiny keys is refused after maxFileEntries keys instead of
+// building a million-entry map.
+type fileSet map[string]string
+
+type tooManyFilesError struct{}
+
+func (tooManyFilesError) Error() string { return "arquivos demais" }
+
+func (f *fileSet) UnmarshalJSON(b []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	if tok == nil { // null: no files, like an absent field
+		*f = nil
+		return nil
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '{' {
+		return &json.UnmarshalTypeError{Value: "files", Type: reflect.TypeOf(map[string]string{})}
+	}
+	out := make(map[string]string)
+	for n := 0; dec.More(); n++ {
+		if n >= maxFileEntries {
+			return tooManyFilesError{}
+		}
+		key, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		var content string
+		if err := dec.Decode(&content); err != nil {
+			return err
+		}
+		out[key.(string)] = content
+	}
+	*f = out
+	return nil
 }
 
 // loadError maps a realdata.Load error: a spreadsheet error carries file, line and column.
 func loadError(err error) *apiError {
 	var fe *realdata.FieldError
 	if errors.As(err, &fe) {
-		return &apiError{status: http.StatusBadRequest, Message: fe.Error(),
+		return &apiError{status: http.StatusBadRequest, Message: clipText(fe.Error(), maxErrorRunes),
 			Field: fe.File, File: fe.File, Line: fe.Line, Column: fe.Column}
 	}
 	return &apiError{status: http.StatusBadRequest, Message: "Não foi possível ler as planilhas: confira os arquivos enviados."}
@@ -103,7 +151,7 @@ func replayWorkError(buses int) *apiError {
 // ---- POST /api/import ----
 
 type importRequest struct {
-	Files map[string]string `json:"files"`
+	Files fileSet `json:"files"`
 }
 
 type importNightDTO struct {
@@ -155,10 +203,10 @@ func (s *Server) importFiles(r *http.Request) (any, *apiError) {
 // ---- POST /api/replay ----
 
 type replayRequest struct {
-	Files               map[string]string `json:"files"`
-	SoCNoiseKWh         float64           `json:"soc_noise_kwh"`
-	SwapBackCooldownMin int               `json:"swap_back_cooldown_min"`
-	SwapBackMinNeedKWh  float64           `json:"swap_back_min_need_kwh"`
+	Files               fileSet `json:"files"`
+	SoCNoiseKWh         float64 `json:"soc_noise_kwh"`
+	SwapBackCooldownMin int     `json:"swap_back_cooldown_min"`
+	SwapBackMinNeedKWh  float64 `json:"swap_back_min_need_kwh"`
 }
 
 func (s *Server) replay(r *http.Request) (any, *apiError) {
