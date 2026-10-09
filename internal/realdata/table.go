@@ -128,7 +128,7 @@ func ReadTable(file string, data []byte) (*Table, error) {
 			seen := map[string]bool{}
 			for _, h := range rec {
 				if h != "" && seen[h] {
-					return fail(line, fmt.Sprintf("coluna '%s' duplicada no cabeçalho", h))
+					return fail(line, fmt.Sprintf("coluna '%s' duplicada no cabeçalho", clip(h, maxEchoRunes)))
 				}
 				seen[h] = true
 			}
@@ -281,7 +281,7 @@ func (t *Table) Known(cols ...string) {
 		if h == "" || known[h] {
 			continue
 		}
-		msg := fmt.Sprintf("coluna '%s' ignorada", h)
+		msg := fmt.Sprintf("coluna '%s' ignorada", clip(h, maxEchoRunes))
 		dup := false
 		for _, w := range t.Warnings {
 			if w.Message == msg {
@@ -323,11 +323,27 @@ func (t *Table) fieldErr(r Row, col, msg string) *FieldError {
 // present. With ',' as separator a decimal comma is an error; with ';' it is
 // accepted.
 func (t *Table) Float(r Row, col string) (v float64, present bool, err *FieldError) {
+	return t.number(r, col, false)
+}
+
+// Percent is Float for the *_pct columns: a trailing "%" ("30%", "30,5 %") is accepted
+// and dropped, since spreadsheets format percentages that way.
+func (t *Table) Percent(r Row, col string) (v float64, present bool, err *FieldError) {
+	return t.number(r, col, true)
+}
+
+func (t *Table) number(r Row, col string, percent bool) (v float64, present bool, err *FieldError) {
 	s := t.Str(r, col)
 	if s == "" {
 		return 0, false, nil
 	}
 	orig := s
+	if percent {
+		s = strings.TrimSpace(strings.TrimSuffix(s, "%"))
+		if s == "" {
+			return 0, false, t.fieldErr(r, col, fmt.Sprintf("%s não é um número", shorten(orig)))
+		}
+	}
 	if strings.Contains(s, ",") {
 		if !t.semicolon {
 			return 0, false, t.fieldErr(r, col, fmt.Sprintf("número %s inválido: use ponto decimal", shorten(orig)))
@@ -374,13 +390,22 @@ func (t *Table) Time(r Row, col string) (tm time.Time, present bool, err *FieldE
 			return p, true, nil
 		}
 	}
-	return time.Time{}, false, t.fieldErr(r, col, fmt.Sprintf("data/hora %s inválida: use AAAA-MM-DD HH:MM", shorten(s)))
+	return time.Time{}, false, t.fieldErr(r, col, fmt.Sprintf("data/hora %s inválida: use AAAA-MM-DD HH:MM ou DD/MM/AAAA HH:MM (ano com 4 dígitos), sem fuso: não aceitamos Z, +00:00 nem ano com 2 dígitos", shorten(s)))
 }
 
 // shorten quotes a cell value for messages, cutting very long ones.
 func shorten(s string) string {
-	if rs := []rune(s); len(rs) > 40 {
-		s = string(rs[:40]) + "…"
+	return strconv.Quote(clip(s, 40))
+}
+
+// maxEchoRunes bounds any user-controlled text (header, file name) echoed in a message.
+const maxEchoRunes = 200
+
+// clip cuts s to n runes (with "…"), so a hostile cell, header or file name cannot
+// blow up a message.
+func clip(s string, n int) string {
+	if rs := []rune(s); len(rs) > n {
+		return string(rs[:n]) + "…"
 	}
-	return strconv.Quote(s)
+	return s
 }

@@ -775,6 +775,9 @@ func TestLoadDuplicatePowerReadingsWarn(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Line != 5 {
 		t.Errorf("want one duplicate warning at line 5, got %v (all: %v)", got, d.Warnings)
+	} else if m := got[0].Message; !strings.Contains(m, "última leitura") || strings.Contains(m, "duplicadas") {
+		// the integral keeps the last reading of an instant: the text must say so, not "sums are duplicated"
+		t.Errorf("duplicate-reading warning does not say the last reading wins: %q", m)
 	}
 	// the demo has the same instant for different chargers only: no warning
 	d, _ = Load(demoFiles(t))
@@ -967,5 +970,141 @@ func TestLoadTwoStaysOfOneBusInOneNightExplainTheRule(t *testing.T) {
 		if !strings.Contains(fe.Message, want) {
 			t.Errorf("message %q lacks %q", fe.Message, want)
 		}
+	}
+}
+
+// pctBusFiles is a three-bus depot whose SoC columns are given as text, to test how
+// percentages are read (fractions, "%" suffix). B01..B03 stay on different nights.
+func pctBusFiles(arr, req, real [3]string) map[string][]byte {
+	var b strings.Builder
+	b.WriteString("onibus_id,capacidade_kwh,chegada,soc_chegada_pct,saida_prevista,soc_saida_exigido_pct,potencia_max_bateria_kw,soc_saida_real_pct,saida_real\n")
+	for i := 0; i < 3; i++ {
+		fmt.Fprintf(&b, "B0%d,300,2026-03-0%d 22:00,%s,2026-03-0%d 06:00,%s,150,%s,\n", i+1, i+4, arr[i], i+5, req[i], real[i])
+	}
+	m := reserveFiles("", "")
+	m[FileOnibus] = []byte(b.String())
+	delete(m, FileSessoes)
+	return m
+}
+
+func TestLoadRefusesPercentagesGivenAsFractions(t *testing.T) {
+	ok := [3]string{"30", "40", "20"}
+	req := [3]string{"90", "85", "90"}
+	real := [3]string{"91", "70", "90"}
+	if _, err := Load(pctBusFiles(ok, req, real)); err != nil {
+		t.Fatalf("control: %v", err)
+	}
+	const msg = "os valores parecem frações (0 a 1); use percentuais de 0 a 100"
+	check := func(name string, files map[string][]byte, col string, line int) {
+		t.Helper()
+		_, err := Load(files)
+		var fe *FieldError
+		if !errors.As(err, &fe) || fe.File != FileOnibus || fe.Column != col || fe.Line != line || fe.Message != msg {
+			t.Errorf("%s: err = %v (want %s line %d)", name, err, col, line)
+		}
+	}
+	check("arrival", pctBusFiles([3]string{"0.30", "0.40", "0.2"}, req, real), "soc_chegada_pct", 2)
+	check("required", pctBusFiles(ok, [3]string{"0.9", "0.85", "0.9"}, real), "soc_saida_exigido_pct", 2)
+	check("real", pctBusFiles(ok, req, [3]string{"", "0.7", "0.9"}), "soc_saida_real_pct", 3) // first non-empty cell
+	// a value of 1 is still a fraction when nothing is above it
+	check("ones", pctBusFiles(ok, [3]string{"1", "1", "0.5"}, real), "soc_saida_exigido_pct", 2)
+	// accepted: one 0.5 among larger values; all zeros; real outcome absent
+	for name, files := range map[string]map[string][]byte{
+		"mixed":     pctBusFiles([3]string{"0.5", "40", "20"}, req, real),
+		"all zeros": pctBusFiles([3]string{"0", "0", "0"}, req, real),
+		"no real":   pctBusFiles(ok, req, [3]string{"", "", ""}),
+		"ok":        pctBusFiles(ok, req, real),
+	} {
+		if _, err := Load(files); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+func TestLoadAcceptsPercentSignInPctColumns(t *testing.T) {
+	d, err := Load(pctBusFiles([3]string{"30%", "40 %", "20"}, [3]string{"90%", "85", "90%"}, [3]string{"91%", "70", ""}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := d.Buses
+	if b[0].SoCArrivalPct != 30 || b[1].SoCArrivalPct != 40 || b[0].RequiredPct != 90 || b[2].RequiredPct != 90 ||
+		b[0].RealSoCPct == nil || *b[0].RealSoCPct != 91 || b[2].RealSoCPct != nil {
+		t.Errorf("buses = %+v", b)
+	}
+	// a lone "%" or "%%" is not a number
+	for _, bad := range []string{"%", "30%%", "abc%"} {
+		_, err := Load(pctBusFiles([3]string{bad, "40", "20"}, [3]string{"90", "85", "90"}, [3]string{"", "", ""}))
+		var fe *FieldError
+		if !errors.As(err, &fe) || fe.Column != "soc_chegada_pct" {
+			t.Errorf("%q: err = %v", bad, err)
+		}
+	}
+}
+
+func TestLoadMissingColumnListsTheHeadersFound(t *testing.T) {
+	m := mutate(t, demoFiles(t), FileOnibus, "capacidade_kwh,", "capacidade,")
+	_, err := Load(m)
+	var fe *FieldError
+	if !errors.As(err, &fe) || fe.Column != "capacidade_kwh" || !strings.HasPrefix(fe.Message, "coluna obrigatória ausente") {
+		t.Fatalf("err = %v", err)
+	}
+	for _, want := range []string{"cabeçalhos encontrados", "onibus_id", "capacidade,", "soc_saida_real_pct"} {
+		if !strings.Contains(fe.Message, want) {
+			t.Errorf("message lacks %q: %s", want, fe.Message)
+		}
+	}
+	// a header with hundreds of columns is cut short, each name too
+	long := strings.Repeat("x", 500)
+	cols := []string{long}
+	for i := 0; i < 40; i++ {
+		cols = append(cols, fmt.Sprintf("c%d", i))
+	}
+	m = map[string][]byte{FileGaragem: []byte(strings.Join(cols, ",") + "\n1,2\n"), FileCarregadores: nil, FileOnibus: nil}
+	_, err = Load(m)
+	if !errors.As(err, &fe) || len(fe.Message) > 1500 || !strings.Contains(fe.Message, "… e mais") {
+		t.Errorf("long header list not cut: %d bytes: %v", len(fe.Message), err)
+	}
+}
+
+func TestLoadDateErrorExplainsTheAcceptedFormats(t *testing.T) {
+	for _, bad := range []string{"2026-03-04T20:00Z", "04/03/26 20:00", "2026-03-04 20:00+00:00"} {
+		m := mutate(t, demoFiles(t), FileOnibus, "2026-03-04 20:00,30", bad+",30")
+		_, err := Load(m)
+		var fe *FieldError
+		if !errors.As(err, &fe) || fe.Column != "chegada" {
+			t.Fatalf("%q: err = %v", bad, err)
+		}
+		for _, want := range []string{"AAAA-MM-DD HH:MM", "DD/MM/AAAA", "sem fuso", "Z", "2 dígitos"} {
+			if !strings.Contains(fe.Message, want) {
+				t.Errorf("%q: message lacks %q: %s", bad, want, fe.Message)
+			}
+		}
+	}
+}
+
+// Text the user controls (a header, a file name, a bus id) never comes back unbounded.
+func TestLoadEchoedUserTextIsBounded(t *testing.T) {
+	long := strings.Repeat("é", 5000)
+	m := demoFiles(t)
+	m[long] = []byte("x")
+	m = mutate(t, m, FileGaragem, "preco_fora_ponta\n", "preco_fora_ponta,"+long+"\n")
+	m = mutate(t, m, FileGaragem, "0.90\n", "0.90,x\n")
+	d, err := Load(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range d.Warnings {
+		if n := len([]rune(w.Message)) + len([]rune(w.File)); n > 700 {
+			t.Errorf("warning of %d runes: %.80q…", n, w.Message)
+		}
+	}
+	// a duplicated header, and an unknown bus id in a session
+	_, err = Load(mutate(t, demoFiles(t), FileGaragem, "limite_kw", long+","+long+",limite_kw"))
+	if err == nil || len([]rune(err.Error())) > 700 {
+		t.Errorf("duplicate-header error: %d runes", len([]rune(fmt.Sprint(err))))
+	}
+	_, err = Load(mutate(t, demoFiles(t), FileSessoes, "B01,C01", long+",C01"))
+	if err == nil || len([]rune(err.Error())) > 700 {
+		t.Errorf("unknown-bus error: %d runes", len([]rune(fmt.Sprint(err))))
 	}
 }

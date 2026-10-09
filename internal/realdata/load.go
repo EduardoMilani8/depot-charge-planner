@@ -125,7 +125,7 @@ func Load(files map[string][]byte) (*Dataset, error) {
 	}
 	sort.Strings(extra)
 	for _, name := range extra {
-		ds.Warnings = append(ds.Warnings, Warning{File: name, Message: "arquivo não reconhecido, ignorado (nomes aceitos: " + strings.Join(FileNames, ", ") + ")"})
+		ds.Warnings = append(ds.Warnings, Warning{File: clip(name, maxEchoRunes), Message: "arquivo não reconhecido, ignorado (nomes aceitos: " + strings.Join(FileNames, ", ") + ")"})
 	}
 
 	for _, name := range []string{FileGaragem, FileCarregadores, FileOnibus} {
@@ -257,10 +257,28 @@ func isKnownFile(name string) bool {
 func requireCols(t *Table, cols ...string) *FieldError {
 	for _, c := range cols {
 		if t.Col(c) < 0 {
-			return &FieldError{File: t.File, Line: t.headerLine, Column: c, Message: "coluna obrigatória ausente"}
+			return &FieldError{File: t.File, Line: t.headerLine, Column: c, Message: "coluna obrigatória ausente (cabeçalhos encontrados: " + t.headerList() + ")"}
 		}
 	}
 	return nil
+}
+
+// headerList names the header columns found, for the "missing column" error: at most 20,
+// each cut short (a typo in a header shows up right there).
+func (t *Table) headerList() string {
+	const most = 20
+	var names []string
+	for i, h := range t.Header {
+		if i == most {
+			names = append(names, fmt.Sprintf("… e mais %d", len(t.Header)-most))
+			break
+		}
+		if h == "" {
+			h = "(sem nome)"
+		}
+		names = append(names, clip(h, 40))
+	}
+	return strings.Join(names, ", ")
 }
 
 func reqStr(t *Table, r Row, col string) (string, *FieldError) {
@@ -280,6 +298,51 @@ func reqFloat(t *Table, r Row, col string) (float64, *FieldError) {
 		return 0, t.fieldErr(r, col, "valor obrigatório ausente")
 	}
 	return v, nil
+}
+
+func reqPercent(t *Table, r Row, col string) (float64, *FieldError) {
+	v, ok, err := t.Percent(r, col)
+	if err != nil {
+		return 0, err
+	}
+	if !ok {
+		return 0, t.fieldErr(r, col, "valor obrigatório ausente")
+	}
+	return v, nil
+}
+
+// checkNotFractions refuses a percentage column filled with 0-1 fractions (0.30 for 30%):
+// when every non-empty value of the column is at most 1 and at least one is not zero,
+// every bus would silently get a target of a few kWh. A column with a single value of
+// 0.5 among larger ones is fine. Cells that do not parse are left to the row loop.
+func checkNotFractions(t *Table, col string) *FieldError {
+	first := -1
+	for i, r := range t.Rows {
+		v, ok, err := t.Percent(r, col)
+		if err != nil || !ok {
+			continue
+		}
+		if v > 1 || v < 0 {
+			return nil
+		}
+		if first < 0 {
+			first = i
+		}
+	}
+	if first < 0 {
+		return nil
+	}
+	nonZero := false
+	for _, r := range t.Rows {
+		if v, ok, _ := t.Percent(r, col); ok && v != 0 {
+			nonZero = true
+			break
+		}
+	}
+	if !nonZero {
+		return nil
+	}
+	return t.fieldErr(t.Rows[first], col, "os valores parecem frações (0 a 1); use percentuais de 0 a 100")
 }
 
 func reqTime(t *Table, r Row, col string) (time.Time, *FieldError) {
@@ -479,6 +542,11 @@ func loadBuses(t *Table) ([]Bus, error) {
 	if len(t.Rows) > sim.MaxBuses {
 		return nil, &FieldError{File: t.File, Line: t.Rows[sim.MaxBuses].Line, Message: fmt.Sprintf("ônibus demais no total (máximo %d)", sim.MaxBuses)}
 	}
+	for _, col := range []string{"soc_chegada_pct", "soc_saida_exigido_pct", "soc_saida_real_pct"} {
+		if ferr := checkNotFractions(t, col); ferr != nil {
+			return nil, ferr
+		}
+	}
 	out := make([]Bus, 0, len(t.Rows))
 	seen := make(map[string]int, len(t.Rows)) // bus + night -> line of the first stay
 	perNight := map[string]int{}
@@ -499,7 +567,7 @@ func loadBuses(t *Table) ([]Bus, error) {
 		if b.Arrival, ferr = reqTime(t, r, "chegada"); ferr != nil {
 			return nil, ferr
 		}
-		if b.SoCArrivalPct, ferr = reqFloat(t, r, "soc_chegada_pct"); ferr != nil {
+		if b.SoCArrivalPct, ferr = reqPercent(t, r, "soc_chegada_pct"); ferr != nil {
 			return nil, ferr
 		}
 		if ferr = between(t, r, "soc_chegada_pct", b.SoCArrivalPct, 0, 100, false, " %"); ferr != nil {
@@ -514,7 +582,7 @@ func loadBuses(t *Table) ([]Bus, error) {
 		if b.Departure.Sub(b.Arrival) > maxStay {
 			return nil, t.fieldErr(r, "saida_prevista", "a permanência (saída prevista menos chegada) passa de 48 horas: confira a data")
 		}
-		if b.RequiredPct, ferr = reqFloat(t, r, "soc_saida_exigido_pct"); ferr != nil {
+		if b.RequiredPct, ferr = reqPercent(t, r, "soc_saida_exigido_pct"); ferr != nil {
 			return nil, ferr
 		}
 		if ferr = between(t, r, "soc_saida_exigido_pct", b.RequiredPct, 0, 100, true, " %"); ferr != nil {
@@ -532,7 +600,7 @@ func loadBuses(t *Table) ([]Bus, error) {
 		} else {
 			defBat++
 		}
-		v, ok, err = t.Float(r, "soc_saida_real_pct")
+		v, ok, err = t.Percent(r, "soc_saida_real_pct")
 		if err != nil {
 			return nil, err
 		}
@@ -690,6 +758,9 @@ func sessionNight(stays []Bus, s Session) (string, error) {
 		nights = append(nights, k)
 	}
 	sort.Strings(nights)
+	if len(nights) > 10 {
+		nights = append(nights[:10:10], fmt.Sprintf("… e mais %d", len(nights)-10))
+	}
 	return "", fmt.Errorf("ônibus %s não tem estadia em onibus.csv que contenha o início da sessão (noite %s = data de início menos 12 h); noites desse ônibus: %s",
 		shorten(s.BusID), night, strings.Join(nights, ", "))
 }
@@ -761,7 +832,7 @@ func loadPower(t *Table, ds *Dataset) ([]PowerSample, error) {
 		t.warn(highFirst, fmt.Sprintf("%s acima de 2× a potência máxima do carregador (a primeira está nesta linha); confira as unidades", plural(highN, "leitura", "leituras")))
 	}
 	if dupN > 0 {
-		t.warn(dupFirst, fmt.Sprintf("%s repetida(s) para o mesmo carregador e instante (a primeira repetição está nesta linha); somas por instante podem ficar duplicadas", plural(dupN, "leitura", "leituras")))
+		t.warn(dupFirst, fmt.Sprintf("%s repetida(s) para o mesmo carregador e instante (a primeira repetição está nesta linha); vale a última leitura de cada instante e as demais são descartadas", plural(dupN, "leitura", "leituras")))
 	}
 	if unsorted {
 		sort.SliceStable(out, func(i, j int) bool { return out[i].At.Before(out[j].At) })
