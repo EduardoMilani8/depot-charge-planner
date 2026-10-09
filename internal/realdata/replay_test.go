@@ -591,3 +591,99 @@ func TestFiniteBusRow(t *testing.T) {
 		}
 	}
 }
+
+// A 60 kW garage cannot ready the three buses of night 1: B03 ends at 257.4 kWh of 270.
+func tightFiles(t *testing.T) map[string][]byte {
+	return mutate(t, demoFiles(t), FileGaragem, "400,18:00", "60,18:00")
+}
+
+func TestReplayMatchedBusesDemo(t *testing.T) {
+	r := demoReplay(t, demoFiles(t), NightOptions{}, 2)
+	// night 1: 3 buses with an outcome; night 2: 2 of 3 (B03 has none)
+	if r.Nights[0].Matched.Buses != 3 || r.Nights[1].Matched.Buses != 2 || r.MatchedAggregate.Buses != 5 {
+		t.Errorf("matched buses = %d / %d / %d, want 3 / 2 / 5", r.Nights[0].Matched.Buses, r.Nights[1].Matched.Buses, r.MatchedAggregate.Buses)
+	}
+	// the demo planner readies everybody
+	want := Matched{Buses: 3, PlannerReadyPct: 100, NoSwapReadyPct: 100}
+	if got := r.Nights[0].Matched; got != want {
+		t.Errorf("night 1 matched = %+v, want %+v", got, want)
+	}
+}
+
+func TestReplayMatchedBusesExcludeBusesWithoutRealOutcome(t *testing.T) {
+	r := demoReplay(t, tightFiles(t), NightOptions{}, 2)
+	n1 := r.Nights[0]
+	pl := n1.Controllers[rowPlanner].Aggregate
+	// all three buses: B03 fails -> 66.7% and 12.6 kWh short ...
+	if math.Abs(pl.ReadyPct-200.0/3) > 1e-9 || math.Abs(pl.ShortfallKWh-12.6) > 1e-6 {
+		t.Fatalf("planner row = %v%% / %v kWh (fixture changed?)", pl.ReadyPct, pl.ShortfallKWh)
+	}
+	// ... and B03 has a real outcome, so the matched figures are the whole row
+	if m := n1.Matched; m.Buses != 3 || math.Abs(m.PlannerReadyPct-200.0/3) > 1e-9 || math.Abs(m.PlannerShortfallKWh-12.6) > 1e-6 ||
+		math.Abs(m.NoSwapReadyPct-200.0/3) > 1e-9 || math.Abs(m.NoSwapShortfallKWh-12.6) > 1e-6 {
+		t.Errorf("matched = %+v", m)
+	}
+	// without B03's real outcome the same bus no longer counts: B01 and B02 are ready
+	m := mutate(t, tightFiles(t), FileOnibus, "2026-03-05 05:30,90,150,90,2026-03-05 05:30", "2026-03-05 05:30,90,150,,")
+	r = demoReplay(t, m, NightOptions{}, 2)
+	n1 = r.Nights[0]
+	if got := n1.Controllers[rowPlanner].Aggregate.ReadyPct; math.Abs(got-200.0/3) > 1e-9 {
+		t.Errorf("the simulated row still covers every bus, got %v", got)
+	}
+	if want := (Matched{Buses: 2, PlannerReadyPct: 100, NoSwapReadyPct: 100}); n1.Matched != want {
+		t.Errorf("night 1 matched = %+v, want %+v", n1.Matched, want)
+	}
+	// aggregate: Buses summed (2 + 2), the rest a mean over the nights that have buses
+	if want := (Matched{Buses: 4, PlannerReadyPct: 100, NoSwapReadyPct: 100}); r.MatchedAggregate != want {
+		t.Errorf("aggregate = %+v, want %+v", r.MatchedAggregate, want)
+	}
+}
+
+func TestReplayMatchedAggregateIsAMeanOverContributingNights(t *testing.T) {
+	r := demoReplay(t, tightFiles(t), NightOptions{}, 2)
+	a := r.MatchedAggregate
+	// night 1: 66.67% / 12.6 kWh over 3 buses; night 2: 100% / 0 over 2 buses
+	if a.Buses != 5 || math.Abs(a.PlannerReadyPct-(200.0/3+100)/2) > 1e-9 || math.Abs(a.PlannerShortfallKWh-6.3) > 1e-6 ||
+		math.Abs(a.NoSwapReadyPct-a.PlannerReadyPct) > 1e-9 {
+		t.Errorf("aggregate = %+v", a)
+	}
+}
+
+func TestReplayMatchedWithoutAnyOutcome(t *testing.T) {
+	m := demoFiles(t)
+	for _, row := range [][2]string{
+		{"2026-03-05 05:00,90,150,91,2026-03-05 05:02", "2026-03-05 05:00,90,150,,"},
+		{"2026-03-05 06:00,85,150,70,2026-03-05 06:00", "2026-03-05 06:00,85,150,,"},
+		{"2026-03-05 05:30,90,150,90,2026-03-05 05:30", "2026-03-05 05:30,90,150,,"},
+		{"2026-03-06 05:00,90,150,88,2026-03-06 05:00", "2026-03-06 05:00,90,150,,"},
+		{"2026-03-06 06:00,80,150,80,2026-03-06 06:00", "2026-03-06 06:00,80,150,,"},
+	} {
+		m = mutate(t, m, FileOnibus, row[0], row[1])
+	}
+	r := demoReplay(t, m, NightOptions{}, 2)
+	if r.MatchedAggregate != (Matched{}) || r.Nights[0].Matched != (Matched{}) || r.Nights[1].Matched != (Matched{}) {
+		t.Errorf("matched without outcomes: %+v / %+v", r.Nights[0].Matched, r.MatchedAggregate)
+	}
+}
+
+func TestReplayMatchedJSONKeys(t *testing.T) {
+	raw, err := json.Marshal(demoReplay(t, demoFiles(t), NightOptions{}, 2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var top map[string]any
+	if err := json.Unmarshal(raw, &top); err != nil {
+		t.Fatal(err)
+	}
+	keys := []string{"buses", "planner_ready_pct", "planner_shortfall_kwh", "no_swap_ready_pct", "no_swap_shortfall_kwh"}
+	for _, m := range []map[string]any{top["matched_aggregate"].(map[string]any), top["nights"].([]any)[0].(map[string]any)["matched"].(map[string]any)} {
+		for _, k := range keys {
+			if _, ok := m[k]; !ok {
+				t.Errorf("matched lacks %q: %v", k, m)
+			}
+		}
+	}
+	if _, ok := top["real_aggregate"].(map[string]any)["late_departures"]; !ok {
+		t.Error("real_aggregate lacks late_departures")
+	}
+}

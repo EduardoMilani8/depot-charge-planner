@@ -54,6 +54,20 @@ type BusRow struct {
 	NoSwapReady     bool     `json:"no_swap_ready"`
 }
 
+// Matched is the fair comparison: the planner (following the swaps / without them) over
+// exactly the buses that have a real outcome (soc_saida_real_pct), because the "real"
+// ready% and shortfall only exist for those while the simulated rows cover every bus.
+// Buses is how many buses that is (summed over the nights in the aggregate); the other
+// figures are 0 when Buses is 0. In Report.MatchedAggregate they are means over the
+// nights that have at least one such bus, like the ready% and shortfall of RealAggregate.
+type Matched struct {
+	Buses               int     `json:"buses"`
+	PlannerReadyPct     float64 `json:"planner_ready_pct"`
+	PlannerShortfallKWh float64 `json:"planner_shortfall_kwh"`
+	NoSwapReadyPct      float64 `json:"no_swap_ready_pct"`
+	NoSwapShortfallKWh  float64 `json:"no_swap_shortfall_kwh"`
+}
+
 // NightReport is one night: the measured outcome and every controller on it.
 type NightReport struct {
 	Key         string             `json:"key"`
@@ -61,6 +75,7 @@ type NightReport struct {
 	Real        Real               `json:"real"`
 	Controllers []ControllerResult `json:"controllers"` // one run (Seed 1) per night, in ReplayNames order; Aggregate = that run
 	PerBus      []BusRow           `json:"per_bus"`     // sorted by ID
+	Matched     Matched            `json:"matched"`     // planner figures over the buses with a real outcome
 }
 
 // Report is the whole comparison. PlanP99Micros inside the metrics is wall-clock
@@ -68,13 +83,16 @@ type NightReport struct {
 type Report struct {
 	Nights    []NightReport      `json:"nights"`
 	Aggregate []ControllerResult `json:"aggregate"` // over the nights, in ReplayNames order
-	// RealAggregate: Buses, WithOutcome and Ready are summed over the nights;
+	// RealAggregate: Buses, WithOutcome, Ready and LateDepartures are summed over the nights;
 	// ReadyPct and ShortfallKWh are means over the nights that have an outcome;
 	// EnergyKWh, PeakKW and CostBRL are means over the nights that have the value
 	// (nil if none); the Estimated flags are true if any contributing night is.
 	// Partial is true if any night is; CoveredBuses is summed like Buses, and PartialNote
 	// says which kind of gap it is ("parcial: 5 de 6 ônibus", or the divergence note).
 	RealAggregate Real `json:"real_aggregate"`
+	// MatchedAggregate: the Matched figures over all the nights (Buses summed, the rest
+	// means over the nights with at least one bus that has a real outcome).
+	MatchedAggregate Matched `json:"matched_aggregate"`
 	// CostComparable is false when the simulated cost cannot be compared with the
 	// real one: no tariff, or a peak window that crosses midnight (sim.Tariff
 	// cannot express it, so the simulator prices the whole night off-peak).
@@ -184,6 +202,7 @@ func Replay(ctx context.Context, d *Dataset, cfg planner.Config, o NightOptions,
 			perRow[ri] = append(perRow[ri], m)
 		}
 		nr.PerBus = busRows(n.BusReal, outs[base+rowPlanner].outcomes, outs[base+rowNoSwap].outcomes)
+		nr.Matched = matched(nr.PerBus)
 		for _, b := range nr.PerBus {
 			// a non-finite number must never reach the JSON (encoding/json fails on it):
 			// like finiteMetrics above, report it as an error instead of clamping it.
@@ -201,6 +220,7 @@ func Replay(ctx context.Context, d *Dataset, cfg planner.Config, o NightOptions,
 		rep.Aggregate = append(rep.Aggregate, cr)
 	}
 	rep.RealAggregate = realAggregate(nights)
+	rep.MatchedAggregate = matchedAggregate(rep.Nights)
 	rep.Assumptions = assumptions(o, d.Garage)
 	rep.Warnings = append(append([]Warning{}, d.Warnings...), nightWarns...)
 	return rep, nil
@@ -265,6 +285,58 @@ func busRows(real []BusReal, planner, noSwap []sim.BusOutcome) []BusRow {
 	return rows
 }
 
+// matched computes the planner figures over the buses of rows that have a real outcome,
+// with the simulator's rule (not ready: target minus final charge is the shortfall).
+func matched(rows []BusRow) Matched {
+	var m Matched
+	var pReady, nReady int
+	for _, b := range rows {
+		if b.RealReady == nil {
+			continue
+		}
+		m.Buses++
+		if b.PlannerReady {
+			pReady++
+		} else {
+			m.PlannerShortfallKWh += b.TargetKWh - b.PlannerFinalKWh
+		}
+		if b.NoSwapReady {
+			nReady++
+		} else {
+			m.NoSwapShortfallKWh += b.TargetKWh - b.NoSwapFinalKWh
+		}
+	}
+	if m.Buses > 0 {
+		m.PlannerReadyPct = 100 * float64(pReady) / float64(m.Buses)
+		m.NoSwapReadyPct = 100 * float64(nReady) / float64(m.Buses)
+	}
+	return m
+}
+
+func matchedAggregate(nights []NightReport) Matched {
+	var a Matched
+	n := 0
+	for _, nr := range nights {
+		if nr.Matched.Buses == 0 {
+			continue
+		}
+		n++
+		a.Buses += nr.Matched.Buses
+		a.PlannerReadyPct += nr.Matched.PlannerReadyPct
+		a.PlannerShortfallKWh += nr.Matched.PlannerShortfallKWh
+		a.NoSwapReadyPct += nr.Matched.NoSwapReadyPct
+		a.NoSwapShortfallKWh += nr.Matched.NoSwapShortfallKWh
+	}
+	if n > 0 {
+		f := float64(n)
+		a.PlannerReadyPct /= f
+		a.PlannerShortfallKWh /= f
+		a.NoSwapReadyPct /= f
+		a.NoSwapShortfallKWh /= f
+	}
+	return a
+}
+
 func realAggregate(nights []Night) Real {
 	var a Real
 	var outN int
@@ -273,6 +345,7 @@ func realAggregate(nights []Night) Real {
 	for _, n := range nights {
 		r := n.Real
 		a.Buses += r.Buses
+		a.LateDepartures += r.LateDepartures
 		a.CoveredBuses += r.CoveredBuses
 		a.Partial = a.Partial || r.Partial
 		a.WithOutcome += r.WithOutcome

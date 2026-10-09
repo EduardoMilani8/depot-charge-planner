@@ -509,3 +509,68 @@ func TestRunNoNightsToReplay(t *testing.T) {
 		t.Errorf("json exit %d:\n%s", code, out)
 	}
 }
+
+func TestRunPrintsTheFairComparisonOverTheSameBuses(t *testing.T) {
+	// a 60 kW garage: B03 of night 1 is not ready in the simulation; its real outcome is blank,
+	// so the fair line leaves it out while the table row (all buses) shows 66.7%
+	dir := copyDemo(t, map[string]func(string) string{
+		"garagem.csv": replace("400,18:00", "60,18:00"),
+		"onibus.csv":  replace("2026-03-05 05:30,90,150,90,2026-03-05 05:30", "2026-03-05 05:30,90,150,,"),
+	})
+	code, out, errOut := runCmd("-dir", dir)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	lines := regexp.MustCompile(`(?m)^Comparação justa .*$`).FindAllString(out, -1)
+	if len(lines) != 3 { // 2 nights + aggregate
+		t.Fatalf("fair lines = %q\n%s", lines, out)
+	}
+	wants := []string{
+		"Comparação justa (mesmos 2 ônibus do real): real 50.0% | planner 100.0% | sem rodízio 100.0% (shortfall kWh: real 45.0 | planner 0.0 | sem rodízio 0.0)",
+		"Comparação justa (mesmos 2 ônibus do real): real 50.0% | planner 100.0% | sem rodízio 100.0% (shortfall kWh: real 6.0 | planner 0.0 | sem rodízio 0.0)",
+		"Comparação justa (mesmos 4 ônibus do real): real 50.0% | planner 100.0% | sem rodízio 100.0% (shortfall kWh: real 25.5 | planner 0.0 | sem rodízio 0.0)",
+	}
+	for i, w := range wants {
+		if lines[i] != w {
+			t.Errorf("line %d = %q\nwant      %q", i, lines[i], w)
+		}
+	}
+	// the line sits right under its table
+	if !strings.Contains(out, "planner (sem rodízio)") || strings.Index(out, lines[0]) < strings.Index(out, "controller") {
+		t.Errorf("fair line misplaced:\n%s", out)
+	}
+	// nothing to compare without any real outcome: no line
+	dir = copyDemo(t, map[string]func(string) string{
+		"onibus.csv": func(string) string {
+			return "onibus_id,capacidade_kwh,chegada,soc_chegada_pct,saida_prevista,soc_saida_exigido_pct\nB01,300,2026-03-04 20:00,30,2026-03-05 05:00,90\n"
+		},
+		"sessoes.csv": nil, "potencia.csv": nil})
+	if _, out, _ := runCmd("-dir", dir); strings.Contains(out, "Comparação justa") {
+		t.Errorf("fair line without outcomes:\n%s", out)
+	}
+}
+
+func TestRunSaysTheAggregateIsNotAPlainMean(t *testing.T) {
+	_, out, _ := runCmd("-dir", demoDir)
+	for _, want := range []string{"Agregado (2 noites; média por noite, exceto plan violations e overshoot min, que são somas das noites, e plan changes, média arredondada para baixo)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestRunNotesLateDepartures(t *testing.T) {
+	dir := copyDemo(t, map[string]func(string) string{
+		"onibus.csv": replace("91,2026-03-05 05:02", "91,2026-03-05 05:40"),
+	})
+	_, out, _ := runCmd("-dir", dir)
+	if !strings.Contains(out, "aviso: onibus.csv, linha 2: noite 2026-03-04: 1 ônibus saiu mais de 15 min depois do previsto: conta como pronto se a carga estava completa na saída") {
+		t.Errorf("late warning missing:\n%s", out)
+	}
+	if n := strings.Count(out, "Nota: 1 ônibus saiu mais de 15 min depois do previsto: conta como pronto se a carga estava completa na saída."); n != 2 { // night 1 + aggregate
+		t.Errorf("late note count = %d:\n%s", n, out)
+	}
+	if _, clean, _ := runCmd("-dir", demoDir); strings.Contains(clean, "depois do previsto") {
+		t.Errorf("late note on the demo:\n%s", clean)
+	}
+}

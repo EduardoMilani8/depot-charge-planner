@@ -21,6 +21,12 @@ const (
 	// energyMismatch: when a night has both sessions and power readings and their
 	// energies differ by more than this fraction of the larger one, the night is Partial.
 	energyMismatch = 0.20
+
+	// LateDepartureTolerance: a bus whose real departure is later than the planned one by more
+	// than this is counted in Real.LateDepartures. The simulation does not extend the
+	// bus's window (it still leaves at the planned time), so the real "pronto" of such
+	// a bus may owe to the extra time it stayed plugged in.
+	LateDepartureTolerance = 15 * time.Minute
 )
 
 // Real is what the depot measured on one night (the "real" column of the
@@ -45,6 +51,10 @@ type Real struct {
 	// Buses when no gap was found, e.g. no sessoes.csv at all).
 	CoveredBuses int    `json:"covered_buses"`
 	PartialNote  string `json:"partial_note"` // short seal, "parcial: 2 de 3 ônibus"; "" when not Partial
+	// LateDepartures: buses whose saida_real is more than LateDepartureTolerance (15 min) after
+	// saida_prevista. They still count as "pronto" if the charge was complete when they
+	// left; in the aggregate it is summed over the nights, like Buses.
+	LateDepartures int `json:"late_departures"`
 }
 
 // BusReal is the measured outcome of one bus (nil = soc_saida_real_pct missing).
@@ -207,6 +217,16 @@ func (d *Dataset) Nights(o NightOptions) ([]Night, []Warning) {
 		}
 
 		real, busReal, notes := measured(buses, sessBy[k], powBy[k], g, cum, d.HasSessions)
+		if real.LateDepartures > 0 {
+			line := buses[0].Line
+			for _, b := range buses {
+				if b.RealDeparture != nil && b.RealDeparture.Sub(b.Departure) > LateDepartureTolerance {
+					line = b.Line
+					break
+				}
+			}
+			ws = append(ws, Warning{File: FileOnibus, Line: line, Message: "noite " + k + ": " + LateDeparturesText(real.LateDepartures)})
+		}
 		for _, msg := range notes {
 			ws = append(ws, Warning{File: FileSessoes, Message: "noite " + k + ": " + msg})
 		}
@@ -217,6 +237,16 @@ func (d *Dataset) Nights(o NightOptions) ([]Night, []Warning) {
 		nights = append(nights, Night{Key: k, Scenario: sc, Real: real, BusReal: busReal})
 	}
 	return nights, ws
+}
+
+// LateDeparturesText says what n late departures mean (the warning of a night, without
+// the night prefix, and the note of the CLI and the lab).
+func LateDeparturesText(n int) string {
+	min := int(LateDepartureTolerance / time.Minute)
+	if n == 1 {
+		return fmt.Sprintf("1 ônibus saiu mais de %d min depois do previsto: conta como pronto se a carga estava completa na saída", min)
+	}
+	return fmt.Sprintf("%d ônibus saíram mais de %d min depois do previsto: contam como prontos se a carga estava completa na saída", n, min)
 }
 
 // nightOrigin is the earliest arrival rounded down to the hour, minus one hour.
@@ -296,6 +326,9 @@ func measured(buses []Bus, sess []Session, pow []PowerSample, g Garage, cum [144
 	r := Real{Buses: len(buses), CoveredBuses: len(buses)}
 	busReal := make([]BusReal, 0, len(buses))
 	for _, b := range buses {
+		if b.RealDeparture != nil && b.RealDeparture.Sub(b.Departure) > LateDepartureTolerance {
+			r.LateDepartures++
+		}
 		br := BusReal{ID: b.ID}
 		if b.RealSoCPct != nil {
 			final := b.CapacityKWh * *b.RealSoCPct / 100

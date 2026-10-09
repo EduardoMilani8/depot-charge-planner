@@ -154,16 +154,23 @@ func printReport(w io.Writer, rep *realdata.Report, cfg planner.Config) {
 	for _, n := range rep.Nights {
 		fmt.Fprintf(w, "\nNoite %s (%d ônibus)\n", n.Key, n.Buses)
 		printTable(w, n.Real, n.Controllers, rep.CostComparable)
+		printMatched(w, n.Real, n.Matched)
 		printRealNote(w, n.Real)
 		printNotReady(w, n)
 	}
-	fmt.Fprintf(w, "\nAgregado (%s; média por noite)\n", nightsWord(len(rep.Nights)))
+	fmt.Fprintf(w, "\nAgregado (%s; %s)\n", nightsWord(len(rep.Nights)), aggregateNote)
 	printTable(w, rep.RealAggregate, rep.Aggregate, rep.CostComparable)
+	printMatched(w, rep.RealAggregate, rep.MatchedAggregate)
 	printRealNote(w, rep.RealAggregate)
 	if !rep.CostComparable {
 		fmt.Fprintln(w, noCostNote)
 	}
 }
+
+// aggregateNote says what the aggregate rows are: most columns are means per night, but the
+// counts of violations and overshoot minutes are sums over the nights and plan changes is
+// the mean cut to a whole number (that is how sim.Aggregate works).
+const aggregateNote = "média por noite, exceto plan violations e overshoot min, que são somas das noites, e plan changes, média arredondada para baixo"
 
 const noCostNote = "Nota: o custo simulado não é comparável com o custo real (sem tarifa, ou janela de ponta que atravessa a meia-noite): \"cost R$\" aparece como " + dash + " nas linhas simuladas."
 
@@ -210,8 +217,22 @@ func optional(v *float64, est bool, r realdata.Real) string {
 	return s
 }
 
+// printMatched prints the fair comparison under a table: ready% (and shortfall) of the
+// real outcome, the planner and the planner without swaps over the same buses, the ones
+// that have soc_saida_real_pct (the simulated rows above cover every bus).
+func printMatched(w io.Writer, real realdata.Real, m realdata.Matched) {
+	if m.Buses == 0 {
+		return
+	}
+	fmt.Fprintf(w, "Comparação justa (mesmos %d ônibus do real): real %.1f%% | planner %.1f%% | sem rodízio %.1f%% (shortfall kWh: real %.1f | planner %.1f | sem rodízio %.1f)\n",
+		m.Buses, real.ReadyPct, m.PlannerReadyPct, m.NoSwapReadyPct, real.ShortfallKWh, m.PlannerShortfallKWh, m.NoSwapShortfallKWh)
+}
+
 // printRealNote explains the "real" row when it covers only part of the buses.
 func printRealNote(w io.Writer, r realdata.Real) {
+	if r.LateDepartures > 0 {
+		fmt.Fprintf(w, "Nota: %s.\n", realdata.LateDeparturesText(r.LateDepartures))
+	}
 	if r.Partial {
 		fmt.Fprintf(w, "Nota: energia, pico e custo reais cobrem só parte da noite (%s) e não são comparáveis com as linhas simuladas, que cobrem todos os ônibus (veja os avisos).\n", r.PartialNote)
 	}

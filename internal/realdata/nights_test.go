@@ -459,7 +459,7 @@ func TestNightsJSON(t *testing.T) {
 		t.Fatalf("real = %v", got["real"])
 	}
 	for _, k := range []string{"buses", "with_outcome", "ready", "ready_pct", "shortfall_kwh", "energy_kwh", "peak_kw", "peak_estimated", "cost_brl", "cost_estimated",
-		"partial", "covered_buses", "partial_note"} {
+		"partial", "covered_buses", "partial_note", "late_departures"} {
 		if _, ok := real[k]; !ok {
 			t.Errorf("real.%s missing: %v", k, real)
 		}
@@ -646,5 +646,60 @@ func TestNightsPartialWhenReadingsAndSessionsDisagree(t *testing.T) {
 	ns, ws = demoNights(t, withFile(demoFiles(t), FileSessoes, sess), NightOptions{})
 	if n := ns[1].Real.PartialNote; n != "parcial: 2 de 3 ônibus; sessões e leituras de potência divergem" || len(ws) != 2 {
 		t.Errorf("note = %q, warnings = %+v", n, ws)
+	}
+}
+
+func TestNightsLateDepartures(t *testing.T) {
+	late := func(realDep string) ([]Night, []Warning) {
+		m := setRow(t, demoFiles(t), FileOnibus, "B01,300,2026-03-04 20:00",
+			"B01,300,2026-03-04 20:00,30,2026-03-05 05:00,90,150,91,"+realDep)
+		return demoNights(t, m, NightOptions{})
+	}
+	lateWarns := func(ws []Warning) (out []Warning) {
+		for _, w := range ws {
+			if strings.Contains(w.Message, "depois do previsto") {
+				out = append(out, w)
+			}
+		}
+		return
+	}
+	// exactly 15 min is on time; the demo's 2 min too
+	for _, dep := range []string{"2026-03-05 05:02", "2026-03-05 05:15"} {
+		ns, ws := late(dep)
+		if ns[0].Real.LateDepartures != 0 || len(lateWarns(ws)) != 0 {
+			t.Errorf("%s: late = %d, warnings %v", dep, ns[0].Real.LateDepartures, ws)
+		}
+	}
+	ns, ws := late("2026-03-05 05:16")
+	if ns[0].Real.LateDepartures != 1 || ns[1].Real.LateDepartures != 0 {
+		t.Errorf("late = %d / %d, want 1 / 0", ns[0].Real.LateDepartures, ns[1].Real.LateDepartures)
+	}
+	lw := lateWarns(ws)
+	if len(lw) != 1 || lw[0].File != FileOnibus || lw[0].Line != 2 ||
+		lw[0].Message != "noite 2026-03-04: 1 ônibus saiu mais de 15 min depois do previsto: conta como pronto se a carga estava completa na saída" {
+		t.Errorf("warnings = %+v", lw)
+	}
+	// still "pronto": the late bus is ready (91% of 300 kWh >= 90%), the outcome is not touched
+	if ns[0].BusReal[0].Ready == nil || !*ns[0].BusReal[0].Ready {
+		t.Errorf("late bus lost its outcome: %+v", ns[0].BusReal[0])
+	}
+	// two late buses: one warning for the night, plural text
+	m := setRow(t, demoFiles(t), FileOnibus, "B01,300,2026-03-04 20:00", "B01,300,2026-03-04 20:00,30,2026-03-05 05:00,90,150,91,2026-03-05 06:00")
+	m = setRow(t, m, FileOnibus, "B02,300,2026-03-04 22:00", "B02,300,2026-03-04 22:00,40,2026-03-05 06:00,85,150,70,2026-03-05 07:00")
+	ns, ws = demoNights(t, m, NightOptions{})
+	lw = lateWarns(ws)
+	if ns[0].Real.LateDepartures != 2 || len(lw) != 1 ||
+		lw[0].Message != "noite 2026-03-04: 2 ônibus saíram mais de 15 min depois do previsto: contam como prontos se a carga estava completa na saída" {
+		t.Errorf("late = %d, warnings %+v", ns[0].Real.LateDepartures, lw)
+	}
+}
+
+func TestReplayLateDeparturesAggregateIsASum(t *testing.T) {
+	m := setRow(t, demoFiles(t), FileOnibus, "B01,300,2026-03-04 20:00", "B01,300,2026-03-04 20:00,30,2026-03-05 05:00,90,150,91,2026-03-05 06:00")
+	m = setRow(t, m, FileOnibus, "B01,300,2026-03-05 21:30", "B01,300,2026-03-05 21:30,35,2026-03-06 05:00,90,150,88,2026-03-06 05:40")
+	m = setRow(t, m, FileOnibus, "B02,300,2026-03-05 22:00", "B02,300,2026-03-05 22:00,50,2026-03-06 06:00,80,150,80,2026-03-06 06:20")
+	r := demoReplay(t, m, NightOptions{}, 2)
+	if r.Nights[0].Real.LateDepartures != 1 || r.Nights[1].Real.LateDepartures != 2 || r.RealAggregate.LateDepartures != 3 {
+		t.Errorf("late = %d / %d / %d, want 1 / 2 / 3", r.Nights[0].Real.LateDepartures, r.Nights[1].Real.LateDepartures, r.RealAggregate.LateDepartures)
 	}
 }
