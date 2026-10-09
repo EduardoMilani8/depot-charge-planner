@@ -41,6 +41,10 @@ const (
 	maxReadingKW  = 1e5            // potencia_kw of one reading (above 2x charger max is only a warning)
 	maxStay       = 48 * time.Hour // saida_prevista/saida_real minus chegada; fim minus inicio of a session
 
+	// A session belongs to the stay of its bus whose window [arrival - stayMargin,
+	// last departure + stayMargin] contains the session start (see loadSessions).
+	stayMargin = 2 * time.Hour
+
 	defaultMinKW      = 5.0
 	defaultEfficiency = 0.94
 	powerFactorWarn   = 2.0 // readings above this multiple of potencia_max_kw warn
@@ -79,6 +83,7 @@ type Session struct {
 	BusID, ChargerID string
 	Start, End       time.Time
 	EnergyKWh        float64
+	Night            string // night key of the stay of BusID the session belongs to (set by Load)
 }
 
 // PowerSample is one reading of potencia.csv.
@@ -475,7 +480,7 @@ func loadBuses(t *Table) ([]Bus, error) {
 		return nil, &FieldError{File: t.File, Line: t.Rows[sim.MaxBuses].Line, Message: fmt.Sprintf("ônibus demais no total (máximo %d)", sim.MaxBuses)}
 	}
 	out := make([]Bus, 0, len(t.Rows))
-	seen := make(map[string]bool, len(t.Rows))
+	seen := make(map[string]int, len(t.Rows)) // bus + night -> line of the first stay
 	perNight := map[string]int{}
 	var defBat, noReal int
 	for _, r := range t.Rows {
@@ -555,10 +560,12 @@ func loadBuses(t *Table) ([]Bus, error) {
 
 		night := NightKey(b.Arrival)
 		key := b.ID + "\x00" + night
-		if seen[key] {
-			return nil, t.fieldErr(r, "onibus_id", fmt.Sprintf("ônibus %s duplicado na noite %s", shorten(b.ID), night))
+		if first, dup := seen[key]; dup {
+			return nil, t.fieldErr(r, "onibus_id", fmt.Sprintf(
+				"ônibus %s duplicado na noite %s (já aparece na linha %d): a noite é a data da chegada menos 12 h e dois períodos do mesmo ônibus na mesma noite não são aceitos; separe-os ou remova o período de dia",
+				shorten(b.ID), night, first))
 		}
-		seen[key] = true
+		seen[key] = r.Line
 		if _, known := perNight[night]; !known && len(perNight) >= maxNights {
 			return nil, &FieldError{File: t.File, Line: r.Line, Message: fmt.Sprintf("noites demais (máximo %d)", maxNights)}
 		}
@@ -587,9 +594,9 @@ func loadSessions(t *Table, ds *Dataset) ([]Session, error) {
 	for _, c := range ds.Chargers {
 		chargers[c.ID] = true
 	}
-	buses := make(map[string]bool, len(ds.Buses))
+	stays := map[string][]Bus{} // bus ID -> its stays, in file order
 	for _, b := range ds.Buses {
-		buses[b.ID+"\x00"+NightKey(b.Arrival)] = true
+		stays[b.ID] = append(stays[b.ID], b)
 	}
 	out := make([]Session, 0, len(t.Rows))
 	for _, r := range t.Rows {
@@ -622,16 +629,69 @@ func loadSessions(t *Table, ds *Dataset) ([]Session, error) {
 		if s.EnergyKWh > maxSessionKWh {
 			return nil, t.fieldErr(r, "energia_kwh", fmt.Sprintf("energia %g kWh acima do máximo aceito por sessão (%g kWh): confira a unidade", s.EnergyKWh, maxSessionKWh))
 		}
-		night := NightKey(s.Start)
-		if !buses[s.BusID+"\x00"+night] {
-			return nil, t.fieldErr(r, "onibus_id", fmt.Sprintf("ônibus %s não existe em onibus.csv na noite %s (noite = data de início menos 12 h)", shorten(s.BusID), night))
+		night, nerr := sessionNight(stays[s.BusID], s)
+		if nerr != nil {
+			return nil, t.fieldErr(r, "onibus_id", nerr.Error())
 		}
+		s.Night = night
 		if !chargers[s.ChargerID] {
 			return nil, t.fieldErr(r, "carregador_id", fmt.Sprintf("carregador %s não existe em carregadores.csv", shorten(s.ChargerID)))
 		}
 		out = append(out, s)
 	}
 	return out, nil
+}
+
+// stayEnd is the later of the planned and the real departure.
+func stayEnd(b Bus) time.Time {
+	if b.RealDeparture != nil && b.RealDeparture.After(b.Departure) {
+		return *b.RealDeparture
+	}
+	return b.Departure
+}
+
+// sessionNight finds the night a session belongs to: that of the stay of its bus whose
+// window [arrival - 2 h, later departure + 2 h] contains the session start (a reserve
+// bus parked from 22:00 to 15:00 and topped up at 12:10 is still in its night). When
+// two windows contain it, the stay that began last before the session wins. When none
+// does, the night of the session start (start minus 12 h) is used if the bus has a stay
+// in it; otherwise the error names the nights the bus does have.
+func sessionNight(stays []Bus, s Session) (string, error) {
+	var best *Bus
+	for i := range stays {
+		b := &stays[i]
+		if s.Start.Before(b.Arrival.Add(-stayMargin)) || s.Start.After(stayEnd(*b).Add(stayMargin)) {
+			continue
+		}
+		if best == nil {
+			best = b
+			continue
+		}
+		// prefer a stay that already began (latest arrival), else the earliest one
+		switch bStarted, bestStarted := !b.Arrival.After(s.Start), !best.Arrival.After(s.Start); {
+		case bStarted && !bestStarted, bStarted && bestStarted && b.Arrival.After(best.Arrival),
+			!bStarted && !bestStarted && b.Arrival.Before(best.Arrival):
+			best = b
+		}
+	}
+	if best != nil {
+		return NightKey(best.Arrival), nil
+	}
+	if len(stays) == 0 {
+		return "", fmt.Errorf("ônibus %s não existe em onibus.csv", shorten(s.BusID))
+	}
+	night := NightKey(s.Start)
+	var nights []string
+	for _, b := range stays {
+		k := NightKey(b.Arrival)
+		if k == night {
+			return k, nil
+		}
+		nights = append(nights, k)
+	}
+	sort.Strings(nights)
+	return "", fmt.Errorf("ônibus %s não tem estadia em onibus.csv que contenha o início da sessão (noite %s = data de início menos 12 h); noites desse ônibus: %s",
+		shorten(s.BusID), night, strings.Join(nights, ", "))
 }
 
 // --- potencia.csv ---

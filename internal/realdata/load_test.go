@@ -182,7 +182,7 @@ func TestLoadErrors(t *testing.T) {
 		{"saida igual a chegada", "onibus.csv", "2026-03-05 05:30,90", "2026-03-04 23:30,90", "onibus.csv", "saida_prevista", 4, "depois da chegada"},
 		{"chegada invalida", "onibus.csv", "2026-03-04 22:00", "ontem de noite", "onibus.csv", "chegada", 3, ""},
 		{"onibus sem id", "onibus.csv", "B02,300,2026-03-04 22:00", ",300,2026-03-04 22:00", "onibus.csv", "onibus_id", 3, "obrigatório"},
-		{"onibus duplicado na noite", "onibus.csv", "B02,300,2026-03-05 22:00", "B01,300,2026-03-05 22:00", "onibus.csv", "onibus_id", 6, "duplicado"},
+		{"onibus duplicado na noite", "onibus.csv", "B02,300,2026-03-05 22:00", "B01,300,2026-03-05 22:00", "onibus.csv", "onibus_id", 6, "já aparece na linha 5"},
 		{"potencia bateria zero", "onibus.csv", "05:30,90,150,90", "05:30,90,0,90", "onibus.csv", "potencia_max_bateria_kw", 4, ""},
 		{"soc real 101", "onibus.csv", "150,90,2026-03-05 05:30", "150,101,2026-03-05 05:30", "onibus.csv", "soc_saida_real_pct", 4, ""},
 		{"saida real invalida", "onibus.csv", "2026-03-05 05:30\nB01", "amanha\nB01", "onibus.csv", "saida_real", 4, ""},
@@ -190,8 +190,8 @@ func TestLoadErrors(t *testing.T) {
 		{"coluna chegada ausente", "onibus.csv", ",chegada,", ",hora_chegada,", "onibus.csv", "chegada", 1, "coluna obrigatória ausente"},
 		{"coluna soc_chegada ausente", "onibus.csv", "soc_chegada_pct", "soc_chegada", "onibus.csv", "soc_chegada_pct", 1, "coluna obrigatória ausente"},
 		// sessoes.csv
-		{"sessao de onibus inexistente", "sessoes.csv", "B03,C03", "B99,C03", "sessoes.csv", "onibus_id", 4, ""},
-		{"sessao em noite sem o onibus", "sessoes.csv", "B01,C01,2026-03-05 22:00,2026-03-05 22:30", "B01,C01,2026-03-10 22:00,2026-03-10 22:30", "sessoes.csv", "onibus_id", 5, "noite"},
+		{"sessao de onibus inexistente", "sessoes.csv", "B03,C03", "B99,C03", "sessoes.csv", "onibus_id", 4, "não existe em onibus.csv"},
+		{"sessao em noite sem o onibus", "sessoes.csv", "B01,C01,2026-03-05 22:00,2026-03-05 22:30", "B01,C01,2026-03-10 22:00,2026-03-10 22:30", "sessoes.csv", "onibus_id", 5, "noites desse ônibus: 2026-03-04, 2026-03-05"},
 		{"sessao de carregador inexistente", "sessoes.csv", "B03,C03", "B03,C09", "sessoes.csv", "carregador_id", 4, ""},
 		{"sessao fim antes do inicio", "sessoes.csv", "2026-03-05 02:00", "2026-03-04 21:00", "sessoes.csv", "fim", 3, ""},
 		{"sessao fim igual ao inicio", "sessoes.csv", "2026-03-05 02:00", "2026-03-04 22:00", "sessoes.csv", "fim", 3, ""},
@@ -882,5 +882,90 @@ func TestLoadDuplicateKeyFarFutureYear(t *testing.T) {
 	}
 	if n := countWarnings(d, FilePotencia, "repetida"); n != 1 {
 		t.Errorf("true duplicate in year 2300 not reported: %v", d.Warnings)
+	}
+}
+
+// reserveFiles is a one-bus depot: R1 is parked 22:00 -> 15:00 (a reserve bus) and topped up at 12:10.
+func reserveFiles(onibus, sessoes string) map[string][]byte {
+	return map[string][]byte{
+		FileGaragem:      []byte("limite_kw\n400\n"),
+		FileCarregadores: []byte("carregador_id,potencia_max_kw\nC01,150\n"),
+		FileOnibus:       []byte("onibus_id,capacidade_kwh,chegada,soc_chegada_pct,saida_prevista,soc_saida_exigido_pct\n" + onibus),
+		FileSessoes:      []byte("onibus_id,carregador_id,inicio,fim,energia_kwh\n" + sessoes),
+	}
+}
+
+func TestLoadSessionOfAReserveBusParkedPastNoon(t *testing.T) {
+	// the 12:10 top-up of the next day is NightKey 2026-03-05, a night R1 has no stay in:
+	// it still belongs to the stay that began on the 4th
+	d, err := Load(reserveFiles("R1,300,2026-03-04 22:00,30,2026-03-05 15:00,90\n",
+		"R1,C01,2026-03-04 22:30,2026-03-05 01:30,100\nR1,C01,2026-03-05 12:10,2026-03-05 12:40,20\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if d.Sessions[0].Night != "2026-03-04" || d.Sessions[1].Night != "2026-03-04" {
+		t.Errorf("nights = %q, %q; want both 2026-03-04", d.Sessions[0].Night, d.Sessions[1].Night)
+	}
+	ns, _ := d.Nights(NightOptions{})
+	if len(ns) != 1 || ns[0].Real.EnergyKWh == nil || *ns[0].Real.EnergyKWh != 120 {
+		t.Fatalf("the top-up counts in the night of the stay: %+v", ns)
+	}
+	if ns[0].Real.Partial {
+		t.Errorf("the only bus has sessions: %+v", ns[0].Real)
+	}
+}
+
+func TestLoadSessionWindowUsesTheRealDepartureAndTwoHours(t *testing.T) {
+	// planned departure 15:00, real 17:00: a session at 18:30 is still inside (17:00 + 2 h)
+	on := "R1,300,2026-03-04 22:00,30,2026-03-05 15:00,90,,,2026-03-05 17:00\n"
+	files := reserveFiles("", "R1,C01,2026-03-05 18:30,2026-03-05 19:00,10\n")
+	files[FileOnibus] = []byte("onibus_id,capacidade_kwh,chegada,soc_chegada_pct,saida_prevista,soc_saida_exigido_pct,potencia_max_bateria_kw,soc_saida_real_pct,saida_real\n" + on)
+	if d, err := Load(files); err != nil || d.Sessions[0].Night != "2026-03-04" {
+		t.Fatalf("18:30 is within 2 h of the real departure: %v", err)
+	}
+	// 19:01 is past the window and the bus has no stay in night 2026-03-05: error naming its nights
+	files[FileSessoes] = []byte("onibus_id,carregador_id,inicio,fim,energia_kwh\nR1,C01,2026-03-05 19:01,2026-03-05 19:30,10\n")
+	_, err := Load(files)
+	var fe *FieldError
+	if !errors.As(err, &fe) || fe.File != FileSessoes || fe.Line != 2 || fe.Column != "onibus_id" ||
+		!strings.Contains(fe.Message, "noites desse ônibus: 2026-03-04") || strings.Contains(fe.Message, "não existe") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestLoadSessionPicksTheRightOfTwoStaysOfTheSameBus(t *testing.T) {
+	// stay A arrives 2026-03-04 22:00 (night 03-04); stay B arrives 2026-03-05 22:00 (night 03-05)
+	on := "R1,300,2026-03-04 22:00,30,2026-03-05 06:00,90\nR1,300,2026-03-05 22:00,30,2026-03-06 06:00,90\n"
+	d, err := Load(reserveFiles(on,
+		"R1,C01,2026-03-04 22:30,2026-03-05 01:00,50\nR1,C01,2026-03-05 22:30,2026-03-06 01:00,60\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Sessions[0].Night != "2026-03-04" || d.Sessions[1].Night != "2026-03-05" {
+		t.Errorf("nights = %q, %q", d.Sessions[0].Night, d.Sessions[1].Night)
+	}
+	// windows that overlap (A leaves 22:30, B arrives 22:00 the same day): the stay that began last wins
+	on = "R1,300,2026-03-04 22:00,30,2026-03-05 22:30,90\nR1,300,2026-03-05 22:00,30,2026-03-06 06:00,90\n"
+	d, err = Load(reserveFiles(on, "R1,C01,2026-03-05 22:10,2026-03-05 23:00,10\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Sessions[0].Night != "2026-03-05" {
+		t.Errorf("overlap: night = %q, want the later stay's 2026-03-05", d.Sessions[0].Night)
+	}
+}
+
+func TestLoadTwoStaysOfOneBusInOneNightExplainTheRule(t *testing.T) {
+	// arrivals at 13:00 and at 22:00 on the 4th both belong to night 2026-03-04 (arrival minus 12 h)
+	on := "R1,300,2026-03-04 13:00,30,2026-03-04 15:00,90\nR1,300,2026-03-04 22:00,30,2026-03-05 06:00,90\n"
+	_, err := Load(reserveFiles(on, ""))
+	var fe *FieldError
+	if !errors.As(err, &fe) || fe.File != FileOnibus || fe.Line != 3 || fe.Column != "onibus_id" {
+		t.Fatalf("err = %v", err)
+	}
+	for _, want := range []string{"duplicado na noite 2026-03-04", "linha 2", "chegada menos 12 h", "dois períodos do mesmo ônibus na mesma noite não são aceitos", "separe-os ou remova o período de dia"} {
+		if !strings.Contains(fe.Message, want) {
+			t.Errorf("message %q lacks %q", fe.Message, want)
+		}
 	}
 }

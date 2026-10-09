@@ -92,7 +92,7 @@ func (d *Dataset) Nights(o NightOptions) ([]Night, []Warning) {
 	}
 	sessBy := map[string][]Session{}
 	for _, s := range d.Sessions {
-		k := NightKey(s.Start)
+		k := s.Night                 // set by Load: the night of the stay the session belongs to
 		if _, ok := busesBy[k]; ok { // Load guarantees it; defensive
 			sessBy[k] = append(sessBy[k], s)
 		}
