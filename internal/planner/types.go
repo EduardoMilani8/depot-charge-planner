@@ -64,6 +64,11 @@ type CostPolicy struct {
 	// DemandTargetKW is reserved for demand limiting (a later feature); it is validated
 	// but not used yet. 0 = off; negative, NaN or infinite makes the policy invalid.
 	DemandTargetKW float64
+	// ScheduleKnown declares that Input.Buses lists every bus expected tonight, the ones
+	// still to arrive with ArrivalMin > Now. The planner then plans around the real
+	// queue instead of guessing it and keeps a smaller reserve, which allows more
+	// deferral. False (the default) means unknown arrivals are possible.
+	ScheduleKnown bool
 }
 
 func DefaultConfig() Config {

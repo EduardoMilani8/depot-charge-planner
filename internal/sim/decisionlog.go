@@ -71,6 +71,15 @@ var _ Recorder = (*DecisionLog)(nil)
 // without a header (replaying it needs the planner Config from elsewhere).
 func NewDecisionLog(w io.Writer) *DecisionLog { return &DecisionLog{w: w} }
 
+// NewDecisionLogForScenario is NewDecisionLogWithConfig with the configuration the
+// planner controller really runs on the scenario (ScenarioConfig): the cost policy gets
+// its clock and peak window from the scenario. Use it whenever the log is of a run on a
+// scenario; a header with an unfilled policy (zero window = no peak) would not replay. Pass
+// the scenario the controller runs on, i.e. the one ForController returns.
+func NewDecisionLogForScenario(w io.Writer, cfg planner.Config, sc Scenario) *DecisionLog {
+	return NewDecisionLogWithConfig(w, ScenarioConfig(cfg, sc))
+}
+
 // NewDecisionLogWithConfig writes a header with the format version and cfg first, so
 // the log can be replayed on its own (ReplayFile). A header write error is kept in Err.
 func NewDecisionLogWithConfig(w io.Writer, cfg planner.Config) *DecisionLog {

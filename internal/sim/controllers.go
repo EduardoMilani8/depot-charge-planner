@@ -86,6 +86,7 @@ func ScenarioConfig(cfg planner.Config, sc Scenario) planner.Config {
 		pol := *cfg.Cost
 		pol.ClockAtZeroMin = sc.StartClockMin
 		pol.PeakFromMin, pol.PeakToMin = sc.Tariff.PeakFromMin, sc.Tariff.PeakToMin
+		pol.ScheduleKnown = sc.AnnounceArrivals
 		cfg.Cost = &pol
 	}
 	return cfg

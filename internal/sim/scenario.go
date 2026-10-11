@@ -69,4 +69,11 @@ type Scenario struct {
 	// ReadingAgeMin is added to the age the SoC sensor reports (fresh readings report
 	// it instead of 0); the reported value is unchanged. See GenParams.ReadingAgeMin.
 	ReadingAgeMin int
+	// AnnounceArrivals adds to every observation the buses that have not arrived yet, with
+	// ArrivalMin in the future: the depot knows its schedule (arrival as scheduled, or the
+	// next minute for a bus already late; departure as currently announced; the SoC it is
+	// expected to arrive with, here the true initial one). Controllers and the planner
+	// without a cost policy ignore them, so their results do not change. ForController turns
+	// it on for the planner when a cost policy is set.
+	AnnounceArrivals bool
 }

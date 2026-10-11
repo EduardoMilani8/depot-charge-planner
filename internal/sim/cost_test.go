@@ -31,6 +31,22 @@ func TestScenarioConfigFillsThePolicyFromTheScenarioOnACopy(t *testing.T) {
 	if cfg.Cost == nil || *cfg.Cost != want {
 		t.Errorf("policy = %+v, want %+v", cfg.Cost, want)
 	}
+	// The policy knows the schedule exactly when the scenario announces its arrivals.
+	sc.AnnounceArrivals = true
+	want.ScheduleKnown = true
+	if cfg := ScenarioConfig(costTestConfig(caller), sc); cfg.Cost == nil || *cfg.Cost != want {
+		t.Errorf("announced: policy = %+v, want %+v", cfg.Cost, want)
+	}
+	if _, _, err := ForController("planner", costTestConfig(caller), baseScenario()); err != nil {
+		t.Fatal(err)
+	}
+	if fsc, _, _ := ForController("planner", costTestConfig(caller), baseScenario()); !fsc.AnnounceArrivals {
+		t.Error("ForController must announce the arrivals to a planner with a cost policy")
+	}
+	if fsc, _, _ := ForController("planner", planner.DefaultConfig(), baseScenario()); fsc.AnnounceArrivals {
+		t.Error("ForController must not change the scenario of a planner without a cost policy")
+	}
+	sc.AnnounceArrivals = false
 	if cfg.Cost == caller {
 		t.Error("the policy must be a copy")
 	}
@@ -93,10 +109,12 @@ func TestDecisionLogCarriesTheCostPolicy(t *testing.T) {
 	}
 
 	sc := baseScenario()
-	cfg := ScenarioConfig(costTestConfig(&planner.CostPolicy{DeferMarginMin: 45}), sc)
+	caller := costTestConfig(&planner.CostPolicy{DeferMarginMin: 45})
+	sc, ctrl, _ := ForController("planner", caller, sc)
+	cfg := ScenarioConfig(caller, sc)
 	var buf bytes.Buffer
-	log := NewDecisionLogWithConfig(&buf, cfg)
-	Run(sc, NewPlannerController(costTestConfig(&planner.CostPolicy{DeferMarginMin: 45}), sc), log)
+	log := NewDecisionLogForScenario(&buf, caller, sc)
+	Run(sc, ctrl, log)
 	if err := log.Err(); err != nil {
 		t.Fatal(err)
 	}
@@ -108,5 +126,14 @@ func TestDecisionLogCarriesTheCostPolicy(t *testing.T) {
 	diffs, replayed, _, err := ReplayFile(bytes.NewReader(data))
 	if err != nil || replayed == 0 || len(diffs) != 0 {
 		t.Errorf("replayed %d records, %d diffs, err %v: want >0, 0, nil", replayed, len(diffs), err)
+	}
+	// The footgun the helper removes: the caller's unfilled policy has no peak window, so
+	// a header written from it replays a different plan.
+	var raw bytes.Buffer
+	rawLog := NewDecisionLogWithConfig(&raw, caller)
+	sc2, ctrl2, _ := ForController("planner", caller, baseScenario())
+	Run(sc2, ctrl2, rawLog)
+	if diffs, _, _, _ := ReplayFile(bytes.NewReader(raw.Bytes())); len(diffs) == 0 {
+		t.Error("control: a header with the unfilled policy should not replay the deferred plan")
 	}
 }

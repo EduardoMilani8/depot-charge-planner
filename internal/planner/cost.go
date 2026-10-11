@@ -11,79 +11,60 @@ import (
 
 // Cost-aware planning (Config.Cost): defer charging past the peak window.
 //
-// Energy costs more inside the peak window, so a bus that can still finish after the
-// peak with comfortable slack does not have to charge during it. While the clock is
-// inside the window, PlanNormal calls deferPastPeak, which marks such buses as
-// deferred. A deferred bus gets 0 kW, is left out of the allocation and of the
-// spare-power pass, and its BusStatus says it WILL reach the target (after the peak)
-// with the reason "adiado para depois da ponta: termina com folga de N min". Every
-// other bus is allocated by the normal rules with the FULL budget, never less than
-// without the policy.
+// While the clock is inside the peak window (tp = minutes until it ends), PlanNormal
+// calls deferPastPeak, which marks some buses as deferred. A deferred bus gets 0 kW, is
+// left out of the allocation and of the spare-power pass, and its BusStatus says it WILL
+// reach the target after the peak ("adiado para depois da ponta: termina com folga de N
+// min"). Every other bus is allocated as usual with the FULL budget. Outside the peak,
+// or with an invalid policy, nothing changes.
 //
-// A bus is deferrable when all of these hold:
-//   - the policy is valid and tp > 0, where tp is the number of minutes until the peak
-//     window ends (0 outside the peak and for a window that never ends);
-//   - it needs charge, its charger is OK and usable, its SoC reading is reliable (fresh
-//     and confident: isReliable), its numbers are finite and its laxity is not negative;
-//   - at full power it still finishes after the peak with the margin:
-//     (availMin - tp - DeferMarginMin) * maxKW / 60 >= gridNeed.
+// A bus is deferrable when it needs charge, its SoC reading is reliable (isReliable),
+// its charger is OK and usable, its numbers are finite, its laxity is not negative and
 //
-// Joint feasibility. The deferrable buses must also fit together after the peak: they
-// are tested with admit (Moore-Hodgson on the site budget) as if they all started when
-// the peak ends, i.e. with availMin - tp - DeferMarginMin minutes. The largest set that
-// fits is deferred; the rest is charged now as usual. This is the brief's rule. Measured
-// on the simulator it is NOT enough to keep readiness (see "Why more than the plain
-// rule" below), so three things the plain rule does not know are added to the test:
+//	(availMin - tp - DeferMarginMin) * maxKW / 60 >= gridNeed
 //
-//   - the connected buses that are not deferred keep charging after the peak and compete
-//     for the budget (a second admit over them and the deferred ones from now on);
-//   - buses present but waiting for a charger, or on a faulted one, will need the budget
-//     after the peak as well (they count as starting when the peak ends);
-//   - chargers that are free now will probably get a bus before the peak ends: each
-//     free healthy charger counts as one more bus needing the mean grid energy of the
-//     buses present, due at their mean deadline.
+// i.e. at full power it still finishes after the peak with the margin. The deferrable
+// buses must also fit together after the peak: admit (Moore-Hodgson) on the budget, with
+// availMin - tp - margin minutes each; the largest set that fits is deferred, the rest
+// charges now. That is the brief's rule. In the simulator it alone lost up to 24 points
+// of ready% (50 buses, 25 chargers, arrivals all inside the peak), because the buses
+// present at the start of the peak look feasible, all wait, and the buses that arrive
+// later no longer fit. So the deferral is also subject to:
 //
-// If these extra buses do not all fit, the deferrable buses are dropped from the
-// deferred set, largest grid energy first, until they do (and nobody is deferred if
-// they still do not). The test uses only deferBudgetFrac of the budget: the rest is the
-// reserve for faults, SoC noise and arrivals the planner has not seen.
+//   - budget reserve: the connected buses that stay on charge, the waiting buses and one
+//     expected bus per free charger (the mean grid energy and deadline of the buses
+//     present) must fit after the peak with the deferred ones, using only
+//     deferBudgetFrac of the budget; the optional (deferred) buses with the most grid
+//     energy are dropped first, and if the others alone do not fit nothing is deferred;
+//   - plug turnover (protectQueue): a deferred bus keeps its plug without drawing power,
+//     and a waiting bus, or one scheduled to arrive (Input.Buses with ArrivalMin > Now),
+//     starts only when a plug frees. If deferring makes such a bus start so late that it
+//     can no longer finish with the margin, while it could without the deferral, the
+//     deferred buses are released, earliest finisher first, until it can.
 //
-// The planner re-plans every minute, so the test is re-evaluated each time with the
-// remaining time: the minute the peak ends tp is 0 and every deferred bus starts at
-// once, and the margin keeps enough slack for it to finish. Never deferred: a bus with
-// an unreliable reading, on a faulted or offline charger, waiting for a charger, at its
-// target, or that cannot finish anyway.
+// The planner re-plans every minute, so all of this is re-evaluated with the time left;
+// when the peak ends tp is 0 and every deferred bus starts at once.
 //
-// Why more than the plain rule. With the plain rule alone, the simulator (arrivals
-// during the peak, see sim's cost property test) lost up to 24 points of ready% at 1200
-// kW and 8-14 points at 600 kW: the buses present at the start of the peak look
-// feasible, so they are all deferred, the budget goes unused for hours, and the buses
-// that arrive later then no longer fit. The reserve above removes that loss in the
-// profiles without noisy data (none, mild) at every limit tested.
-//
-// Limits, honestly. This is a heuristic on the buses seen so far, not a guarantee.
-//   - Under SoC noise or a wrong consumption forecast, a bus charged early keeps being
-//     topped up whenever a noisy reading dips below the target, which gives it energy
-//     beyond the plan; a deferred bus has less time for that. In the severe and random
-//     fault profiles this costs a bus here and there, seed by seed, even though the
-//     deferral itself is feasible (it disappears when noise and consumption faults are
-//     removed from the scenario).
-//   - Anything that goes wrong after the peak (charger failures, limit drops, sensors
-//     freezing) now hits buses that have not charged yet; the reserve and the margin
-//     absorb small events, not a total loss of capacity.
-//   - When the depot is overloaded (the extra buses above do not fit), nothing is
-//     deferred and the plan is the plain one: no saving, no loss.
+// Measured on the simulator (internal/sim/cost_property_test.go): with fault-free or
+// mild data readiness is never lower than without the policy on any tested seed, for the
+// geometries listed there. deferBudgetFrac is empirical, tuned on those geometries, not
+// derived; the plug-turnover model is optimistic (full-power finish times, no budget
+// sharing). Readiness can still drop where the planner cannot know the future: SoC noise
+// and consumption faults (a bus charged early keeps being topped up by noisy readings; a
+// deferred one has had less time), and anything that fails after the peak (sensors
+// freezing, chargers failing) hits energy not yet delivered. When the depot is overloaded
+// nothing is deferred.
 //
 // Safety does not depend on this file: a deferred plan only lowers power, and the
-// last-valid layer, the safe layer and Enforce still check every plan against the
-// site limit.
+// last-valid layer, the safe layer and Enforce still check every plan against the limit.
 
 const (
 	// defaultDeferMarginMin is CostPolicy.DeferMarginMin when it is 0.
 	defaultDeferMarginMin = 45
 	// deferBudgetFrac is the share of the site budget the post-peak feasibility test
 	// may count on: the plan keeps the rest as a reserve (see the comment at the top).
-	deferBudgetFrac = 0.35
+	deferBudgetFracBlind = 0.35
+	deferBudgetFracKnown = 0.6
 )
 
 // validate reports why the policy cannot be used, or nil.
@@ -97,6 +78,14 @@ func (p CostPolicy) validate() error {
 		return fmt.Errorf("alvo de demanda inválido (%v)", p.DemandTargetKW)
 	}
 	return nil
+}
+
+// budgetFrac is the share of the budget the post-peak test may count on.
+func (p CostPolicy) budgetFrac() float64 {
+	if p.ScheduleKnown {
+		return deferBudgetFracKnown
+	}
+	return deferBudgetFracBlind
 }
 
 func (p CostPolicy) margin() float64 {
@@ -141,7 +130,8 @@ func deferPastPeak(cfg Config, p CostPolicy, in Input, budget float64, cands []*
 		return
 	}
 	margin := p.margin()
-	budget *= deferBudgetFrac
+	fullBudget := budget
+	budget *= p.budgetFrac()
 
 	// Deferrable buses, as they look from the end of the peak.
 	var deferrable []*candidate
@@ -162,15 +152,26 @@ func deferPastPeak(cfg Config, p CostPolicy, in Input, budget float64, cands []*
 	// Buses that cannot start before the peak ends: waiting ones and expected ones.
 	var known, late []*candidate
 	for _, cd := range cands {
-		if cd.need > 0 && !cd.unusable && cd.laxityMin >= 0 && finite(cd.gridNeed) {
+		if needsCharge(cd) {
 			known = append(known, cd)
 		}
 	}
 	ref, haveRef := bestCharger(in)
+	var future []scheduled
 	if haveRef {
+		future = scheduledBuses(cfg, in, ref)
+		for _, f := range future {
+			c := f.cand
+			known = append(known, &c)
+			l := f.cand
+			l.availMin = f.cand.availMin - math.Max(tp, f.ready) - margin
+			if l.availMin > 0 {
+				late = append(late, &l)
+			}
+		}
 		for _, ib := range idles {
 			c := newCandidate(cfg, in, ib.bus, ref)
-			if c.need <= 0 || c.unusable || c.laxityMin < 0 || !finite(c.gridNeed) {
+			if !needsCharge(&c) {
 				continue
 			}
 			known = append(known, &c)
@@ -181,7 +182,9 @@ func deferPastPeak(cfg Config, p CostPolicy, in Input, budget float64, cands []*
 			}
 		}
 	}
-	late = append(late, expectedBuses(in, known, tp, margin)...)
+	if !p.ScheduleKnown {
+		late = append(late, expectedBuses(in, known, len(future), tp, margin)...)
+	}
 	kept := fitAround(budget, late, deferrable)
 	if len(kept) == 0 {
 		return
@@ -200,33 +203,60 @@ func deferPastPeak(cfg Config, p CostPolicy, in Input, budget float64, cands []*
 			c.availMin = cd.availMin - margin
 			shadow[&c] = cd
 			optional = append(optional, &c)
-		case cd.need > 0 && !cd.unusable && cd.laxityMin >= 0 && finite(cd.gridNeed):
+		case needsCharge(cd):
 			c := *cd
 			rest = append(rest, &c)
 		}
 	}
 	for _, c := range fitAround(budget, rest, optional) {
-		o := shadow[c]
-		o.deferred = true
-		o.postPeakLaxityMin = o.laxityMin - tp
+		shadow[c].deferred = true
 	}
+	protectQueue(cfg, in, tp, margin, cands, idles)
+	// Deferring only pays if it lowers the power drawn in the peak. If the buses that
+	// stay on charge can absorb the whole budget anyway, the peak energy is the same and
+	// deferring merely reorders (measured: a little more energy in the peak, from tapering
+	// buses no longer taking part of the budget), so nothing is deferred.
+	absorb := 0.0
+	for _, cd := range cands {
+		if !cd.deferred && cd.need > 0 && !cd.unusable && finite(cd.maxKW) {
+			absorb += cd.maxKW
+		}
+	}
+	if absorb >= fullBudget {
+		for _, cd := range cands {
+			cd.deferred = false
+		}
+		return
+	}
+	for _, cd := range cands {
+		if cd.deferred {
+			cd.postPeakLaxityMin = cd.laxityMin - tp
+		}
+	}
+}
+
+// needsCharge reports whether a bus still needs charge and can be saved: it counts
+// against the post-peak budget.
+func needsCharge(cd *candidate) bool {
+	return cd.need > 0 && !cd.unusable && cd.laxityMin >= 0 && finite(cd.gridNeed)
 }
 
 // deferrableNow is the per-bus part of the rule (see the comment at the top).
 func deferrableNow(cd *candidate, tp, margin float64) bool {
-	if cd.need <= 0 || !cd.reliable || cd.unusable || cd.laxityMin < 0 || !cd.charger.Healthy() {
+	if !needsCharge(cd) || !cd.reliable {
 		return false
 	}
-	if !finite(cd.gridNeed) || cd.gridNeed <= 0 || !finite(cd.maxKW) || !finite(cd.availMin) {
+	if cd.gridNeed <= 0 || !finite(cd.maxKW) || !finite(cd.availMin) {
 		return false
 	}
 	return (cd.availMin-tp-margin)*cd.maxKW/60 >= cd.gridNeed
 }
 
-// expectedBuses returns one placeholder per healthy charger that has no bus now, each
+// expectedBuses returns one placeholder per healthy charger that has no bus now and is
+// not taken by one of the announced buses (scheduled arrivals), each
 // needing the mean grid energy of the known buses and due at their mean deadline,
 // counted from the end of the peak like the waiting buses.
-func expectedBuses(in Input, known []*candidate, tp, margin float64) []*candidate {
+func expectedBuses(in Input, known []*candidate, announced int, tp, margin float64) []*candidate {
 	if len(known) == 0 {
 		return nil
 	}
@@ -249,6 +279,10 @@ func expectedBuses(in Input, known []*candidate, tp, margin float64) []*candidat
 	var out []*candidate
 	for _, c := range in.Chargers {
 		if c.Healthy() && !occupied[c.ID] {
+			if announced > 0 { // the announced buses take the free chargers first
+				announced--
+				continue
+			}
 			out = append(out, &candidate{bus: model.Bus{ID: "~esperado-" + c.ID}, gridNeed: need, availMin: avail})
 		}
 	}
@@ -300,5 +334,154 @@ func (cd *candidate) deferredStatus() BusStatus {
 	return BusStatus{
 		BusID: cd.bus.ID, Assessed: true, WillReachTarget: true, LaxityMin: finiteLaxity(cd.laxityMin),
 		Reason: fmt.Sprintf("adiado para depois da ponta: termina com folga de %.0f min", math.Max(0, cd.postPeakLaxityMin)),
+	}
+}
+
+// scheduled is a bus announced in Input.Buses with ArrivalMin > Now (the depot knows
+// its schedule): it will need a plug ready minutes from now.
+type scheduled struct {
+	cand  candidate
+	ready float64
+}
+
+// scheduledBuses returns the announced buses that will need charge, as candidates on the
+// reference charger.
+func scheduledBuses(cfg Config, in Input, ref model.Charger) []scheduled {
+	var out []scheduled
+	for _, b := range in.Buses {
+		if b.ArrivalMin <= in.Now || busProblem(b) != "" {
+			continue
+		}
+		c := newCandidate(cfg, in, b, ref)
+		if c.need <= 0 || c.unusable || !finite(c.gridNeed) || !finite(c.availMin) || c.maxKW <= 0 {
+			continue
+		}
+		out = append(out, scheduled{cand: c, ready: float64(b.ArrivalMin - in.Now)})
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].cand.bus.ID < out[j].cand.bus.ID })
+	return out
+}
+
+// queued is a bus that needs a plug it does not have yet: waiting now (ready 0) or
+// scheduled to arrive (ready = minutes until arrival).
+type queued struct {
+	id    string
+	ready float64 // minutes from now until it can take a plug
+	avail float64 // minutes from now to its departure
+	dur   float64 // minutes to charge at full power
+}
+
+// protectQueue releases deferred buses whose plug a queued bus needs (see the comment
+// at the top). Plug availability is estimated optimistically: a free plug now, a bus
+// at its target as soon as it is asked to give way, any other bus when it would finish
+// at full power, and a deferred bus no earlier than tp plus that. Queued buses take the
+// earliest plug in order of deadline. A queued bus is protected if it can finish when
+// nothing is deferred; if deferring delays its start and leaves it less than the margin
+// of slack, the deferred bus that would finish first (ties: ID) goes back to charging.
+func protectQueue(cfg Config, in Input, tp, margin float64, cands []*candidate, idles []idleBus) {
+	ref, ok := bestCharger(in)
+	if !ok {
+		return
+	}
+	var q []queued
+	add := func(b model.Bus, ready float64) {
+		c := newCandidate(cfg, in, b, ref)
+		if c.need <= 0 || c.unusable || !finite(c.gridNeed) || !finite(c.availMin) || c.maxKW <= 0 {
+			return
+		}
+		q = append(q, queued{id: b.ID, ready: ready, avail: c.availMin, dur: c.gridNeed / c.maxKW * 60})
+	}
+	for _, ib := range idles {
+		add(ib.bus, 0)
+	}
+	for _, f := range scheduledBuses(cfg, in, ref) {
+		q = append(q, queued{id: f.cand.bus.ID, ready: f.ready, avail: f.cand.availMin, dur: f.cand.gridNeed / f.cand.maxKW * 60})
+	}
+	if len(q) == 0 {
+		return
+	}
+	sort.SliceStable(q, func(i, j int) bool {
+		if q[i].avail != q[j].avail {
+			return q[i].avail < q[j].avail
+		}
+		return q[i].id < q[j].id
+	})
+	occupied := map[string]bool{}
+	for _, b := range presentBuses(in) {
+		if b.ChargerID != "" {
+			occupied[b.ChargerID] = true
+		}
+	}
+	free := 0
+	for _, c := range in.Chargers {
+		if c.Healthy() && !occupied[c.ID] {
+			free++
+		}
+	}
+	// finish is when the bus's plug frees, with or without its deferral.
+	finish := func(cd *candidate, deferred bool) float64 {
+		switch {
+		case cd.need <= 0:
+			return 0
+		case cd.unusable || cd.maxKW <= 0 || !finite(cd.gridNeed):
+			return math.Inf(1)
+		case deferred:
+			return tp + cd.gridNeed/cd.maxKW*60
+		}
+		return cd.gridNeed / cd.maxKW * 60
+	}
+	starts := func(withDeferral bool) []float64 {
+		plugs := make([]float64, 0, free+len(cands))
+		for i := 0; i < free; i++ {
+			plugs = append(plugs, 0)
+		}
+		for _, cd := range cands {
+			plugs = append(plugs, finish(cd, withDeferral && cd.deferred))
+		}
+		out := make([]float64, len(q))
+		for k, e := range q {
+			best := -1
+			for i, t := range plugs {
+				if best < 0 || t < plugs[best] {
+					best = i
+				}
+			}
+			if best < 0 {
+				out[k] = math.Inf(1)
+				continue
+			}
+			out[k] = math.Max(e.ready, plugs[best])
+			plugs[best] = out[k] + e.dur
+		}
+		return out
+	}
+	base := starts(false)
+	for {
+		cur := starts(true)
+		violated := false
+		for k, e := range q {
+			protected := base[k]+e.dur <= e.avail+1e-9
+			if protected && cur[k] > base[k]+1e-9 && e.avail-cur[k]-margin < e.dur {
+				violated = true
+				break
+			}
+		}
+		if !violated {
+			return
+		}
+		var first *candidate
+		for _, cd := range cands {
+			if !cd.deferred {
+				continue
+			}
+			if first == nil || finish(cd, true) < finish(first, true) ||
+				(finish(cd, true) == finish(first, true) && cd.bus.ID < first.bus.ID) {
+				first = cd
+			}
+		}
+		if first == nil {
+			return
+		}
+		first.deferred = false
 	}
 }

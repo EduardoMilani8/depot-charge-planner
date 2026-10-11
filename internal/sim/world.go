@@ -310,6 +310,15 @@ func (w *World) observe() planner.Input {
 		Chargers: w.Chargers(),
 	}
 	for _, bs := range w.buses {
+		if w.sc.AnnounceArrivals && !bs.present && !bs.departed {
+			b := bs.spec.Bus
+			b.ChargerID = ""
+			b.ArrivalMin = max(b.ArrivalMin, w.t+1) // scheduled arrival, or the next minute for a late bus
+			b.DepartureMin = bs.departure
+			b.SoCAgeMin, b.SoCConfidence = w.sc.ReadingAgeMin, 1
+			in.Buses = append(in.Buses, b)
+			continue
+		}
 		if !bs.present || bs.departed {
 			continue
 		}

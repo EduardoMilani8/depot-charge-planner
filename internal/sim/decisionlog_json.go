@@ -127,13 +127,14 @@ type logCost struct {
 	PeakFromMin, PeakToMin int
 	DeferMarginMin         logFloat
 	DemandTargetKW         logFloat
+	ScheduleKnown          bool
 }
 
 func toLogConfig(c planner.Config) logConfig {
 	var cost *logCost
 	if c.Cost != nil {
 		cost = &logCost{ClockAtZeroMin: c.Cost.ClockAtZeroMin, PeakFromMin: c.Cost.PeakFromMin, PeakToMin: c.Cost.PeakToMin,
-			DeferMarginMin: logFloat(c.Cost.DeferMarginMin), DemandTargetKW: logFloat(c.Cost.DemandTargetKW)}
+			DeferMarginMin: logFloat(c.Cost.DeferMarginMin), DemandTargetKW: logFloat(c.Cost.DemandTargetKW), ScheduleKnown: c.Cost.ScheduleKnown}
 	}
 	return logConfig{Cost: cost,
 		MarginKWh: logFloat(c.MarginKWh), StaleAfterMin: c.StaleAfterMin, MinConfidence: logFloat(c.MinConfidence),
@@ -148,7 +149,7 @@ func (c logConfig) toConfig() planner.Config {
 	var cost *planner.CostPolicy
 	if c.Cost != nil {
 		cost = &planner.CostPolicy{ClockAtZeroMin: c.Cost.ClockAtZeroMin, PeakFromMin: c.Cost.PeakFromMin, PeakToMin: c.Cost.PeakToMin,
-			DeferMarginMin: float64(c.Cost.DeferMarginMin), DemandTargetKW: float64(c.Cost.DemandTargetKW)}
+			DeferMarginMin: float64(c.Cost.DeferMarginMin), DemandTargetKW: float64(c.Cost.DemandTargetKW), ScheduleKnown: c.Cost.ScheduleKnown}
 	}
 	return planner.Config{Cost: cost,
 		MarginKWh: float64(c.MarginKWh), StaleAfterMin: c.StaleAfterMin, MinConfidence: float64(c.MinConfidence),

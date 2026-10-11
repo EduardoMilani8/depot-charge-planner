@@ -25,6 +25,9 @@ func ForController(name string, cfg planner.Config, sc Scenario) (Scenario, Cont
 	case "safe":
 		return sc, NewSafeOnly(), nil
 	case "planner":
+		if cfg.Cost != nil {
+			sc.AnnounceArrivals = true // the cost policy plans around the schedule
+		}
 		return sc, NewPlannerController(cfg, sc), nil
 	}
 	return sc, nil, fmt.Errorf("unknown controller %q", name)
