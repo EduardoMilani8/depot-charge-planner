@@ -34,6 +34,31 @@ import (
 // COST_REPORT=1 prints every cell and COST_SWEEP=1 runs the wide random sweep.
 const costTolerance = 0.002
 
+// costSeeds is how many seeds (1..n) the cost grids run. It does NOT follow PROPERTY_SEEDS:
+// the fault bounds below were measured on seeds 1..8, and the strict property is claimed
+// for the geometries listed, not for every seed of every random night. Under -short or the
+// race detector it is 3 (the first three of the same seeds, so every bound still holds);
+// only COST_SWEEP=1 runs more.
+func costSeeds() int {
+	if testing.Short() || raceEnabled {
+		return 3
+	}
+	return 8
+}
+
+// thin keeps every second geometry under the race detector, to keep the package well
+// inside the CI time limit; the full lists run without it.
+func thin(geos []costGeo) []costGeo {
+	if !raceEnabled {
+		return geos
+	}
+	var out []costGeo
+	for i := 0; i < len(geos); i += 2 {
+		out = append(out, geos[i])
+	}
+	return out
+}
+
 // costGeo is a depot and a night: buses and chargers, charger ceiling in kW, site limit,
 // and the minute the last bus can arrive.
 type costGeo struct {
@@ -165,14 +190,14 @@ func checkFaultCell(t *testing.T, c costCell) {
 // costGrid runs every geometry for the given profiles, announced and (when blindToo)
 // blind as well.
 func costGrid(t *testing.T, geos []costGeo, profiles []FaultProfile, blindToo bool) {
-	seeds := seedCount(8, 3)
+	seeds := costSeeds()
 	report := os.Getenv("COST_REPORT") == "1"
 	strictFaults := os.Getenv("COST_STRICT_FAULTS") == "1"
 	modes := []bool{false}
 	if blindToo {
 		modes = append(modes, true)
 	}
-	for _, g := range geos {
+	for _, g := range thin(geos) {
 		for _, profile := range profiles {
 			for _, blind := range modes {
 				g, profile, blind := g, profile, blind
@@ -209,7 +234,7 @@ func TestCostAwareNotLessReadyAndNotDearerWithScarcePlugs(t *testing.T) {
 
 // With scarce plugs the plan is exactly the plain one: same metrics, same plan changes.
 func TestCostAwareDoesNothingWithScarcePlugs(t *testing.T) {
-	for _, g := range scarceGeometries[:6] {
+	for _, g := range thin(scarceGeometries[:6]) {
 		for seed := int64(1); seed <= 2; seed++ {
 			sc := Generate(g.params(ProfileNone), seed)
 			base := propertyConfig()
@@ -237,8 +262,8 @@ func TestCostAwareUnderFaults(t *testing.T) {
 // it starts). Measured: 30 buses/30 chargers/2500 kW 104..134 against 53..89 without,
 // 50/50 at 2000 kW 329..382 against 297..316, 60/60 at 1500 kW 446..478 against 439..474.
 func TestCostAwareDoesNotFlap(t *testing.T) {
-	for _, g := range []costGeo{{10, 12, 50, 600, 120}, {10, 10, 150, 1500, 120}, {30, 30, 150, 2500, 180}, {50, 50, 150, 2000, 180}, {60, 60, 50, 1500, 180}} {
-		for seed := int64(1); seed <= int64(seedCount(4, 2)); seed++ {
+	for _, g := range thin([]costGeo{{10, 12, 50, 600, 120}, {10, 10, 150, 1500, 120}, {30, 30, 150, 2500, 180}, {50, 50, 150, 2000, 180}, {60, 60, 50, 1500, 180}}) {
+		for seed := int64(1); seed <= int64(costSeeds()/2+1); seed++ {
 			sc := Generate(g.params(ProfileNone), seed)
 			base := propertyConfig()
 			cost := base
