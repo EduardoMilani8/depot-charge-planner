@@ -67,7 +67,11 @@ func TestPlannerControllerDefersInsideTheScenarioPeak(t *testing.T) {
 	} {
 		cfg := costTestConfig(pol)
 		for _, build := range map[string]func() Controller{
-			"NewPlannerController": func() Controller { return NewPlannerController(cfg, sc) },
+			"NewPlannerController": func() Controller { // the scenario must announce its arrivals itself
+				announced := sc
+				announced.AnnounceArrivals = true
+				return NewPlannerController(cfg, announced)
+			},
 			"ForController": func() Controller {
 				_, c, err := ForController("planner", cfg, sc)
 				if err != nil {
@@ -77,7 +81,9 @@ func TestPlannerControllerDefersInsideTheScenarioPeak(t *testing.T) {
 			},
 		} {
 			tr := NewTrace()
-			m := RunTraced(sc, build(), nil, tr)
+			run := sc
+			run.AnnounceArrivals = true
+			m := RunTraced(run, build(), nil, tr)
 			first := tr.Decisions[0]
 			if len(first.Buses) != 1 || !strings.HasPrefix(first.Buses[0].Reason, "adiado para depois da ponta") {
 				t.Errorf("%s: first decision = %+v, want B1 deferred", name, first.Buses)
@@ -91,10 +97,16 @@ func TestPlannerControllerDefersInsideTheScenarioPeak(t *testing.T) {
 		}
 	}
 	// Cheaper than charging at once, and no later than the departure.
-	with := Run(sc, NewPlannerController(costTestConfig(&planner.CostPolicy{}), sc), nil)
-	without := Run(sc, NewPlannerController(costTestConfig(nil), sc), nil)
+	with := runWith(sc, costTestConfig(&planner.CostPolicy{}), false)
+	without := runWith(sc, costTestConfig(nil), false)
 	if with.CostBRL >= without.CostBRL || with.Ready != without.Ready {
 		t.Errorf("with the policy R$ %.2f ready %d, without R$ %.2f ready %d", with.CostBRL, with.Ready, without.CostBRL, without.Ready)
+	}
+	// Without the schedule (NewPlannerController on a scenario that does not announce it)
+	// the policy does nothing: the plan is the plain one.
+	blind := Run(sc, NewPlannerController(costTestConfig(&planner.CostPolicy{}), sc), nil)
+	if blind.CostBRL != without.CostBRL {
+		t.Errorf("blind: R$ %.2f, want the plain R$ %.2f", blind.CostBRL, without.CostBRL)
 	}
 }
 
