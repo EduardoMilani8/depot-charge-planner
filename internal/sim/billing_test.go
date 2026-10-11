@@ -1,6 +1,7 @@
 package sim
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -261,7 +262,7 @@ func TestValidateParamsDemandAndArrival(t *testing.T) {
 	ok := DefaultGenParams()
 	for name, mut := range map[string]func(*GenParams){
 		"window":          func(p *GenParams) { p.ArrivalFromMin, p.ArrivalToMin = 0, 180 },
-		"window max":      func(p *GenParams) { p.ArrivalFromMin, p.ArrivalToMin = 1499, 1500 },
+		"window max":      func(p *GenParams) { p.ArrivalFromMin, p.ArrivalToMin = 599, 600 },
 		"prices at max":   func(p *GenParams) { p.Demand = DemandParams{PeakPrice: 1e6, OffPeakPrice: 1e6} },
 		"contract at max": func(p *GenParams) { p.Demand.ContractedKW = MaxLimitKW },
 	} {
@@ -280,7 +281,9 @@ func TestValidateParamsDemandAndArrival(t *testing.T) {
 		{"from == to", func(p *GenParams) { p.ArrivalFromMin, p.ArrivalToMin = 100, 100 }, "arrival-to"},
 		{"from > to", func(p *GenParams) { p.ArrivalFromMin, p.ArrivalToMin = 200, 100 }, "arrival-to"},
 		{"to zero with from", func(p *GenParams) { p.ArrivalFromMin = 50 }, "arrival-to"},
-		{"to too large", func(p *GenParams) { p.ArrivalFromMin, p.ArrivalToMin = 0, 1501 }, "arrival-to"},
+		{"to too large", func(p *GenParams) { p.ArrivalFromMin, p.ArrivalToMin = 0, 601 }, "arrival-to"},
+		{"from at the end", func(p *GenParams) { p.ArrivalFromMin, p.ArrivalToMin = 600, 601 }, "arrival-from"},
+		{"far beyond the horizon", func(p *GenParams) { p.ArrivalFromMin, p.ArrivalToMin = 1400, 1500 }, "arrival-from"},
 		{"to negative", func(p *GenParams) { p.ArrivalToMin = -5 }, "arrival-to"},
 		{"peak price negative", func(p *GenParams) { p.Demand.PeakPrice = -1 }, "demand-peak-price"},
 		{"peak price NaN", func(p *GenParams) { p.Demand.PeakPrice = math.NaN() }, "demand-peak-price"},
@@ -305,6 +308,57 @@ func TestValidateParamsDemandAndArrival(t *testing.T) {
 		}
 		if fe.Field != tc.field {
 			t.Errorf("%s: field %q, want %q", tc.name, fe.Field, tc.field)
+		}
+	}
+}
+
+func TestMaxArrivalWindowStaysBeforeEveryDeparture(t *testing.T) {
+	if MaxArrivalMin != 600 {
+		t.Fatalf("MaxArrivalMin = %d, want 600 (below the earliest generated departure, 630)", MaxArrivalMin)
+	}
+	p := DefaultGenParams()
+	p.ArrivalFromMin, p.ArrivalToMin = 0, MaxArrivalMin
+	if err := ValidateParams(p, planner.DefaultConfig(), 5); err != nil {
+		t.Fatalf("0..%d must be valid: %v", MaxArrivalMin, err)
+	}
+	p.ArrivalToMin = MaxArrivalMin + 1
+	var fe *FieldError
+	if err := ValidateParams(p, planner.DefaultConfig(), 5); !errors.As(err, &fe) || fe.Field != "arrival-to" {
+		t.Fatalf("To=%d: err = %v, want arrival-to", p.ArrivalToMin, err)
+	}
+	p.ArrivalToMin = MaxArrivalMin
+	for seed := int64(1); seed <= 20; seed++ {
+		sc := Generate(p, seed)
+		for _, b := range sc.Buses {
+			if b.Bus.ArrivalMin >= b.Bus.DepartureMin || b.Bus.DepartureMin > sc.Horizon {
+				t.Fatalf("seed %d: %s arrives %d, departs %d (horizon %d)", seed, b.Bus.ID, b.Bus.ArrivalMin, b.Bus.DepartureMin, sc.Horizon)
+			}
+		}
+	}
+	for _, w := range [][2]int{{100, 100}, {200, 100}} {
+		p.ArrivalFromMin, p.ArrivalToMin = w[0], w[1]
+		if err := ValidateParams(p, planner.DefaultConfig(), 5); err == nil {
+			t.Errorf("window %v accepted, want rejected", w)
+		}
+	}
+}
+
+func TestCompareAggregateHasBillForEveryController(t *testing.T) {
+	p := DefaultGenParams()
+	p.NumBuses, p.NumChargers = 8, 4
+	p.Demand = DemandParams{PeakPrice: 50, OffPeakPrice: 20}
+	res, err := Compare(context.Background(), p, planner.DefaultConfig(), 2, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range res {
+		if r.Aggregate.Bill == nil || r.Aggregate.Bill.DemandKW <= 0 {
+			t.Errorf("%s: aggregate Bill = %+v", r.Name, r.Aggregate.Bill)
+		}
+		for _, s := range r.Seeds {
+			if s.Metrics.Bill == nil {
+				t.Errorf("%s seed %d: Bill == nil", r.Name, s.Seed)
+			}
 		}
 	}
 }

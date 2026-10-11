@@ -17,7 +17,10 @@ const (
 	// MaxDemandPrice bounds the demand prices (R$/kW).
 	MaxDemandPrice = 1e6
 	// MaxArrivalMin bounds the arrival window (minutes since the start of the scenario).
-	MaxArrivalMin = 1500
+	// Generated departures start at minute 630 (04:30) and the horizon is 800: a later
+	// arrival would be present for one tick or never, and the bus would count as neither
+	// ready nor short, so the window must end before the earliest departure.
+	MaxArrivalMin = 600
 )
 
 // FieldError names the invalid parameter by its simrun flag name.
@@ -53,7 +56,7 @@ func ValidateParams(p GenParams, cfg planner.Config, seeds int) error {
 			return &FieldError{"arrival-from", fmt.Sprintf("must be between 0 and %d minutes", MaxArrivalMin-1)}
 		}
 		if p.ArrivalToMin <= p.ArrivalFromMin || p.ArrivalToMin > MaxArrivalMin {
-			return &FieldError{"arrival-to", fmt.Sprintf("must be after arrival-from and at most %d minutes", MaxArrivalMin)}
+			return &FieldError{"arrival-to", fmt.Sprintf("must be between arrival-from and %d minutes (the window must end before the earliest departure)", MaxArrivalMin)}
 		}
 	}
 	if !(p.Demand.PeakPrice >= 0 && p.Demand.PeakPrice <= MaxDemandPrice) {
