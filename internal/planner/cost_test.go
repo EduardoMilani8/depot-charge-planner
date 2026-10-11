@@ -496,16 +496,166 @@ func TestCostNonFiniteInputsAreNeverDeferred(t *testing.T) {
 		"NaN max power": func(in *Input) { in.Chargers[0].MaxKW = math.NaN() },
 		"NaN battery":   func(in *Input) { in.Buses[0].MaxBatteryKW = math.NaN() },
 		"zero capacity": func(in *Input) { in.Buses[0].CapacityKWh = 0 },
-		"NaN departure": nil, // placeholder: Minute is an int, nothing to break
 	} {
-		if mutate == nil {
-			continue
-		}
 		in := costInput(1000, []model.Charger{slowCharger("C1")}, testBus("B1", "C1", 100, 200, 600))
 		mutate(&in)
 		p := PlanNormal(costConfig(), in) // must not panic
 		if st := statusOf(p, "B1"); isDeferred(st) {
 			t.Errorf("%s: deferred on non-finite or absurd numbers: %+v", name, st)
 		}
+	}
+}
+
+// A bus whose departure is inside the peak, or too close to its end to leave the margin,
+// is never deferred; neither is a short-stay bus that arrives in the middle of the peak.
+func TestCostNeverDefersABusThatLeavesInsideThePeak(t *testing.T) {
+	// tp = 60. Departure 50: inside the peak. Departure 105: after it but less than the
+	// 45 min margin later. Both charge at once.
+	for _, dep := range []int{50, 105} {
+		p := PlanNormal(costConfig(), costInput(1000, []model.Charger{slowCharger("C1")}, testBus("B1", "C1", 180, 200, dep)))
+		if isDeferred(statusOf(p, "B1")) || sp(p, "C1") <= 0 {
+			t.Errorf("departure %d: status %+v setpoint %v", dep, statusOf(p, "B1"), sp(p, "C1"))
+		}
+	}
+	// Arrives at minute 30 (clock 20:30, the peak ends in 30 min) and leaves at 80.
+	b := testBus("S", "C1", 100, 200, 80)
+	b.ArrivalMin = 30
+	in := costInput(1000, []model.Charger{slowCharger("C1")}, b)
+	in.Now = 30
+	if p := PlanNormal(costConfig(), in); isDeferred(statusOf(p, "S")) || sp(p, "C1") <= 0 {
+		t.Errorf("short stay: status %+v setpoint %v", statusOf(p, "S"), sp(p, "C1"))
+	}
+}
+
+// The test is (availMin - tp - margin) * maxKW / 60 >= gridNeed with >=: 100 kWh at
+// 100 kW, tp = 60, margin 45: 165 min is exactly enough (60 * 100 / 60 = 100), 164 is not.
+func TestCostDeferralBoundaryIsInclusive(t *testing.T) {
+	for dep, want := range map[int]bool{165: true, 164: false} {
+		p := PlanNormal(costConfig(), costInput(1000, []model.Charger{slowCharger("C1")}, testBus("B1", "C1", 100, 200, dep)))
+		if got := isDeferred(statusOf(p, "B1")); got != want {
+			t.Errorf("departure %d: deferred = %v, want %v", dep, got, want)
+		}
+	}
+}
+
+// Plug turnover. C1 holds A, who needs 20 kWh (12 min at 100 kW) and could wait for the
+// end of the peak (tp = 60); W waits for a plug, needs 20 kWh too and leaves at minute
+// 50, inside the peak. If A charges now its plug frees at 12 and W is ready at 24; if A
+// is deferred W would only start at 72. So A must charge now. A's slack alone would
+// defer it: without W, it is deferred.
+func TestCostWaitingBusWithADeadlineInsideThePeakVetoesTheDeferral(t *testing.T) {
+	a := testBus("A", "C1", 180, 200, 600)
+	w := testBus("W", "", 180, 200, 50)
+	in := costInput(4000, []model.Charger{slowCharger("C1")}, a, w)
+	p := PlanNormal(costConfig(), in)
+	if isDeferred(statusOf(p, "A")) || sp(p, "C1") != 100 {
+		t.Errorf("A must charge now: status %+v setpoint %v", statusOf(p, "A"), sp(p, "C1"))
+	}
+	in.Buses = in.Buses[:1]
+	if p := PlanNormal(costConfig(), in); !isDeferred(statusOf(p, "A")) {
+		t.Errorf("control: without W, A is deferred: %+v", statusOf(p, "A"))
+	}
+}
+
+// If W could not finish even when A charges now, deferring A takes nothing from it.
+func TestCostQueueVetoOnlyProtectsBusesThatCanBeSaved(t *testing.T) {
+	a := testBus("A", "C1", 180, 200, 600)
+	w := testBus("W", "", 100, 200, 60) // needs 60 min at 100 kW, plug free at 12, leaves at 60
+	p := PlanNormal(costConfig(), costInput(4000, []model.Charger{slowCharger("C1")}, a, w))
+	if !isDeferred(statusOf(p, "A")) {
+		t.Errorf("W is lost anyway: A may be deferred, got %+v", statusOf(p, "A"))
+	}
+}
+
+// A free charger means the waiting bus is not really waiting for A's plug.
+func TestCostQueueNeedsNoVetoWhenAPlugIsFree(t *testing.T) {
+	a := testBus("A", "C1", 180, 200, 600)
+	w := testBus("W", "", 180, 200, 50)
+	p := PlanNormal(costConfig(), costInput(4000, []model.Charger{slowCharger("C1"), slowCharger("C2")}, a, w))
+	if !isDeferred(statusOf(p, "A")) {
+		t.Errorf("A may be deferred when W has a free plug: %+v", statusOf(p, "A"))
+	}
+}
+
+// A bus announced for later (ArrivalMin > Now) needs a plug at its arrival: the same
+// veto. F arrives at minute 30 and leaves at 50; A's plug frees at 12 if A charges now.
+func TestCostAnnouncedBusVetoesTheDeferralOfItsPlugHolder(t *testing.T) {
+	a := testBus("A", "C1", 180, 200, 600)
+	f := testBus("F", "", 180, 200, 50)
+	f.ArrivalMin = 30
+	in := costInput(4000, []model.Charger{slowCharger("C1")}, a, f)
+	p := PlanNormal(costConfig(), in)
+	if isDeferred(statusOf(p, "A")) || sp(p, "C1") != 100 {
+		t.Errorf("A must charge now: %+v setpoint %v", statusOf(p, "A"), sp(p, "C1"))
+	}
+	if len(p.Buses) != 1 {
+		t.Errorf("the announced bus is not planned yet: %+v", p.Buses)
+	}
+	// Announced after A's slack would run out is no reason to hold A: F leaves at 600.
+	in.Buses[1].DepartureMin = 600
+	if p := PlanNormal(costConfig(), in); !isDeferred(statusOf(p, "A")) {
+		t.Errorf("F has plenty of time: A may be deferred, got %+v", statusOf(p, "A"))
+	}
+}
+
+// With the schedule known the planner does not guess buses for the free chargers and
+// keeps a smaller reserve: the case where five free chargers made B1 charge now (see
+// TestCostFreeChargersReserveBudget) now defers it.
+func TestCostScheduleKnownDropsTheGuessedBuses(t *testing.T) {
+	b1 := testBus("B1", "C1", 100, 180, 165)
+	chargers := []model.Charger{slowCharger("C1"), slowCharger("C2"), slowCharger("C3"), slowCharger("C4"), slowCharger("C5")}
+	cfg := costConfig()
+	pol := *cfg.Cost
+	pol.ScheduleKnown = true
+	cfg.Cost = &pol
+	if p := PlanNormal(cfg, costInput(400, chargers, b1)); !isDeferred(statusOf(p, "B1")) {
+		t.Errorf("schedule known: B1 must be deferred, got %+v", statusOf(p, "B1"))
+	}
+}
+
+// Deferral that cannot lower the power drawn in the peak is pointless: when the buses
+// that stay on charge could absorb the whole budget anyway nothing is deferred.
+func TestCostDoesNotDeferWhenTheOthersAbsorbTheBudget(t *testing.T) {
+	slack := testBus("S", "C1", 100, 200, 600)
+	tight := testBus("T", "C2", 50, 200, 180)
+	in := costInput(100, []model.Charger{slowCharger("C1"), slowCharger("C2")}, slack, tight) // T alone can take all 100 kW
+	cfg := costConfig()
+	pol := *cfg.Cost
+	pol.ScheduleKnown = true
+	cfg.Cost = &pol
+	if p := PlanNormal(cfg, in); !reflect.DeepEqual(p, PlanNormal(testConfig(), in)) {
+		t.Errorf("T absorbs the whole 100 kW: the plan must be the plain one, got %+v", p.Buses)
+	}
+	// With a bigger budget T cannot absorb it all: S is deferred.
+	in.Site.LimitKW = 400
+	if p := PlanNormal(cfg, in); !isDeferred(statusOf(p, "S")) {
+		t.Errorf("S must be deferred when T cannot absorb the budget: %+v", statusOf(p, "S"))
+	}
+}
+
+// The Planner may reuse the last valid plan for LastPlanTTLMin minutes when the normal
+// layer fails: a deferred (0 kW) plan replays as such and stays within the limit.
+func TestCostLastValidReuseOfADeferredPlan(t *testing.T) {
+	cfg := costConfig()
+	calls := 0
+	pl := New(cfg).WithNormal(func(c Config, in Input) Plan {
+		calls++
+		if calls > 1 {
+			panic("normal layer down")
+		}
+		return PlanNormal(c, in)
+	})
+	in := costInput(1000, []model.Charger{slowCharger("C1")}, testBus("B1", "C1", 100, 200, 600))
+	first := pl.Plan(in)
+	if first.Layer != LayerNormal || sp(first, "C1") != 0 || !isDeferred(statusOf(first, "B1")) {
+		t.Fatalf("first plan: %+v", first)
+	}
+	in.Now = 1
+	second := pl.Plan(in)
+	if second.Layer != LayerLastValid || sp(second, "C1") != 0 {
+		t.Errorf("second plan: layer %v setpoint %v, want last-valid and 0", second.Layer, sp(second, "C1"))
+	}
+	if v := Violations(in, second); len(v) > 0 {
+		t.Errorf("violations: %v", v)
 	}
 }
