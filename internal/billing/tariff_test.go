@@ -83,6 +83,9 @@ func TestHasDemand(t *testing.T) {
 		{"peak price", Tariff{DemandPeakPrice: 50}, true},
 		{"off-peak price", Tariff{DemandOffPeakPrice: 20}, true},
 		{"contract only", Tariff{ContractedKW: 80}, true},
+		{"verde ignores peak demand price", Tariff{DemandVerde: true, DemandPeakPrice: 50}, false},
+		{"verde off-peak price", Tariff{DemandVerde: true, DemandOffPeakPrice: 20}, true},
+		{"verde contract", Tariff{DemandVerde: true, DemandPeakPrice: 50, ContractedKW: 80}, true},
 	}
 	for _, c := range cases {
 		if got := c.t.HasDemand(); got != c.want {
@@ -94,6 +97,9 @@ func TestHasDemand(t *testing.T) {
 func TestNights(t *testing.T) {
 	if got := (Tariff{}).Nights(); got != 30 {
 		t.Errorf("default Nights = %d, want 30", got)
+	}
+	if got := (Tariff{NightsPerMonth: -3}).Nights(); got != 30 {
+		t.Errorf("negative NightsPerMonth: Nights = %d, want the default 30", got)
 	}
 	if got := (Tariff{NightsPerMonth: 22}).Nights(); got != 22 {
 		t.Errorf("Nights = %d, want 22", got)

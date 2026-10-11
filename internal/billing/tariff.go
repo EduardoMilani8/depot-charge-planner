@@ -1,7 +1,8 @@
-// Package billing prices grid energy and demand the way a Brazilian Group A
-// (medium voltage) bill does: energy by time of use plus the largest 15-minute
-// average demand, in the Azul or Verde mode, with optional contracted demand.
-// All prices are parameters; nothing here is an official tariff.
+// Package billing prices grid energy and demand with a simplified Group A-style
+// bill (Brazilian medium voltage): energy by time of use plus the largest
+// 15-minute average demand, in the Azul or Verde mode, with optional contracted
+// demand. All prices are parameters; nothing here is an official tariff and the
+// result is an estimate, not an invoice.
 package billing
 
 import (
@@ -16,7 +17,9 @@ const (
 	// billed as the contract; above it the excess is charged as overrun.
 	OverrunTolerance = 0.05
 	// OverrunFactor multiplies the demand price of the kW above the contract.
-	// Both constants are assumptions to be checked with the utility.
+	// Both constants are assumptions to be checked with the utility. In
+	// particular, billed demand within (C, 1.05*C] is modelled as C itself
+	// (the tolerance band is not charged), to be confirmed with the distributor.
 	OverrunFactor = 2.0
 	// DefaultNightsPerMonth is used when Tariff.NightsPerMonth is 0.
 	DefaultNightsPerMonth = 30
@@ -28,10 +31,15 @@ type Tariff struct {
 	PeakFromMin, PeakToMin int // clock minutes of the day; From > To crosses midnight; From == To is never peak
 
 	PeakPrice, OffPeakPrice             float64 // R$/kWh
-	DemandPeakPrice, DemandOffPeakPrice float64 // R$/kW; Verde uses DemandOffPeakPrice only
-	DemandVerde                         bool
-	ContractedKW                        float64 // 0 = no contract: billed demand is the measured block maximum
-	NightsPerMonth                      int     // 0 = DefaultNightsPerMonth
+	DemandPeakPrice, DemandOffPeakPrice float64 // R$/kW; Verde uses DemandOffPeakPrice only (DemandPeakPrice is ignored)
+	DemandVerde                         bool    // Verde mode: one demand charge, on the largest block of the whole night
+	// ContractedKW is the contracted demand, 0 = no contract (billed demand is
+	// the measured block maximum). A real Azul contract has separate peak and
+	// off-peak values; this single value is applied to both windows. In Verde
+	// it applies to the single (off-peak-priced) demand.
+	ContractedKW float64
+	// NightsPerMonth scales one night to a month; <= 0 means DefaultNightsPerMonth.
+	NightsPerMonth int
 }
 
 // InPeak reports whether the clock minute (any int, reduced modulo 1440) is
@@ -55,14 +63,18 @@ func (t Tariff) PriceAt(clockMin int) float64 {
 	return t.OffPeakPrice
 }
 
-// HasDemand reports whether demand is billed at all.
+// HasDemand reports whether demand is billed at all. In Verde only the
+// off-peak demand price counts (the peak demand price is ignored).
 func (t Tariff) HasDemand() bool {
+	if t.DemandVerde {
+		return t.DemandOffPeakPrice > 0 || t.ContractedKW > 0
+	}
 	return t.DemandPeakPrice > 0 || t.DemandOffPeakPrice > 0 || t.ContractedKW > 0
 }
 
 // Nights is the number of nights used to scale one night to a month.
 func (t Tariff) Nights() int {
-	if t.NightsPerMonth == 0 {
+	if t.NightsPerMonth <= 0 {
 		return DefaultNightsPerMonth
 	}
 	return t.NightsPerMonth

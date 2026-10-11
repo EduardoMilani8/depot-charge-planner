@@ -181,7 +181,8 @@ func TestNegativeClockMinutes(t *testing.T) {
 	m := NewMeter(azul())
 	m.AddKW(-20, -5, 60)
 	b := m.Bill()
-	// blocks -2 (-30..-16): 10 min; -1 (-15..-1): 10 min -> 60*10/60/0.25 = 40 each
+	// minutes -20..-6 (15 of them) split into block -2 (-30..-16): 5 min -> 20 kW
+	// and block -1 (-15..-1): 10 min -> 40 kW
 	near(t, "DemandKW", b.DemandKW, 40)
 	near(t, "EnergyKWh", b.EnergyKWh, 15)
 	near(t, "EnergyBRL", b.EnergyBRL, 15*0.9)
@@ -191,6 +192,37 @@ func TestNegativeClockMinutes(t *testing.T) {
 	b = m.Bill()
 	near(t, "DemandPeakKW", b.DemandPeakKW, 100)
 	near(t, "DemandOffPeakKW", b.DemandOffPeakKW, 0)
+}
+
+func TestNegativeMinutesSplitBetweenBlocks(t *testing.T) {
+	// Peak window 23:30..23:45 makes block -2 (clock 1410..1425) peak and
+	// block -1 (1425..1440) off-peak, so the 5/10 minute split is observable.
+	tf := Tariff{PeakFromMin: 1410, PeakToMin: 1425, PeakPrice: 2, OffPeakPrice: 1}
+	m := NewMeter(tf)
+	m.AddKW(-20, -5, 60)
+	b := m.Bill()
+	near(t, "DemandPeakKW (block -2, 5 min)", b.DemandPeakKW, 20)
+	near(t, "DemandOffPeakKW (block -1, 10 min)", b.DemandOffPeakKW, 40)
+	near(t, "EnergyKWh", b.EnergyKWh, 15)
+	near(t, "EnergyBRL", b.EnergyBRL, 5.0*2+10.0*1)
+}
+
+func TestAbsurdReadingsIgnored(t *testing.T) {
+	m := NewMeter(azul())
+	m.AddKW(1200, 1260, maxKW*2)
+	m.AddKW(1200, 1260, math.MaxFloat64)
+	if b := m.Bill(); b != (Bill{}) {
+		t.Errorf("Bill = %+v, want zero for readings above maxKW", b)
+	}
+	m.AddKW(1200, 1215, maxKW)
+	b := m.Bill()
+	near(t, "DemandKW at the cap", b.DemandKW, maxKW)
+	for name, v := range map[string]float64{"EnergyKWh": b.EnergyKWh, "EnergyBRL": b.EnergyBRL,
+		"DemandBRL": b.DemandBRL, "MonthlyBRL": b.MonthlyBRL} {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			t.Errorf("%s = %v, want finite", name, v)
+		}
+	}
 }
 
 func TestInvalidInputIgnored(t *testing.T) {

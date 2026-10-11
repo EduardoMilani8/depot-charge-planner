@@ -1,6 +1,8 @@
 package billing
 
-import "math"
+// maxKW is the largest single reading AddKW accepts. Anything above it is a
+// sensor glitch, and ignoring it keeps every Bill field finite.
+const maxKW = 1e9
 
 // Bill is the priced result of a Meter. Demand fields are kW, money is R$.
 type Bill struct {
@@ -40,11 +42,13 @@ func floorDiv(a, b int) int {
 }
 
 // AddKW adds a constant grid power over the clock minutes [from, to). Minutes
-// are absolute (may exceed 1440 or be negative). Non-positive, NaN or Inf
-// power and empty ranges are ignored. Energy is accumulated minute by minute,
-// in call order, so sums match a per-minute simulator loop bit for bit.
+// are absolute (may exceed 1440 or be negative). Non-positive, NaN, Inf or
+// absurd (> 1e9 kW) power and empty ranges are ignored, so a Bill never holds
+// NaN or Inf. Energy is accumulated minute by minute, in call order, so sums
+// match a per-minute simulator loop bit for bit. The cost is O(minutes in the
+// range), so callers should feed ranges of a night, not of years.
 func (m *Meter) AddKW(fromClockMin, toClockMin int, kw float64) {
-	if !(kw > 0) || math.IsInf(kw, 0) || toClockMin <= fromClockMin {
+	if !(kw > 0) || kw > maxKW || toClockMin <= fromClockMin {
 		return
 	}
 	e := kw / 60
