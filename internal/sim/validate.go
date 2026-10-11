@@ -14,6 +14,10 @@ const (
 	MaxReadingAgeMin = 10000
 	// MaxLimitKW: above this the verifier's absolute tolerance is near float rounding.
 	MaxLimitKW = 1e7
+	// MaxDemandPrice bounds the demand prices (R$/kW).
+	MaxDemandPrice = 1e6
+	// MaxArrivalMin bounds the arrival window (minutes since the start of the scenario).
+	MaxArrivalMin = 1500
 )
 
 // FieldError names the invalid parameter by its simrun flag name.
@@ -43,6 +47,23 @@ func ValidateParams(p GenParams, cfg planner.Config, seeds int) error {
 	}
 	if p.ReadingAgeMin < 0 || p.ReadingAgeMin > MaxReadingAgeMin {
 		return &FieldError{"reading-age", fmt.Sprintf("must be between 0 and %d", MaxReadingAgeMin)}
+	}
+	if p.ArrivalFromMin != 0 || p.ArrivalToMin != 0 { // both 0 = the default window
+		if p.ArrivalFromMin < 0 || p.ArrivalFromMin >= MaxArrivalMin {
+			return &FieldError{"arrival-from", fmt.Sprintf("must be between 0 and %d minutes", MaxArrivalMin-1)}
+		}
+		if p.ArrivalToMin <= p.ArrivalFromMin || p.ArrivalToMin > MaxArrivalMin {
+			return &FieldError{"arrival-to", fmt.Sprintf("must be after arrival-from and at most %d minutes", MaxArrivalMin)}
+		}
+	}
+	if !(p.Demand.PeakPrice >= 0 && p.Demand.PeakPrice <= MaxDemandPrice) {
+		return &FieldError{"demand-peak-price", fmt.Sprintf("must be a finite value in [0, %g] R$/kW", float64(MaxDemandPrice))}
+	}
+	if !(p.Demand.OffPeakPrice >= 0 && p.Demand.OffPeakPrice <= MaxDemandPrice) {
+		return &FieldError{"demand-offpeak-price", fmt.Sprintf("must be a finite value in [0, %g] R$/kW", float64(MaxDemandPrice))}
+	}
+	if !(p.Demand.ContractedKW >= 0 && p.Demand.ContractedKW <= MaxLimitKW) {
+		return &FieldError{"demand-contracted", fmt.Sprintf("must be a finite value in [0, %g] kW", float64(MaxLimitKW))}
 	}
 	if cfg.SwapBackCooldownMin < 0 {
 		return &FieldError{"swap-back-cooldown", "must be >= 0"}

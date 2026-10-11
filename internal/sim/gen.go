@@ -35,7 +35,28 @@ type GenParams struct {
 	// default). It models a gateway that reports readings a little old; values up to
 	// the planner's StaleAfterMin are still reliable. Only the reported age changes.
 	ReadingAgeMin int
+	// ArrivalFromMin..ArrivalToMin is the window, in minutes since the start of the
+	// scenario (18:00), in which buses arrive (both ends inclusive, one uniform draw per
+	// bus). Both 0 (or To <= From) keeps the default window, 120..360 (20:00-24:00).
+	ArrivalFromMin, ArrivalToMin int
+	// Demand fills the demand part of the scenario tariff; the zero value bills no demand.
+	Demand DemandParams
 }
+
+// DemandParams are the demand prices (R$/kW) and contract of the generated tariff. They
+// are the same illustrative kind of assumption as the energy prices: nothing here is an
+// official tariff.
+type DemandParams struct {
+	PeakPrice, OffPeakPrice float64 // R$/kW; in Verde only OffPeakPrice is used
+	ContractedKW            float64 // 0 = no contract
+	Verde                   bool    // Verde mode (one demand charge) instead of Azul
+}
+
+// Default arrival window of Generate, in minutes since the start of the scenario.
+const (
+	defaultArrivalFromMin = 120
+	defaultArrivalToMin   = 360
+)
 
 // DefaultGenParams uses public-data assumptions that still need validation with real operators.
 func DefaultGenParams() GenParams {
@@ -51,13 +72,19 @@ func DefaultGenParams() GenParams {
 // and leave 04:30-07:00.
 func Generate(p GenParams, seed int64) Scenario {
 	rng := rand.New(rand.NewSource(seed))
+	arrFrom, arrTo := defaultArrivalFromMin, defaultArrivalToMin
+	if p.ArrivalToMin > p.ArrivalFromMin {
+		arrFrom, arrTo = p.ArrivalFromMin, p.ArrivalToMin
+	}
 	sc := Scenario{
 		Name:          fmt.Sprintf("gen-%s-%d", p.Profile, seed),
 		Seed:          seed,
 		StartClockMin: 18 * 60,
 		Horizon:       800,
 		BaseLimitKW:   p.LimitKW,
-		Tariff:        Tariff{PeakFromMin: 18 * 60, PeakToMin: 21 * 60, PeakPrice: 2.70, OffPeakPrice: 0.90},
+		Tariff: Tariff{PeakFromMin: 18 * 60, PeakToMin: 21 * 60, PeakPrice: 2.70, OffPeakPrice: 0.90,
+			DemandPeakPrice: p.Demand.PeakPrice, DemandOffPeakPrice: p.Demand.OffPeakPrice,
+			ContractedKW: p.Demand.ContractedKW, DemandVerde: p.Demand.Verde},
 		FollowSwaps:   p.FollowSwaps,
 		ReadingAgeMin: p.ReadingAgeMin,
 	}
@@ -74,7 +101,7 @@ func Generate(p GenParams, seed int64) Scenario {
 			SoCKWh:        p.CapacityKWh * (0.15 + 0.30*rng.Float64()),
 			SoCConfidence: 1,
 			TargetKWh:     p.CapacityKWh * (0.75 + 0.20*rng.Float64()),
-			ArrivalMin:    120 + rng.Intn(241),
+			ArrivalMin:    arrFrom + rng.Intn(arrTo-arrFrom+1),
 			DepartureMin:  630 + rng.Intn(151),
 			MaxBatteryKW:  p.MaxBatteryKW,
 		}})

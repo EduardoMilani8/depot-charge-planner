@@ -4,6 +4,7 @@ package sim
 import (
 	"math"
 
+	"github.com/EduardoMilani8/depot-charge-planner/internal/billing"
 	"github.com/EduardoMilani8/depot-charge-planner/internal/model"
 )
 
@@ -38,19 +39,10 @@ type Fault struct {
 
 func (f Fault) Active(t int) bool { return t >= f.From && t < f.To }
 
-// Tariff has a peak window expressed in minutes of the day.
-type Tariff struct {
-	PeakFromMin, PeakToMin  int
-	PeakPrice, OffPeakPrice float64
-}
-
-func (t Tariff) PriceAt(clockMin int) float64 {
-	m := ((clockMin % 1440) + 1440) % 1440
-	if m >= t.PeakFromMin && m < t.PeakToMin {
-		return t.PeakPrice
-	}
-	return t.OffPeakPrice
-}
+// Tariff is the billing library's tariff: a peak window in minutes of the day, energy
+// prices and, optionally, demand prices and a contract. A literal with only the four
+// energy fields behaves exactly as the old simulator tariff did.
+type Tariff = billing.Tariff
 
 // BusSpec is a bus plus the truth the planner does not know.
 type BusSpec struct {

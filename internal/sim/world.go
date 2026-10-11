@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"sort"
 
+	"github.com/EduardoMilani8/depot-charge-planner/internal/billing"
 	"github.com/EduardoMilani8/depot-charge-planner/internal/gateway"
 	"github.com/EduardoMilani8/depot-charge-planner/internal/model"
 	"github.com/EduardoMilani8/depot-charge-planner/internal/planner"
@@ -50,6 +51,7 @@ type World struct {
 	moves     int                // manual moves: swaps executed and buses unplugged
 	ready     int
 	shortfall float64
+	meter     *billing.Meter // grid demand metering; nil unless the tariff bills demand
 }
 
 func newWorld(sc Scenario) *World {
@@ -59,6 +61,9 @@ func newWorld(sc Scenario) *World {
 		cmd:     map[string]float64{},
 		applied: map[string]float64{},
 		physKW:  map[string]float64{},
+	}
+	if sc.Tariff.HasDemand() {
+		w.meter = billing.NewMeter(sc.Tariff)
 	}
 	w.chargers = append([]model.Charger(nil), sc.Chargers...)
 	sort.Slice(w.chargers, func(i, j int) bool { return w.chargers[i].ID < w.chargers[j].ID })
@@ -394,6 +399,10 @@ func (w *World) advance(m *Metrics) {
 		m.CostBRL += grid * w.sc.Tariff.PriceAt(w.sc.StartClockMin+w.t)
 	}
 	w.physTotal = total
+	if w.meter != nil {
+		// the minute's total physical grid power, on the absolute clock minute
+		w.meter.AddKW(w.sc.StartClockMin+w.t, w.sc.StartClockMin+w.t+1, total)
+	}
 	if total > m.PeakKW {
 		m.PeakKW = total
 	}
@@ -423,6 +432,9 @@ func (w *World) finish(m *Metrics) {
 	m.Ready = w.ready
 	m.ShortfallKWh = w.shortfall
 	m.OperatorMoves = float64(w.moves)
+	if w.meter != nil {
+		m.Bill = billMetrics(w.meter.Bill())
+	}
 	if m.Buses > 0 {
 		m.ReadyPct = 100 * float64(m.Ready) / float64(m.Buses)
 	}
