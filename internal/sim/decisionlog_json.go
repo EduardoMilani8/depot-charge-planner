@@ -116,10 +116,26 @@ type logConfig struct {
 	SwapBackMinNeedKWh    logFloat // absent in older logs: 0
 	LastPlanTTLMin        int
 	Timeout               time.Duration
+	// Cost is the cost-aware policy; absent (nil) in older logs and when the policy is off,
+	// so those headers keep exactly the bytes they had.
+	Cost *logCost `json:",omitempty"`
+}
+
+// logCost is planner.CostPolicy with floats JSON can always carry.
+type logCost struct {
+	ClockAtZeroMin         int
+	PeakFromMin, PeakToMin int
+	DeferMarginMin         logFloat
+	DemandTargetKW         logFloat
 }
 
 func toLogConfig(c planner.Config) logConfig {
-	return logConfig{
+	var cost *logCost
+	if c.Cost != nil {
+		cost = &logCost{ClockAtZeroMin: c.Cost.ClockAtZeroMin, PeakFromMin: c.Cost.PeakFromMin, PeakToMin: c.Cost.PeakToMin,
+			DeferMarginMin: logFloat(c.Cost.DeferMarginMin), DemandTargetKW: logFloat(c.Cost.DemandTargetKW)}
+	}
+	return logConfig{Cost: cost,
 		MarginKWh: logFloat(c.MarginKWh), StaleAfterMin: c.StaleAfterMin, MinConfidence: logFloat(c.MinConfidence),
 		UnreliablePenaltyFrac: logFloat(c.UnreliablePenaltyFrac), MaxUnreliableFrac: logFloat(c.MaxUnreliableFrac),
 		SurplusLaxityMin: logFloat(c.SurplusLaxityMin), SwapUrgentLaxityMin: logFloat(c.SwapUrgentLaxityMin),
@@ -129,7 +145,12 @@ func toLogConfig(c planner.Config) logConfig {
 }
 
 func (c logConfig) toConfig() planner.Config {
-	return planner.Config{
+	var cost *planner.CostPolicy
+	if c.Cost != nil {
+		cost = &planner.CostPolicy{ClockAtZeroMin: c.Cost.ClockAtZeroMin, PeakFromMin: c.Cost.PeakFromMin, PeakToMin: c.Cost.PeakToMin,
+			DeferMarginMin: float64(c.Cost.DeferMarginMin), DemandTargetKW: float64(c.Cost.DemandTargetKW)}
+	}
+	return planner.Config{Cost: cost,
 		MarginKWh: float64(c.MarginKWh), StaleAfterMin: c.StaleAfterMin, MinConfidence: float64(c.MinConfidence),
 		UnreliablePenaltyFrac: float64(c.UnreliablePenaltyFrac), MaxUnreliableFrac: float64(c.MaxUnreliableFrac),
 		SurplusLaxityMin: float64(c.SurplusLaxityMin), SwapUrgentLaxityMin: float64(c.SwapUrgentLaxityMin),

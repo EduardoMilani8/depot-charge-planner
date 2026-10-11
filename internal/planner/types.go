@@ -42,6 +42,28 @@ type Config struct {
 	SwapBackMinNeedKWh  float64
 	LastPlanTTLMin      int           // how long the last valid plan may be reused
 	Timeout             time.Duration // max time for the normal layer
+	// Cost, when not nil, makes the normal layer cost-aware: during the peak window it
+	// may hold back charging that can safely finish after the peak (see CostPolicy and
+	// cost.go). nil, the default, leaves every plan exactly as without the feature.
+	Cost *CostPolicy `json:",omitempty"`
+}
+
+// CostPolicy tells the planner when energy is expensive. The clock lives here, not in
+// Input, so the decision-log records and the golden files do not change.
+type CostPolicy struct {
+	// ClockAtZeroMin is the minute of the day (any int, reduced modulo 1440) at
+	// Input.Now == 0.
+	ClockAtZeroMin int
+	// PeakFromMin and PeakToMin delimit the peak window [From, To) in clock minutes
+	// 0..1440. From > To crosses midnight; From == To means there is no peak.
+	PeakFromMin, PeakToMin int
+	// DeferMarginMin is the laxity, in minutes, a deferred bus must still have when the
+	// peak ends. 0 means the default (45); a negative, NaN or infinite value makes the
+	// whole policy invalid (it is then ignored, with a note in Plan.Notes).
+	DeferMarginMin float64
+	// DemandTargetKW is reserved for demand limiting (a later feature); it is validated
+	// but not used yet. 0 = off; negative, NaN or infinite makes the policy invalid.
+	DemandTargetKW float64
 }
 
 func DefaultConfig() Config {

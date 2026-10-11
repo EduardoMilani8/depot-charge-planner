@@ -32,7 +32,11 @@ type DecisionRecord struct {
 // Config fields added later are additive and keep version 2: a header written before
 // them reads them as 0. In particular SwapBackCooldownMin and SwapBackMinNeedKWh read
 // as 0 from older logs, which means the anti-thrash rule off (setpoints, the only
-// thing Replay compares, do not depend on it).
+// thing Replay compares, do not depend on it). The cost policy (Config.Cost) is a
+// "Cost" object that is written only when the policy is on: logs without it read as no
+// policy, and the header of a run without a policy has exactly the bytes it always had.
+// A run with a policy should write the configuration it really used (ScenarioConfig),
+// since the clock and peak window come from the scenario.
 //
 // Inside records, field names are the Go field names of planner.Input and
 // planner.Plan. Floats that JSON cannot represent are written as the strings "NaN",

@@ -39,6 +39,9 @@ func fillDistinct(v reflect.Value, n *int) {
 		v.SetFloat(float64(*n) + 0.25)
 	case reflect.Bool:
 		v.SetBool(true)
+	case reflect.Pointer:
+		v.Set(reflect.New(v.Type().Elem()))
+		fillDistinct(v.Elem(), n)
 	}
 }
 

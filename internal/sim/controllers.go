@@ -75,9 +75,27 @@ func (safeController) Plan(in planner.Input) planner.Plan {
 	return planner.Enforce(in, planner.PlanSafe(in))
 }
 
+// ScenarioConfig returns the planner configuration to run on a scenario. Without a
+// cost policy (cfg.Cost == nil) it is cfg itself. With one it is a copy whose policy
+// takes the clock from the scenario (StartClockMin) and the peak window from its tariff;
+// the caller only supplies DeferMarginMin and DemandTargetKW, and its policy is never
+// modified. Write this configuration, not the caller's, in a decision log header so the
+// log replays with the same policy.
+func ScenarioConfig(cfg planner.Config, sc Scenario) planner.Config {
+	if cfg.Cost != nil {
+		pol := *cfg.Cost
+		pol.ClockAtZeroMin = sc.StartClockMin
+		pol.PeakFromMin, pol.PeakToMin = sc.Tariff.PeakFromMin, sc.Tariff.PeakToMin
+		cfg.Cost = &pol
+	}
+	return cfg
+}
+
 // NewPlannerController wraps the real planner, injecting the scenario's planner faults
-// (panic, slowness or invalid output) into its normal layer.
+// (panic, slowness or invalid output) into its normal layer. The configuration is
+// ScenarioConfig(cfg, sc).
 func NewPlannerController(cfg planner.Config, sc Scenario) Controller {
+	cfg = ScenarioConfig(cfg, sc)
 	normal := func(c planner.Config, in planner.Input) planner.Plan {
 		garbage := -1
 		for _, f := range sc.Faults {

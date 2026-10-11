@@ -23,6 +23,10 @@ type candidate struct {
 	unusable   bool // battery limit is below the charger floor: cannot charge at all
 	leftOut    bool // left out by admission under overload: only gets leftover power
 	reliable   bool
+	// deferred: held back until the peak window ends (cost.go). It gets 0 kW and is out
+	// of the allocation; postPeakLaxityMin is its laxity once the peak is over.
+	deferred          bool
+	postPeakLaxityMin float64
 }
 
 // idleBus is a present bus that cannot be charged right now.
@@ -95,6 +99,10 @@ func allocate(cfg Config, budget float64, cands []*candidate) {
 	var savable, doomed []*candidate
 	for _, c := range cands {
 		c.leftOut = false
+		if c.deferred {
+			c.allocKW = 0
+			continue
+		}
 		if c.need <= 0 || c.unusable {
 			continue
 		}
@@ -249,6 +257,9 @@ func finiteLaxity(x float64) float64 {
 }
 
 func (cd *candidate) status() BusStatus {
+	if cd.deferred {
+		return cd.deferredStatus()
+	}
 	st := BusStatus{BusID: cd.bus.ID, Assessed: true, LaxityMin: finiteLaxity(cd.laxityMin)}
 	delivered := cd.allocKW * cd.availMin / 60
 	st.WillReachTarget = cd.need <= 0 || delivered >= cd.gridNeed-1e-6
@@ -315,6 +326,13 @@ func PlanNormal(cfg Config, in Input) Plan {
 		}
 	}
 	budget := AvailableKW(in)
+	policy, note := cfg.costPolicy()
+	if note != "" {
+		plan.Notes = append(plan.Notes, note)
+	}
+	if policy != nil {
+		deferPastPeak(cfg, *policy, in, budget, cands, idles)
+	}
 	plan.Swaps = recommendSwaps(cfg, in, budget, cands, idles) // works on copies: before allocate
 	allocate(cfg, budget, cands)
 	for _, cd := range cands {
