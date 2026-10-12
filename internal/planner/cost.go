@@ -418,7 +418,7 @@ const (
 // budget without the cap (the limit minus what offline chargers keep drawing). It returns
 // the budget PlanNormal must plan with, which is min(full, target) unless that would
 // leave a bus short that the full budget saves, and the note to add ("" when the cap is
-// off, does not bind or nobody charges). The cap is independent of the deferral: it needs
+// off or does not bind, i.e. the plan with the full budget draws no more than the target). The cap is independent of the deferral: it needs
 // neither the schedule nor a plug for every bus, because it never keeps a bus off a plug.
 func capDemand(cfg Config, p CostPolicy, in Input, full float64, cands []*candidate, idles []idleBus) (float64, string) {
 	target := p.DemandTargetKW
@@ -449,26 +449,33 @@ func capDemand(cfg Config, p CostPolicy, in Input, full float64, cands []*candid
 	}
 	capped := trialPlan(cfg, p, in, target, cands, idles)
 	shorts := shortBuses(capped)
-	if len(shorts) == 0 {
-		for _, cd := range capped {
-			if cd.allocKW > 0 {
-				return target, noteDemandCapped
+	var fullPlan []*candidate // the plan with the full budget, computed when needed
+	if len(shorts) > 0 {
+		// The capped plan leaves some bus short. Is it the cap's fault? It is when the
+		// full budget saves the bus, or just gives it more power: a bus the planner thinks
+		// cannot finish (negative laxity, conservative taper model) still finishes in the
+		// simulator when it gets the leftover power, which the cap would take away. A bus
+		// that gets the same power either way is not the cap's business.
+		fullPlan = trialPlan(cfg, p, in, full, cands, idles)
+		for _, i := range shorts {
+			if fullPlan[i].status().WillReachTarget || fullPlan[i].allocKW > capped[i].allocKW+1e-9 {
+				return full, noteDemandNoFit
 			}
 		}
-		return target, ""
 	}
-	// The capped plan leaves some bus short. Is it the cap's fault? It is when the full
-	// budget saves the bus, or just gives it more power: a bus the planner thinks cannot
-	// finish (negative laxity, conservative taper model) still finishes in the simulator
-	// when it gets the leftover power, which the cap would take away. A bus that gets the
-	// same power either way is not the cap's business.
-	fullPlan := trialPlan(cfg, p, in, full, cands, idles)
-	for _, i := range shorts {
-		if fullPlan[i].status().WillReachTarget || fullPlan[i].allocKW > capped[i].allocKW+1e-9 {
-			return full, noteDemandNoFit
-		}
+	// The cap holds. It only counts as limiting when the full budget would have drawn
+	// more than the target (otherwise the note would claim a cap that did not bind).
+	if fullPlan == nil {
+		fullPlan = trialPlan(cfg, p, in, full, cands, idles)
 	}
-	return target, noteDemandCapped
+	total := 0.0
+	for _, cd := range fullPlan {
+		total += cd.allocKW
+	}
+	if total > target+1e-9 {
+		return target, noteDemandCapped
+	}
+	return target, ""
 }
 
 // trialPlan allocates budget over copies of cands (the originals are untouched), with

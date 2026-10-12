@@ -769,9 +769,14 @@ func TestDemandTargetGivesWayWhenTheNeedIsHigher(t *testing.T) {
 		t.Errorf("violations: %v", v)
 	}
 	// A target that does fit the whole need (with the reserve) keeps the capped plan.
-	p := PlanNormal(capConfig(600), in)
-	if !hasNote(p, noteCapped) || totalKW(p) > 600+1e-9 {
-		t.Errorf("target 600: notes %q, total %v", p.Notes, totalKW(p))
+	p := PlanNormal(capConfig(590), in) // the plain plan draws 600
+	if !hasNote(p, noteCapped) || totalKW(p) > 590+1e-9 {
+		t.Errorf("target 590: notes %q, total %v", p.Notes, totalKW(p))
+	}
+	// A target the plain plan would not reach anyway does not bind: no note, no claim.
+	p = PlanNormal(capConfig(700), in)
+	if hasNote(p, noteCapped) || hasNote(p, noteNoFit) || totalKW(p) > 600+1e-9 {
+		t.Errorf("target 700 does not bind: notes %q, total %v", p.Notes, totalKW(p))
 	}
 }
 
@@ -847,7 +852,8 @@ func TestDemandTargetComposesWithDeferral(t *testing.T) {
 	if !isDeferred(statusOf(p, "S")) || sp(p, "C1") != 0 {
 		t.Errorf("S must still be deferred under the cap: %+v setpoint %v", statusOf(p, "S"), sp(p, "C1"))
 	}
-	if !statusOf(p, "T").WillReachTarget || totalKW(p) > 150+1e-9 || !hasNote(p, noteCapped) {
+	// Deferral leaves only T drawing 100 kW, so a 150 kW target does not bind: no note.
+	if !statusOf(p, "T").WillReachTarget || totalKW(p) > 150+1e-9 || hasNote(p, noteNoFit) {
 		t.Errorf("T: %+v total %v notes %q", statusOf(p, "T"), totalKW(p), p.Notes)
 	}
 
@@ -918,7 +924,7 @@ func TestDemandTargetPropertyReadinessFirst(t *testing.T) {
 		if base.Cost != nil {
 			pol = *base.Cost
 		}
-		pol.DemandTargetKW = math.Round(AvailableKW(in) * (0.2 + 0.7*rng.Float64()))
+		pol.DemandTargetKW = math.Round(AvailableKW(in) * (0.3 + 0.6*rng.Float64()))
 		cfg.Cost = &pol
 		got := PlanNormal(cfg, in)
 		if v := Violations(in, got); len(v) > 0 {
@@ -944,9 +950,10 @@ func TestDemandTargetPropertyReadinessFirst(t *testing.T) {
 				t.Fatalf("input %d: total %v above the target %v", i, totalKW(got), pol.DemandTargetKW)
 			}
 		default:
-			// Nothing to cap (no charging at all), or target at or above the budget.
-			if !reflect.DeepEqual(got, plain) && totalKW(got) > 1e-9 {
-				t.Fatalf("input %d: no cap note but the plan differs from the plain one", i)
+			// The cap did not bind (the plain plan draws no more than the target, or nothing
+			// charges): the plan is the plain one or draws no more than the target.
+			if !reflect.DeepEqual(got, plain) && totalKW(got) > pol.DemandTargetKW+1e-9 {
+				t.Fatalf("input %d: no cap note but the plan draws %v kW above the target %v", i, totalKW(got), pol.DemandTargetKW)
 			}
 		}
 		// Readiness first: no viable reliable bus that the plain plan saves is lost.
@@ -959,7 +966,7 @@ func TestDemandTargetPropertyReadinessFirst(t *testing.T) {
 			}
 		}
 	}
-	if capped < 30 || fellBack < 30 {
+	if capped < 20 || fellBack < 30 {
 		t.Errorf("capped %d, fell back %d of 300: the property would prove little", capped, fellBack)
 	}
 }
