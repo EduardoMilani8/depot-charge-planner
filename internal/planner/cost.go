@@ -9,14 +9,16 @@ import (
 	"github.com/EduardoMilani8/depot-charge-planner/internal/model"
 )
 
-// Cost-aware planning (Config.Cost): defer charging past the peak window.
+// Cost-aware planning (Config.Cost): defer charging past the peak window and, as a second
+// lever, cap the grid demand at a target (see "Demand cap" below).
 //
 // What it does. While the clock is inside the peak window (tp = minutes until it ends),
 // PlanNormal calls deferPastPeak, which marks some buses as deferred. A deferred bus gets
 // 0 kW, is left out of the allocation and of the spare-power pass, and its BusStatus says
 // it WILL reach the target after the peak ("adiado para depois da ponta: termina com
-// folga de N min"). Every other bus is allocated as usual with the FULL budget. Outside
-// the peak, or with an invalid policy, nothing changes. The planner re-plans every minute,
+// folga de N min"). Every other bus is allocated as usual with the whole budget (the site
+// limit, or the demand target when the cap is on). Outside the peak, or with an invalid
+// policy, nothing changes. The planner re-plans every minute,
 // so everything below is re-evaluated with the time left; when the peak ends tp is 0 and
 // every deferred bus starts at once.
 //
@@ -74,6 +76,43 @@ import (
 // With the schedule announced (sim.Scenario.AnnounceArrivals, which sim.ForController turns
 // on for a planner with a cost policy) every Input the simulator hands out, and so every
 // record of the decision log, also carries the buses that have not arrived yet.
+//
+// Demand cap (CostPolicy.DemandTargetKW > 0). The second lever: PlanNormal plans with the
+// budget min(AvailableKW, DemandTargetKW) instead of the full budget, so the grid demand
+// (the largest 15-minute block on the bill) stays near the target. The full limit stays
+// what Enforce checks, and the deferral works on the budget the cap chose. The cap does
+// not need plugs to be plentiful (it never keeps a bus off a charger) and works with and
+// without the schedule, but it only holds when readiness is not at stake. capDemand drops
+// it for the full budget, with a note in Plan.Notes, when:
+//   - a bus waiting for a charger could still be saved (with the schedule: only one with
+//     less than 60 min of laxity). Slower charging keeps the plugs busy longer, so the
+//     waiting bus would start later; measured, this cost up to 4 points of ready% in
+//     depots with three buses per charger;
+//   - some bus on charge has an unreliable SoC reading (its need is a guess);
+//   - without the schedule, a healthy charger is still free (the fleet may still grow);
+//   - the buses that need charge (connected, waiting and, with the schedule, announced)
+//     could not all finish if the site delivered 85% of the target all the time (70%
+//     without the schedule): fleetFits, a cumulative energy test per release time and
+//     deadline. A target the night's energy cannot fit would only delay the energy, and
+//     the surge to catch up costs more than the cap saved;
+//   - the capped plan leaves some bus short that the full budget saves or just gives more
+//     power (readiness first, the check of the brief, widened to buses the planner thinks
+//     cannot finish, which the simulator still finishes with the leftover power the cap
+//     would take away).
+//
+// What was measured (internal/sim/demand_property_test.go; the baseline is the same cost
+// policy without a target): with the schedule announced, ready% never lower and the demand
+// never higher on any seed of the 18 geometries tested (the project's 50 buses/25
+// chargers at 600, 1200 and 2000 kW with targets at 50% and 80% of the limit, and depots
+// with a plug for every bus), profiles none and mild, and in a wide random sweep (240
+// cells of 5..80 buses, 3..80 chargers). The demand falls only where the target is
+// feasible (50 buses/25 chargers at 2000 kW with the target at 1600: -20%); a target the
+// night's energy cannot fit changes nothing. Without the schedule the cap is weaker (it
+// waits for every plug to be taken) and in depots with several buses per charger it can
+// still lose a bus: pinned bounds, at most 4 points on a seed and 6 of 8 seeds in a cell.
+// Under severe or random faults the property does not hold per seed either (bounds in
+// the test). The cap also changes the energy bill: with the deferral on and a target below
+// the load the deferral concentrates, it gives up part of the energy saving.
 //
 // Safety does not depend on this file: a deferred plan only lowers power, and the
 // last-valid layer, the safe layer and Enforce still check every plan against the limit.
@@ -351,4 +390,199 @@ func plugsNotScarce(in Input) bool {
 		}
 	}
 	return buses <= healthy
+}
+
+// Demand cap notes (Plan.Notes).
+const (
+	noteDemandCapped     = "demanda limitada ao alvo"
+	noteDemandNoFit      = "alvo de demanda não cabe: usando o limite"
+	noteDemandWaiting    = "alvo de demanda em espera: há ônibus aguardando carregador"
+	noteDemandUnreliable = "alvo de demanda em espera: leitura de SoC não confiável"
+	noteDemandUnknown    = "alvo de demanda em espera: agenda desconhecida e há carregador livre"
+)
+
+// capDemand applies CostPolicy.DemandTargetKW (see the comment at the top). full is the
+// budget without the cap (the limit minus what offline chargers keep drawing). It returns
+// the budget PlanNormal must plan with, which is min(full, target) unless that would
+// leave a bus short that the full budget saves, and the note to add ("" when the cap is
+// off, does not bind or nobody charges). The cap is independent of the deferral: it needs
+// neither the schedule nor a plug for every bus, because it never keeps a bus off a plug.
+func capDemand(cfg Config, p CostPolicy, in Input, full float64, cands []*candidate, idles []idleBus) (float64, string) {
+	target := p.DemandTargetKW
+	if target <= 0 || target >= full {
+		return full, ""
+	}
+	for _, cd := range cands {
+		if cd.need > 0 && !cd.unusable && !cd.reliable {
+			return full, noteDemandUnreliable // the needs are guesses: readiness first
+		}
+	}
+	urgent := math.Inf(1)
+	if p.ScheduleKnown {
+		urgent = demandWaitUrgentMin
+	}
+	if waitingSavable(cfg, in, idles, urgent) {
+		return full, noteDemandWaiting
+	}
+	if !p.ScheduleKnown && freeHealthyChargers(in) > 0 {
+		return full, noteDemandUnknown
+	}
+	frac := demandCapFrac
+	if !p.ScheduleKnown {
+		frac = demandCapFracBlind
+	}
+	if !fleetFits(cfg, p, in, target*frac, cands, idles) {
+		return full, noteDemandNoFit
+	}
+	capped := trialPlan(cfg, p, in, target, cands, idles)
+	shorts := shortBuses(capped)
+	if len(shorts) == 0 {
+		for _, cd := range capped {
+			if cd.allocKW > 0 {
+				return target, noteDemandCapped
+			}
+		}
+		return target, ""
+	}
+	// The capped plan leaves some bus short. Is it the cap's fault? It is when the full
+	// budget saves the bus, or just gives it more power: a bus the planner thinks cannot
+	// finish (negative laxity, conservative taper model) still finishes in the simulator
+	// when it gets the leftover power, which the cap would take away. A bus that gets the
+	// same power either way is not the cap's business.
+	fullPlan := trialPlan(cfg, p, in, full, cands, idles)
+	for _, i := range shorts {
+		if fullPlan[i].status().WillReachTarget || fullPlan[i].allocKW > capped[i].allocKW+1e-9 {
+			return full, noteDemandNoFit
+		}
+	}
+	return target, noteDemandCapped
+}
+
+// trialPlan allocates budget over copies of cands (the originals are untouched), with
+// the deferral computed for that budget, and returns the copies in the same order.
+func trialPlan(cfg Config, p CostPolicy, in Input, budget float64, cands []*candidate, idles []idleBus) []*candidate {
+	cp := make([]*candidate, len(cands))
+	for i, cd := range cands {
+		c := *cd
+		c.allocKW, c.leftOut = 0, false
+		cp[i] = &c
+	}
+	deferPastPeak(cfg, p, in, budget, cp, idles)
+	allocate(cfg, budget, cp)
+	return cp
+}
+
+// shortBuses returns the indexes of the buses the plan leaves short: they need charge,
+// their charger is usable and the plan does not deliver what they need. Doomed buses
+// (negative laxity) are included, and so are buses with an unreliable SoC reading (the
+// plan already assumes the conservative estimate for them): the brief asked for savable
+// buses with a reliable reading only, but the planner's estimate of what is savable is
+// pessimistic, and a bus that the cap starves of leftover power is a bus lost.
+func shortBuses(plan []*candidate) []int {
+	var out []int
+	for i, cd := range plan {
+		if cd.need > 0 && !cd.unusable && finite(cd.gridNeed) && !cd.status().WillReachTarget {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// demandCapFrac is the share of the target the fleet's energy test may count on (the rest
+// is the reserve for taper, faults and noise). Empirical.
+const (
+	demandCapFrac      = 0.85 // schedule known
+	demandCapFracBlind = 0.70 // schedule unknown: more reserve, the fleet may still grow
+	// A waiting bus with less laxity than this (minutes, at full power on the best
+	// charger) makes the cap give way when the schedule is known. Without the schedule
+	// any savable waiting bus does.
+	demandWaitUrgentMin = 60
+)
+
+// capJob is a bus that needs grid energy in [release, deadline] minutes from now.
+type capJob struct {
+	release, deadline, energy float64
+}
+
+// fleetFits reports whether every bus known to need charge could finish if the site
+// delivered budget kW all the time: for every release time r and deadline d, the energy
+// of the buses released at or after r and due by d fits in budget*(d-r). Known buses are
+// the connected ones, the ones waiting for a plug (as on the best charger) and, when the
+// schedule is known, the announced ones. Buses the limit cannot save (negative laxity,
+// unusable charger) do not count. It ignores plugs and each bus's own power ceiling.
+func fleetFits(cfg Config, p CostPolicy, in Input, budget float64, cands []*candidate, idles []idleBus) bool {
+	var jobs []capJob
+	add := func(cd *candidate, release float64) {
+		if cd.need > 0 && !cd.unusable && cd.laxityMin >= 0 && finite(cd.gridNeed) && finite(cd.availMin) && cd.availMin > release {
+			jobs = append(jobs, capJob{release: release, deadline: cd.availMin, energy: cd.gridNeed})
+		}
+	}
+	for _, cd := range cands {
+		add(cd, 0)
+	}
+	if ref, ok := bestCharger(in); ok {
+		for _, ib := range idles {
+			c := newCandidate(cfg, in, ib.bus, ref)
+			add(&c, 0)
+		}
+		if p.ScheduleKnown {
+			for _, f := range scheduledBuses(cfg, in, ref) {
+				c := f.cand
+				add(&c, f.ready)
+			}
+		}
+	}
+	releases := map[float64]bool{}
+	for _, j := range jobs {
+		releases[j.release] = true
+	}
+	sort.Slice(jobs, func(i, j int) bool { return jobs[i].deadline < jobs[j].deadline })
+	for r := range releases {
+		cum := 0.0
+		for _, j := range jobs {
+			if j.release < r {
+				continue
+			}
+			cum += j.energy
+			if cum > budget*(j.deadline-r)/60+1e-9 {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// freeHealthyChargers counts the healthy chargers with no bus on them.
+func freeHealthyChargers(in Input) int {
+	used := map[string]bool{}
+	for _, b := range presentBuses(in) {
+		if b.ChargerID != "" {
+			used[b.ChargerID] = true
+		}
+	}
+	n := 0
+	for _, c := range in.Chargers {
+		if c.Healthy() && !used[c.ID] {
+			n++
+		}
+	}
+	return n
+}
+
+// waitingSavable reports whether some bus waiting for a charger needs charge and could
+// still finish at full power on the best charger. The cap slows the buses that hold the
+// plugs, so they keep them longer and the waiting bus (moved to a plug by a swap or by
+// the operator when one frees) starts later: while a savable bus waits, the limit rules.
+func waitingSavable(cfg Config, in Input, idles []idleBus, urgentMin float64) bool {
+	ref, ok := bestCharger(in)
+	if !ok {
+		return false
+	}
+	for _, ib := range idles {
+		c := newCandidate(cfg, in, ib.bus, ref)
+		if c.need > 0 && !c.unusable && c.laxityMin >= 0 && c.laxityMin < urgentMin && finite(c.gridNeed) {
+			return true
+		}
+	}
+	return false
 }

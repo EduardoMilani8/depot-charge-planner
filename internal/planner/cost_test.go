@@ -640,3 +640,436 @@ func TestCostLastValidReuseOfADeferredPlan(t *testing.T) {
 		t.Errorf("violations: %v", v)
 	}
 }
+
+// --- demand cap (CostPolicy.DemandTargetKW) ---
+
+// capConfig is a policy with only a demand target: no peak window, no schedule, so the
+// only lever on is the cap.
+func capConfig(target float64) Config {
+	c := testConfig()
+	c.Cost = &CostPolicy{DemandTargetKW: target}
+	return c
+}
+
+func totalKW(p Plan) float64 {
+	s := 0.0
+	for _, sp := range p.Setpoints {
+		s += sp.KW
+	}
+	return s
+}
+
+const (
+	noteCapped   = "demanda limitada ao alvo"
+	noteNoFit    = "alvo de demanda não cabe: usando o limite"
+	noteWaiting  = "alvo de demanda em espera: há ônibus"
+	noteUnknown  = "alvo de demanda em espera: agenda"
+	slackBuses   = 4
+	slackBusKWh  = 100 // battery kWh each slack bus needs
+	slackBusMins = 600 // minutes to its departure: 10 kW would do
+)
+
+// slackDepot has four buses that each need 100 kWh with 10 hours to go: the whole
+// depot needs 40 kW, though the chargers could draw 600 kW and the limit is 1000.
+func slackDepot() Input {
+	var ch []model.Charger
+	var buses []model.Bus
+	for i := 0; i < slackBuses; i++ {
+		id := fmt.Sprintf("C%d", i+1)
+		ch = append(ch, testCharger(id))
+		buses = append(buses, testBus(fmt.Sprintf("B%d", i+1), id, 100, 200, slackBusMins))
+	}
+	return costInput(1000, ch, buses...)
+}
+
+// tightDepot has four buses that each need 100 kWh in 60 minutes: 100 kW each, 400 kW in
+// all, which a 200 kW target cannot give but the 1000 kW limit can.
+func tightDepot() Input {
+	var ch []model.Charger
+	var buses []model.Bus
+	for i := 0; i < 4; i++ {
+		id := fmt.Sprintf("C%d", i+1)
+		ch = append(ch, testCharger(id))
+		buses = append(buses, testBus(fmt.Sprintf("B%d", i+1), id, 100, 200, 60))
+	}
+	return costInput(1000, ch, buses...)
+}
+
+// (a) A target above the limit, or equal to it, changes nothing, field by field.
+func TestDemandTargetAboveTheLimitIsTheSamePlan(t *testing.T) {
+	for _, in := range []Input{slackDepot(), tightDepot()} {
+		plain := PlanNormal(testConfig(), in)
+		for _, target := range []float64{in.Site.LimitKW, in.Site.LimitKW + 1, 5000} {
+			if got := PlanNormal(capConfig(target), in); !reflect.DeepEqual(got, plain) {
+				t.Errorf("target %v with limit %v: plan differs\n got  %+v\n want %+v", target, in.Site.LimitKW, got, plain)
+			}
+		}
+	}
+	// Offline chargers shrink the budget below the limit: the target is compared with the budget.
+	in := slackDepot()
+	in.Chargers[0].Status = model.ChargerOffline
+	in.Chargers[0].LastCommandedKW = 300 // budget 700
+	if got, want := PlanNormal(capConfig(700), in), PlanNormal(testConfig(), in); !reflect.DeepEqual(got, want) {
+		t.Errorf("target equal to the budget (limit minus offline power): plan differs\n got  %+v\n want %+v", got, want)
+	}
+}
+
+// (b) With room to spare the setpoints add up to no more than the target (and use it:
+// the plain plan spends the spare power too), every bus still reaches its target.
+func TestDemandTargetCapsASlackDepot(t *testing.T) {
+	in := slackDepot()
+	plain := PlanNormal(testConfig(), in)
+	if totalKW(plain) <= 200 {
+		t.Fatalf("test setup: the plain plan draws only %v kW", totalKW(plain))
+	}
+	for _, target := range []float64{60, 120, 200, 400} {
+		p := PlanNormal(capConfig(target), in)
+		if got := totalKW(p); got > target+1e-9 {
+			t.Errorf("target %v: setpoints add up to %v", target, got)
+		}
+		if !hasNote(p, noteCapped) || hasNote(p, noteNoFit) {
+			t.Errorf("target %v: notes %q, want %q", target, p.Notes, noteCapped)
+		}
+		for _, st := range p.Buses {
+			if !st.WillReachTarget {
+				t.Errorf("target %v: bus %s does not reach its target: %+v", target, st.BusID, st)
+			}
+		}
+		if v := Violations(in, p); len(v) > 0 {
+			t.Errorf("target %v: %v", target, v)
+		}
+		if enforced := Enforce(in, p); !reflect.DeepEqual(enforced, p) {
+			t.Errorf("target %v: Enforce changed the plan (the limit, not the target, is its bound)", target)
+		}
+	}
+}
+
+// (c) A target the buses cannot live with: the capped plan would leave buses short that
+// the limit saves, so the plan is the plain one and may pass the target.
+func TestDemandTargetGivesWayWhenTheNeedIsHigher(t *testing.T) {
+	in := tightDepot()
+	plain := PlanNormal(testConfig(), in)
+	got := PlanNormal(capConfig(200), in)
+	if totalKW(got) <= 200 {
+		t.Fatalf("total %v kW: the capped plan was used, but 4 buses of 100 kW need 400", totalKW(got))
+	}
+	if !hasNote(got, noteNoFit) || hasNote(got, noteCapped) {
+		t.Errorf("notes %q, want %q", got.Notes, noteNoFit)
+	}
+	for _, st := range got.Buses {
+		if !st.WillReachTarget {
+			t.Errorf("bus %s does not reach its target: %+v", st.BusID, st)
+		}
+	}
+	got.Notes = nil
+	if !reflect.DeepEqual(got, plain) {
+		t.Errorf("fallback plan differs from the plain one\n got  %+v\n want %+v", got, plain)
+	}
+	if v := Violations(in, PlanNormal(capConfig(200), in)); len(v) > 0 {
+		t.Errorf("violations: %v", v)
+	}
+	// A target that does fit the whole need (with the reserve) keeps the capped plan.
+	p := PlanNormal(capConfig(600), in)
+	if !hasNote(p, noteCapped) || totalKW(p) > 600+1e-9 {
+		t.Errorf("target 600: notes %q, total %v", p.Notes, totalKW(p))
+	}
+}
+
+// (d) A zero target is off: same plan, no note. Negative, NaN and infinite are an invalid
+// policy (see TestCostInvalidPolicyIsIgnoredWithANote).
+func TestDemandTargetZeroIsOff(t *testing.T) {
+	for _, in := range []Input{slackDepot(), tightDepot()} {
+		if got, want := PlanNormal(capConfig(0), in), PlanNormal(testConfig(), in); !reflect.DeepEqual(got, want) {
+			t.Errorf("target 0: plan differs\n got  %+v\n want %+v", got, want)
+		}
+	}
+	// A nil policy and a policy without a target are the same thing for this lever.
+	in := slackDepot()
+	if got, want := PlanNormal(blindConfig(), in), PlanNormal(testConfig(), in); !reflect.DeepEqual(got, want) {
+		t.Errorf("policy without a target changed the plan")
+	}
+}
+
+// A bus that even the limit cannot save (negative laxity) must not make the cap give way:
+// the full budget would not save it either. The savable buses still fit under the target.
+func TestDemandTargetIgnoresBusesTheLimitCannotSave(t *testing.T) {
+	in := slackDepot()
+	in.Buses = append(in.Buses, testBus("DOOMED", "C9", 0, 290, 30)) // 290 kWh in 30 min on 150 kW
+	in.Chargers = append(in.Chargers, testCharger("C9"))
+	p := PlanNormal(capConfig(300), in)
+	if !hasNote(p, noteCapped) || hasNote(p, noteNoFit) {
+		t.Errorf("notes %q, want %q only", p.Notes, noteCapped)
+	}
+	if totalKW(p) > 300+1e-9 {
+		t.Errorf("total %v kW above the target", totalKW(p))
+	}
+	// With a target that starves it of the leftover power it gets under the limit, the
+	// doomed bus does count: the planner's estimate is pessimistic and the bus may still
+	// finish on that power (it did in the simulator), so the limit is used.
+	p = PlanNormal(capConfig(130), in)
+	if !hasNote(p, noteNoFit) || sp(p, "C9") != 150 {
+		t.Errorf("target 130: notes %q, doomed bus at %v kW, want the limit and 150 kW", p.Notes, sp(p, "C9"))
+	}
+}
+
+// A bus the cap would delay is saved at the full limit only; one that the full limit does
+// not save either does not count. Here the second bus is short in both plans.
+func TestDemandTargetOnlyBusesTheLimitSavesForceTheFallback(t *testing.T) {
+	// Budget 100 kW at the limit; two buses of 100 kW need each; target 60.
+	// B1 (earlier deadline) is saved at 100, B2 is not (100 kW is shared in time but the
+	// admit test leaves one out). Capped, B1 is not saved at 60 kW: so the limit is used.
+	ch := []model.Charger{slowCharger("C1"), slowCharger("C2")}
+	b1 := testBus("B1", "C1", 100, 200, 60) // 100 kWh in 60 min: 100 kW
+	b2 := testBus("B2", "C2", 100, 200, 60)
+	in := costInput(100, ch, b1, b2)
+	p := PlanNormal(capConfig(60), in)
+	if !hasNote(p, noteNoFit) {
+		t.Errorf("notes %q, want %q: the limit saves B1", p.Notes, noteNoFit)
+	}
+	if !statusOf(p, "B1").WillReachTarget && !statusOf(p, "B2").WillReachTarget {
+		t.Errorf("one of the buses must be saved: %+v", p.Buses)
+	}
+}
+
+// The cap works without the schedule and with it, and composes with the deferral: the
+// target applies to the budget the deferral works with, a deferred bus stays at 0 kW.
+func TestDemandTargetComposesWithDeferral(t *testing.T) {
+	slack := testBus("S", "C1", 100, 200, 600)
+	tight := testBus("T", "C2", 50, 200, 180)
+	ch := []model.Charger{slowCharger("C1"), slowCharger("C2")}
+	in := costInput(1000, ch, slack, tight)
+
+	cfg := costConfig()
+	pol := *cfg.Cost
+	pol.DemandTargetKW = 150
+	cfg.Cost = &pol
+	p := PlanNormal(cfg, in)
+	if !isDeferred(statusOf(p, "S")) || sp(p, "C1") != 0 {
+		t.Errorf("S must still be deferred under the cap: %+v setpoint %v", statusOf(p, "S"), sp(p, "C1"))
+	}
+	if !statusOf(p, "T").WillReachTarget || totalKW(p) > 150+1e-9 || !hasNote(p, noteCapped) {
+		t.Errorf("T: %+v total %v notes %q", statusOf(p, "T"), totalKW(p), p.Notes)
+	}
+
+	// Target 100 = what T alone can absorb: the saturation guard (applied to the capped
+	// budget) keeps S on charge, and the total stays within the target.
+	pol.DemandTargetKW = 100
+	cfg.Cost = &pol
+	p = PlanNormal(cfg, in)
+	if isDeferred(statusOf(p, "S")) || totalKW(p) > 100+1e-9 || !statusOf(p, "S").WillReachTarget || !statusOf(p, "T").WillReachTarget {
+		t.Errorf("target 100: S %+v T %+v total %v", statusOf(p, "S"), statusOf(p, "T"), totalKW(p))
+	}
+
+	// Without the schedule the deferral is off and the cap still acts.
+	pol.DemandTargetKW = 150
+	pol.ScheduleKnown = false
+	cfg.Cost = &pol
+	p = PlanNormal(cfg, in)
+	if isDeferred(statusOf(p, "S")) || totalKW(p) > 150+1e-9 || !hasNote(p, noteCapped) {
+		t.Errorf("blind: S %+v total %v notes %q", statusOf(p, "S"), totalKW(p), p.Notes)
+	}
+}
+
+// The cap does not need a plug for every bus (it works with fewer chargers than buses),
+// but it gives way while a savable bus waits for a plug: slower charging keeps the plugs
+// busy longer and the waiting bus would start later. A waiting bus that nothing can save
+// does not count.
+func TestDemandTargetWithScarcePlugs(t *testing.T) {
+	in := slackDepot()
+	in.Buses = append(in.Buses, testBus("W", "", 100, 200, slackBusMins)) // waiting, savable
+	p := PlanNormal(capConfig(100), in)
+	if !hasNote(p, noteWaiting) || hasNote(p, noteCapped) || !reflect.DeepEqual(p.Setpoints, PlanNormal(testConfig(), in).Setpoints) {
+		t.Errorf("savable waiting bus: total %v notes %q, want the plain setpoints and %q", totalKW(p), p.Notes, noteWaiting)
+	}
+	in = slackDepot()
+	in.Buses = append(in.Buses, testBus("W", "", 0, 290, 30)) // waiting, 290 kWh in 30 min: lost anyway
+	p = PlanNormal(capConfig(100), in)
+	if totalKW(p) > 100+1e-9 || !hasNote(p, noteCapped) {
+		t.Errorf("doomed waiting bus: total %v notes %q", totalKW(p), p.Notes)
+	}
+	// Fewer chargers than buses, none waiting (the extra bus has left or is full): capped.
+	in = slackDepot()
+	in.Buses = append(in.Buses, testBus("F", "", 200, 200, slackBusMins)) // waiting but needs nothing
+	if p = PlanNormal(capConfig(100), in); totalKW(p) > 100+1e-9 || !hasNote(p, noteCapped) {
+		t.Errorf("full waiting bus: total %v notes %q", totalKW(p), p.Notes)
+	}
+}
+
+// A cap never makes a plan invalid or raises the draw: 300 random inputs, with and
+// without the deferral. The result is either under the target (and lists the note) or the
+// plain plan, and every viable reliable bus the plain plan saves is saved.
+func TestDemandTargetPropertyReadinessFirst(t *testing.T) {
+	rng := rand.New(rand.NewSource(20261012))
+	capped, fellBack := 0, 0
+	for i := 0; i < 300; i++ {
+		in := randomInput(rng, rng.Intn(50)) // clock 1200..1249: inside the peak
+		if i%3 != 0 {
+			for j := range in.Buses { // readings the cap can trust
+				in.Buses[j].SoCAgeMin, in.Buses[j].SoCConfidence = 0, 1
+			}
+		}
+		base := costConfig()
+		if i%2 == 1 {
+			base = testConfig()
+		}
+		plain := PlanNormal(base, in)
+		cfg := base
+		pol := CostPolicy{ClockAtZeroMin: 1200, PeakFromMin: 1080, PeakToMin: 1260, ScheduleKnown: i%2 == 0}
+		if base.Cost != nil {
+			pol = *base.Cost
+		}
+		pol.DemandTargetKW = math.Round(AvailableKW(in) * (0.2 + 0.7*rng.Float64()))
+		cfg.Cost = &pol
+		got := PlanNormal(cfg, in)
+		if v := Violations(in, got); len(v) > 0 {
+			t.Fatalf("input %d: %v", i, v)
+		}
+		if enforced := Enforce(in, got); !reflect.DeepEqual(enforced, got) {
+			t.Fatalf("input %d: Enforce changed the plan", i)
+		}
+		if v := Violations(in, New(cfg).Plan(in)); len(v) > 0 {
+			t.Fatalf("input %d: Planner plan: %v", i, v)
+		}
+		switch {
+		case hasNote(got, noteNoFit) || hasNote(got, "alvo de demanda em espera"):
+			fellBack++
+			got.Notes = nil
+			plain.Notes = nil
+			if !reflect.DeepEqual(got, plain) {
+				t.Fatalf("input %d: the fallback plan is not the plain plan\n got  %+v\n want %+v", i, got, plain)
+			}
+		case hasNote(got, noteCapped):
+			capped++
+			if totalKW(got) > pol.DemandTargetKW+1e-9 {
+				t.Fatalf("input %d: total %v above the target %v", i, totalKW(got), pol.DemandTargetKW)
+			}
+		default:
+			// Nothing to cap (no charging at all), or target at or above the budget.
+			if !reflect.DeepEqual(got, plain) && totalKW(got) > 1e-9 {
+				t.Fatalf("input %d: no cap note but the plan differs from the plain one", i)
+			}
+		}
+		// Readiness first: no viable reliable bus that the plain plan saves is lost.
+		for _, ps := range plain.Buses {
+			if !ps.Assessed || !ps.WillReachTarget || isDeferred(ps) {
+				continue
+			}
+			if gs := statusOf(got, ps.BusID); !gs.WillReachTarget {
+				t.Fatalf("input %d: bus %s saved by the plain plan but not with a target: %+v", i, ps.BusID, gs)
+			}
+		}
+	}
+	if capped < 30 || fellBack < 30 {
+		t.Errorf("capped %d, fell back %d of 300: the property would prove little", capped, fellBack)
+	}
+}
+
+// (f) The three layers of Planner keep working with the cap on: the normal layer, the
+// last valid plan (capped, replayed) and the safe profile.
+func TestDemandTargetThreeLayers(t *testing.T) {
+	cfg := capConfig(120)
+	calls := 0
+	pl := New(cfg).WithNormal(func(c Config, in Input) Plan {
+		calls++
+		if calls > 1 {
+			panic("normal layer down")
+		}
+		return PlanNormal(c, in)
+	})
+	in := slackDepot()
+	first := pl.Plan(in)
+	if first.Layer != LayerNormal || totalKW(first) > 120+1e-9 || totalKW(first) == 0 || !hasNote(first, noteCapped) {
+		t.Fatalf("first plan: layer %v total %v notes %q", first.Layer, totalKW(first), first.Notes)
+	}
+	in.Now = 1
+	second := pl.Plan(in)
+	if second.Layer != LayerLastValid || totalKW(second) > 120+1e-9 || totalKW(second) == 0 {
+		t.Errorf("second plan: layer %v total %v", second.Layer, totalKW(second))
+	}
+	if v := Violations(in, second); len(v) > 0 {
+		t.Errorf("violations: %v", v)
+	}
+	// Past the TTL the safe profile takes over and respects the limit.
+	in.Now = cfg.LastPlanTTLMin + 2
+	third := pl.Plan(in)
+	if third.Layer != LayerSafe {
+		t.Errorf("third plan layer %v, want safe", third.Layer)
+	}
+	if v := Violations(in, third); len(v) > 0 {
+		t.Errorf("violations: %v", v)
+	}
+	// Mostly unreliable readings: the safe profile again, with the policy on.
+	bad := slackDepot()
+	for i := range bad.Buses {
+		bad.Buses[i].SoCConfidence = 0.1
+	}
+	if p := New(cfg).Plan(bad); p.Layer != LayerSafe {
+		t.Errorf("unreliable readings: layer %v, want safe", p.Layer)
+	}
+	// A planner with the cap and a healthy normal layer stays in the normal layer.
+	if p := New(cfg).Plan(slackDepot()); p.Layer != LayerNormal {
+		t.Errorf("layer %v, want normal", p.Layer)
+	}
+}
+
+// With the schedule known the cap sees the buses still to arrive: a target that carries
+// the buses present but not the announced ones is dropped now, not when they arrive.
+func TestDemandTargetCountsAnnouncedBuses(t *testing.T) {
+	cfg := capConfig(120)
+	pol := *cfg.Cost
+	pol.ScheduleKnown = true
+	cfg.Cost = &pol
+	in := slackDepot() // 40 kW of need under a 120 kW target (102 with the reserve)
+	if p := PlanNormal(cfg, in); !hasNote(p, noteCapped) || totalKW(p) > 120+1e-9 {
+		t.Fatalf("nothing announced: notes %q total %v", p.Notes, totalKW(p))
+	}
+	// Two buses announced for minute 60 that need 100 kWh each by minute 120: 200 kWh in
+	// the hour they are on charge is 200 kW, more than the target gives.
+	for _, id := range []string{"A1", "A2"} {
+		b := testBus(id, "", 100, 200, 120)
+		b.ArrivalMin = 60
+		in.Buses = append(in.Buses, b)
+	}
+	in.Chargers = append(in.Chargers, testCharger("C5"), testCharger("C6"))
+	if p := PlanNormal(cfg, in); !hasNote(p, noteNoFit) || hasNote(p, noteCapped) {
+		t.Errorf("announced buses do not fit under the target: notes %q", p.Notes)
+	}
+	// Without the schedule they are invisible, and the free chargers keep the cap waiting.
+	pol.ScheduleKnown = false
+	cfg.Cost = &pol
+	if p := PlanNormal(cfg, in); !hasNote(p, noteUnknown) {
+		t.Errorf("no schedule and free chargers: notes %q, want %q", p.Notes, noteUnknown)
+	}
+}
+
+// With the schedule known only an urgent waiting bus makes the cap give way; without it
+// any savable waiting bus does (see TestDemandTargetWithScarcePlugs).
+func TestDemandTargetWaitingBusUrgency(t *testing.T) {
+	cfg := capConfig(120)
+	pol := *cfg.Cost
+	pol.ScheduleKnown = true
+	cfg.Cost = &pol
+	in := slackDepot()
+	in.Buses = append(in.Buses, testBus("W", "", 100, 200, slackBusMins)) // 100 kWh, 600 min: laxity 540 on 150 kW
+	if p := PlanNormal(cfg, in); !hasNote(p, noteCapped) || totalKW(p) > 120+1e-9 {
+		t.Errorf("relaxed waiting bus: notes %q total %v, want the cap", p.Notes, totalKW(p))
+	}
+	// 100 kWh at 150 kW takes 40 minutes: departing at minute 99 leaves 59 of laxity.
+	in.Buses[len(in.Buses)-1] = testBus("W", "", 100, 200, 99)
+	if p := PlanNormal(cfg, in); !hasNote(p, noteWaiting) {
+		t.Errorf("urgent waiting bus: notes %q, want %q", p.Notes, noteWaiting)
+	}
+}
+
+// A bus with an unreliable SoC reading makes the cap give way: its need is a guess.
+func TestDemandTargetGivesWayOnUnreliableReadings(t *testing.T) {
+	in := slackDepot()
+	if p := PlanNormal(capConfig(120), in); !hasNote(p, noteCapped) {
+		t.Fatalf("reliable readings: notes %q", p.Notes)
+	}
+	in.Buses[0].SoCAgeMin = 100 // stale
+	p := PlanNormal(capConfig(120), in)
+	if !hasNote(p, "alvo de demanda em espera: leitura") || totalKW(p) <= 120 {
+		t.Errorf("stale reading: notes %q total %v", p.Notes, totalKW(p))
+	}
+}

@@ -325,15 +325,23 @@ func PlanNormal(cfg Config, in Input) Plan {
 			cands = append(cands, &cd)
 		}
 	}
-	budget := AvailableKW(in)
+	limit := AvailableKW(in)
+	budget := limit
 	policy, note := cfg.costPolicy()
 	if note != "" {
 		plan.Notes = append(plan.Notes, note)
 	}
 	if policy != nil {
+		var capNote string
+		budget, capNote = capDemand(cfg, *policy, in, budget, cands, idles)
+		if capNote != "" {
+			plan.Notes = append(plan.Notes, capNote)
+		}
 		deferPastPeak(cfg, *policy, in, budget, cands, idles)
 	}
-	plan.Swaps = recommendSwaps(cfg, in, budget, cands, idles) // works on copies: before allocate
+	// Swaps are judged on the full budget even when the demand cap is on: a waiting bus
+	// is moved to a plug if the limit could finish it, as without the cap.
+	plan.Swaps = recommendSwaps(cfg, in, limit, cands, idles) // works on copies: before allocate
 	allocate(cfg, budget, cands)
 	for _, cd := range cands {
 		plan.Setpoints = append(plan.Setpoints, Setpoint{ChargerID: cd.charger.ID, KW: cd.allocKW})

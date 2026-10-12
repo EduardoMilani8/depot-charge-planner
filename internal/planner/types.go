@@ -61,13 +61,16 @@ type CostPolicy struct {
 	// peak ends. 0 means the default (45); a negative, NaN or infinite value makes the
 	// whole policy invalid (it is then ignored, with a note in Plan.Notes).
 	DeferMarginMin float64
-	// DemandTargetKW is reserved for demand limiting (a later feature); it is validated
-	// but not used yet. 0 = off; negative, NaN or infinite makes the policy invalid.
+	// DemandTargetKW caps the grid demand: the normal layer plans with the budget
+	// min(limit, DemandTargetKW) unless that would cost readiness (see the demand cap in
+	// cost.go). The limit stays the Enforce limit. 0 = off; negative, NaN or infinite
+	// makes the policy invalid.
 	DemandTargetKW float64
 	// ScheduleKnown declares that Input.Buses lists every bus expected tonight, the ones
 	// still to arrive with ArrivalMin > Now. Deferral needs it (and a plug for every bus):
-	// with false, the default, the policy does nothing, because the planner cannot tell
-	// whether the buses that have not arrived yet will find a free plug.
+	// with false, the default, deferral does nothing, because the planner cannot tell
+	// whether the buses that have not arrived yet will find a free plug. The demand cap
+	// works without it but is safer with it (it counts the announced buses).
 	ScheduleKnown bool
 }
 
