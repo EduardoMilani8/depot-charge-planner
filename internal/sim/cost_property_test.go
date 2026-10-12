@@ -19,12 +19,15 @@ import (
 // inside the peak (scenario minutes 0..arrivalTo, the peak being 0..180 = 18:00-21:00
 // at the default energy prices) with cost policy {DeferMarginMin: 45}.
 //
-// Strict property, checked on every seed of every run in the profiles none and mild:
+// Strict property, checked on every seed of every run in the profiles none and mild
+// (the energy cost only in none, see below):
 //   - no plan violation;
 //   - ready% not lower than without the policy;
-//   - energy cost not above the cost without it by more than costTolerance. The
-//     tolerance is not zero: a deferral that ends inside the peak can leave a little more
-//     energy in it than the plain plan (tapering buses; up to about 0.14% was measured).
+//   - in the profile none only: energy cost not above the cost without it by more than
+//     costTolerance (runCostCell checks the cost for ProfileNone; with mild data the cost
+//     is measured and reported but not asserted here; the wide sweep asserts it for both). The tolerance is not zero: a deferral
+//     that ends inside the peak can leave a little more energy in it than the plain plan
+//     (tapering buses; up to about 0.14% was measured).
 //
 // In the profiles severe and random the strict per-seed property does NOT hold (SoC noise,
 // consumption faults, failures after the peak hit buses that charged late), so those cells
@@ -190,6 +193,11 @@ func checkFaultCell(t *testing.T, c costCell) {
 // costGrid runs every geometry for the given profiles, announced and (when blindToo)
 // blind as well.
 func costGrid(t *testing.T, geos []costGeo, profiles []FaultProfile, blindToo bool) {
+	costGridCells(t, geos, profiles, blindToo, nil)
+}
+
+// costGridCells is costGrid that also hands every cell, once it has run, to onCell.
+func costGridCells(t *testing.T, geos []costGeo, profiles []FaultProfile, blindToo bool, onCell func(t *testing.T, g costGeo, profile FaultProfile, c costCell)) {
 	seeds := costSeeds()
 	report := os.Getenv("COST_REPORT") == "1"
 	strictFaults := os.Getenv("COST_STRICT_FAULTS") == "1"
@@ -214,6 +222,9 @@ func costGrid(t *testing.T, geos []costGeo, profiles []FaultProfile, blindToo bo
 					if faulty && !strictFaults {
 						checkFaultCell(t, c)
 					}
+					if onCell != nil {
+						onCell(t, g, profile, c)
+					}
 				})
 			}
 		}
@@ -222,7 +233,18 @@ func costGrid(t *testing.T, geos []costGeo, profiles []FaultProfile, blindToo bo
 
 // Strict property on the depots with a plug for every bus (schedule announced).
 func TestCostAwareNotLessReadyAndNotDearerWithPlugsForAllBuses(t *testing.T) {
-	costGrid(t, pluggedGeometries, []FaultProfile{ProfileNone, ProfileMild}, false)
+	costGridCells(t, pluggedGeometries, []FaultProfile{ProfileNone, ProfileMild}, false, func(t *testing.T, g costGeo, profile FaultProfile, c costCell) {
+		// An inert policy would pass the strict property trivially, so the cells where
+		// it is known to act must show it: 30 buses/30 chargers/150 kW at 1500 and 2500 kW
+		// saved 53.8% and 60.2% of the energy cost over seeds 1..8 (none), 50/50 at 2000 kW
+		// 39.2%; at least a quarter of the cost must go.
+		if profile != ProfileNone || g.chargerKW != 150 || g.buses < 30 || g.limit < 1500 {
+			return // the others save little (60 buses of 50 kW at 1500 kW: 6.4%) or nothing (power-bound)
+		}
+		if c.withCost > 0.75*c.withoutCost {
+			t.Errorf("the policy saved only %.1f%% of the energy cost, want at least 25%%: it looks inert", 100*(1-c.withCost/c.withoutCost))
+		}
+	})
 }
 
 // Strict property where plugs are scarce (the policy must do nothing, so ready% and

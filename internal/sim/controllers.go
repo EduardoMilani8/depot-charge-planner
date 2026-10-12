@@ -77,10 +77,16 @@ func (safeController) Plan(in planner.Input) planner.Plan {
 
 // ScenarioConfig returns the planner configuration to run on a scenario. Without a
 // cost policy (cfg.Cost == nil) it is cfg itself. With one it is a copy whose policy
-// takes the clock from the scenario (StartClockMin) and the peak window from its tariff;
-// the caller only supplies DeferMarginMin and DemandTargetKW, and its policy is never
-// modified. Write this configuration, not the caller's, in a decision log header so the
-// log replays with the same policy.
+// takes the clock from the scenario (StartClockMin), the peak window from its tariff and
+// ScheduleKnown from Scenario.AnnounceArrivals; the caller only supplies DeferMarginMin
+// and DemandTargetKW, and its policy is never modified. Write this configuration, not
+// the caller's, in a decision log header so the log replays with the same policy.
+//
+// ScheduleKnown follows the scenario, so NewPlannerController(cfg, sc) on a scenario that
+// does not announce its arrivals turns deferral off (the policy then only does what needs
+// no schedule, i.e. the demand cap). ForController sets AnnounceArrivals for a planner
+// with a cost policy; a caller that builds the controller itself must do the same to get
+// deferral.
 func ScenarioConfig(cfg planner.Config, sc Scenario) planner.Config {
 	if cfg.Cost != nil {
 		pol := *cfg.Cost
