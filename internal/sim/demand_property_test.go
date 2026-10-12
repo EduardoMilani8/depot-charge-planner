@@ -32,7 +32,8 @@ import (
 // without it (NewPlannerController on an unannounced scenario) on the same geometries.
 // Depots with many more buses than chargers and no schedule are held to pinned bounds
 // (capPoorBounds), as are the profiles severe and random (capFaultBounds). COST_CAP_SWEEP=1
-// runs the wide random sweep and DEMAND_REPORT=1 prints the cells.
+// runs the wide random sweep (measured once, not in CI) and DEMAND_REPORT=1 prints the
+// cells.
 const demandTie = 0.005
 
 // capGeo is a depot, a night and a demand target.
@@ -164,6 +165,11 @@ func runCapCellCfg(t *testing.T, base planner.Config, g capGeo, profile FaultPro
 // (limit 2000, targets 500 and 800) is part of it. The second group has a plug for every
 // bus, where the cap composes with the deferral.
 func capGeometries() []capGeo {
+	return append(capDefaultDepotGeometries(), capPlugRichGeometries()...)
+}
+
+// capDefaultDepotGeometries are the first group above: 50 buses on 25 chargers.
+func capDefaultDepotGeometries() []capGeo {
 	var geos []capGeo
 	for _, limit := range []float64{600, 1200, 2000} {
 		for _, f := range []float64{0.5, 0.8} {
@@ -172,20 +178,41 @@ func capGeometries() []capGeo {
 			}
 		}
 	}
-	geos = append(geos, capGeo{costGeo{50, 25, 150, 2000, 0}, 500}, capGeo{costGeo{50, 25, 150, 2000, 0}, 800})
+	return append(geos, capGeo{costGeo{50, 25, 150, 2000, 0}, 500}, capGeo{costGeo{50, 25, 150, 2000, 0}, 800})
+}
+
+// capPlugRichGeometries are the second group: a plug for every bus.
+func capPlugRichGeometries() []capGeo {
+	var geos []capGeo
 	for _, f := range []float64{0.5, 0.8} {
 		geos = append(geos, capGeo{costGeo{30, 30, 150, 1500, 180}, 1500 * f}, capGeo{costGeo{50, 50, 150, 2000, 180}, 2000 * f})
 	}
 	return geos
 }
 
+// capMustAct are the cells where the cap is known to act (minimum share of the demand it
+// must remove over the seeds, profile none, announced): the non-vacuity assertion of
+// TestDemandCapStrictWithTheSchedule. Measured over seeds 1..8: 20% and 50%.
+var capMustAct = map[string]float64{
+	"50/25/2000/180/1600": 0.15,
+	"30/30/1500/180/750":  0.35,
+}
+
+func (g capGeo) key() string {
+	return fmt.Sprintf("%d/%d/%.0f/%d/%.0f", g.buses, g.chargers, g.limit, g.arrivalTo, g.target)
+}
+
+// thinCap keeps every third geometry under the race detector, and always the ones in
+// capMustAct, so the non-vacuity assertions run in race mode too.
 func thinCap(geos []capGeo) []capGeo {
 	if !raceEnabled {
 		return geos
 	}
 	var out []capGeo
-	for i := 0; i < len(geos); i += 3 {
-		out = append(out, geos[i])
+	for i, g := range geos {
+		if i%3 == 0 || capMustAct[g.key()] > 0 {
+			out = append(out, g)
+		}
 	}
 	return out
 }
@@ -243,9 +270,7 @@ func TestDemandCapStrictWithTheSchedule(t *testing.T) {
 		if profile != ProfileNone {
 			return
 		}
-		want := map[string]float64{
-			"50/25/2000/180/1600": 0.15, "30/30/1500/180/750": 0.35,
-		}[fmt.Sprintf("%d/%d/%.0f/%d/%.0f", g.buses, g.chargers, g.limit, g.arrivalTo, g.target)]
+		want := capMustAct[g.key()]
 		if want > 0 && c.withDemand > (1-want)*c.withoutDemand {
 			t.Errorf("demand %.0f kW with the cap, %.0f without: want at least %.0f%% less", c.withDemand/float64(c.seeds), c.withoutDemand/float64(c.seeds), 100*want)
 		}
@@ -256,9 +281,9 @@ func TestDemandCapStrictWithTheSchedule(t *testing.T) {
 // arrived): the cap waits until every plug is taken and gives way while a savable bus
 // waits for one.
 func TestDemandCapStrictWithoutTheSchedule(t *testing.T) {
-	// The first 14 geometries are the 50-bus/25-charger depot; with a plug for every bus
-	// the cap simply waits for the last bus and is checked by the announced test.
-	capGrid(t, capGeometries()[:14], []FaultProfile{ProfileNone, ProfileMild}, false, true, nil)
+	// With a plug for every bus and no schedule the cap simply waits for the last bus; the
+	// plug-rich depots are checked by the announced test.
+	capGrid(t, capDefaultDepotGeometries(), []FaultProfile{ProfileNone, ProfileMild}, false, true, nil)
 }
 
 // capPoorBounds pin the measured exposure without the schedule in depots with many more
@@ -287,9 +312,13 @@ func TestDemandCapWithTheScheduleInPlugPoorDepots(t *testing.T) {
 // consumption faults, sensors freezing, chargers failing, planner panics and garbage),
 // over seeds 1..8 on capFaultGeometries, announced or not: 28 points lost in all (50
 // buses/25 chargers/2000 kW, random), 22 on a single seed (the same), 3 seeds worse. One
-// seed of the 5-bus depot loses 20 (one bus of five). The strict per-seed property does
-// not hold there, as for the deferral; the cap gives way while any bus on charge has an
-// unreliable SoC reading, which cut the losses by half but cannot see a sensor that
+// seed of the 5-bus depot loses 20 (one bus of five). The bounds are one set for all
+// cells, so they are loose for a big depot (22 points are eleven of 50 buses) and tight
+// only for the small one: 22 leaves room for exactly that one lost bus of five, and a
+// second lost bus in the 5-bus depot would be 40 points on the seed and trip them, while
+// in the 50-bus depots a few extra lost buses go unnoticed. The strict per-seed property
+// does not hold there, as for the deferral; the cap gives way while any bus on charge has
+// an unreliable SoC reading, which cut the losses by half but cannot see a sensor that
 // starts to lie later.
 var capFaultBounds = struct {
 	sumLoss, worstLoss float64
