@@ -101,18 +101,31 @@ import (
 //     would take away).
 //
 // What was measured (internal/sim/demand_property_test.go; the baseline is the same cost
-// policy without a target): with the schedule announced, ready% never lower and the demand
-// never higher on any seed of the 18 geometries tested (the project's 50 buses/25
-// chargers at 600, 1200 and 2000 kW with targets at 50% and 80% of the limit, and depots
-// with a plug for every bus), profiles none and mild, and in a wide random sweep (240
-// cells of 5..80 buses, 3..80 chargers). The demand falls only where the target is
-// feasible (50 buses/25 chargers at 2000 kW with the target at 1600: -20%); a target the
-// night's energy cannot fit changes nothing. Without the schedule the cap is weaker (it
-// waits for every plug to be taken) and in depots with several buses per charger it can
-// still lose a bus: pinned bounds, at most 4 points on a seed and 6 of 8 seeds in a cell.
-// Under severe or random faults the property does not hold per seed either (bounds in
-// the test). The cap also changes the energy bill: with the deferral on and a target below
-// the load the deferral concentrates, it gives up part of the energy saving.
+// policy without a target). Asserted in the tests, with the schedule announced: on every
+// seed of the 18 geometries tested (the project's 50 buses/25 chargers at 600, 1200 and
+// 2000 kW with targets at 50% and 80% of the limit, and depots with a plug for every
+// bus), profiles none and mild, ready% never lower and the demand never higher. Measured
+// once with the env-gated TestDemandCapSweep (COST_CAP_SWEEP=1, not in CI), on two
+// random samples (240 cells of 8 seeds, and 200 cells of 6 seeds from another random
+// sample): with the schedule ready% was never lower, and the demand was higher than the
+// baseline on 5 of 3,120 seeds (up to 2% of the limit). The demand falls only where the
+// target is feasible (50 buses/25 chargers at 2000 kW with the target at 1600: -20%); a
+// target the night's energy cannot fit changes nothing. Without the schedule the cap is
+// weaker (it waits for every plug to be taken) and in depots with several buses per
+// charger it can still lose a bus: pinned bounds, at most 4 points on a seed and 6 of 8
+// seeds in a cell. Under severe or random faults the property does not hold per seed
+// either (bounds in the test).
+//
+// The cap is not a bill saver by itself. Lowering the demand can RAISE the monthly bill
+// when it pushes energy into the peak: with the deferral on, a target below the load the
+// deferral concentrates after the peak makes buses charge during the peak. Measured over
+// 8 nights, 30 buses/30 chargers at 1500 kW, target 750: energy 5816 -> 9533 R$/night and
+// the estimated month 204,472 -> 330,975 R$ (+62%) against the deferral alone (still below
+// the plain planner's 467,435); 50 buses/50 chargers at 2000 kW, target 1600: demand -20%
+// but the month 415,016 -> 541,330 R$ (+30%); demand prices 40/20 R$/kW, illustrative.
+// Set the target with the bill in view. And a lower peak brings no saving when a demand
+// contract floor already exceeds the measured demand (billing charges the contracted
+// demand up to 1.05 times it).
 //
 // Safety does not depend on this file: a deferred plan only lowers power, and the
 // last-valid layer, the safe layer and Enforce still check every plan against the limit.

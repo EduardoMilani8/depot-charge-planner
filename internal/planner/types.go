@@ -65,6 +65,17 @@ type CostPolicy struct {
 	// min(limit, DemandTargetKW) unless that would cost readiness (see the demand cap in
 	// cost.go). The limit stays the Enforce limit. 0 = off; negative, NaN or infinite
 	// makes the policy invalid.
+	//
+	// Set the target with the monthly bill in view: lowering the demand is not free. A cap
+	// can RAISE the bill when it pushes energy into the peak (with the deferral on, a
+	// target below the load the deferral concentrates after the peak makes buses charge
+	// during it): measured over 8 nights with 30 buses/30 chargers at 1500 kW and target
+	// 750, the energy went from 5816 to 9533 R$/night and the estimated month from 204,472
+	// to 330,975 R$ (+62%) against the deferral alone; 50 buses/50 chargers at 2000 kW with
+	// target 1600 cut the demand 20% and raised the month from 415,016 to 541,330 R$ (+30%)
+	// (illustrative demand prices of 40/20 R$/kW). And a lower peak saves nothing when a
+	// demand contract already floors the bill above the measured demand (the bill charges
+	// the contracted demand up to 105% of it).
 	DemandTargetKW float64
 	// ScheduleKnown declares that Input.Buses lists every bus expected tonight, the ones
 	// still to arrive with ArrivalMin > Now. Deferral needs it (and a plug for every bus):
