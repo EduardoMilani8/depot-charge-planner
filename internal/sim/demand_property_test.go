@@ -354,7 +354,10 @@ func TestDemandCapReport(t *testing.T) {
 	}
 }
 
-// TestDemandCapSweep is the wide random sweep for the cap; COST_CAP_SWEEP=1.
+// TestDemandCapSweep is the wide random sweep for the cap (random depots of 5..80 buses and
+// 3..80 chargers, targets at 30%-90% of the limit, none and mild, announced or not);
+// COST_CAP_SWEEP=1, with COST_SWEEP_GEOS, COST_SWEEP_SEEDS and COST_SWEEP_RNG to change the
+// sample. Prints the totals and the cells with a worse seed or a higher demand.
 func TestDemandCapSweep(t *testing.T) {
 	if os.Getenv("COST_CAP_SWEEP") != "1" {
 		t.Skip("set COST_CAP_SWEEP=1 to run the wide random sweep of the demand cap")
@@ -362,7 +365,9 @@ func TestDemandCapSweep(t *testing.T) {
 	nGeo, nSeeds := 120, 8
 	fmt.Sscan(os.Getenv("COST_SWEEP_GEOS"), &nGeo)
 	fmt.Sscan(os.Getenv("COST_SWEEP_SEEDS"), &nSeeds)
-	rng := rand.New(rand.NewSource(20261012))
+	rngSeed := int64(20261012)
+	fmt.Sscan(os.Getenv("COST_SWEEP_RNG"), &rngSeed)
+	rng := rand.New(rand.NewSource(rngSeed))
 	type job struct {
 		g       capGeo
 		ann     bool
