@@ -116,6 +116,8 @@ type runResponse struct {
 	Notes      []string      `json:"notes"`
 	Decisions  []decisionDTO `json:"decisions"`
 	Outcomes   []outcomeDTO  `json:"outcomes"`
+	// Warnings says what valid parameters do less than they seem to (see Params.warnings).
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 func sortChargerDTOs(cs []chargerDTO) {

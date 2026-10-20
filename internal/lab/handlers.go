@@ -7,8 +7,12 @@ import (
 	"net/http"
 	"runtime"
 
+	"github.com/EduardoMilani8/depot-charge-planner/internal/billing"
 	"github.com/EduardoMilani8/depot-charge-planner/internal/sim"
 )
+
+// defaultDeferMarginMin is the planner's own default for Params.DeferMarginMin = 0.
+const defaultDeferMarginMin = 45
 
 type presetDTO struct {
 	ID          string `json:"id"`
@@ -26,6 +30,16 @@ type limitsDTO struct {
 	LabMaxWork        int     `json:"lab_max_work"`
 	LabMaxRunBuses    int     `json:"lab_max_run_buses"`
 	LabMaxRunChargers int     `json:"lab_max_run_chargers"`
+	// Energy cost. MaxLimitKW also bounds the demand target and the contracted demand;
+	// MaxDemandPrice bounds both demand prices (R$/kW). Arrival minutes count from the
+	// scenario start (18:00); 0 for the margin or the nights means the default.
+	MaxArrivalMin         int     `json:"max_arrival_min"`
+	MaxDemandPrice        float64 `json:"max_demand_price"`
+	MaxNightsPerMonth     int     `json:"max_nights_per_month"`
+	MaxDeferMarginMin     int     `json:"max_defer_margin_min"`
+	DefaultNightsPerMonth int     `json:"default_nights_per_month"`
+	DefaultDeferMarginMin int     `json:"default_defer_margin_min"`
+	DemandVerdeNote       string  `json:"demand_verde_note"`
 }
 
 type defaultsResponse struct {
@@ -38,15 +52,26 @@ type defaultsResponse struct {
 
 func presets() []presetDTO {
 	d := defaultParams()
-	tight, severe, aged := d, d, d
+	tight, severe, aged, peak, bill := d, d, d, d, d
 	tight.LimitKW, tight.Profile = 600, "mild"
 	severe.Profile = "severe"
 	aged.LimitKW, aged.Profile, aged.ReadingAgeMin = 1200, "severe", 1
+	// Every bus has a plug and arrives while the peak lasts (minutes 0..180 = 18:00-21:00):
+	// the case the deferral is for.
+	peak.Chargers = peak.Buses
+	peak.ArrivalFromMin, peak.ArrivalToMin, peak.CostAware = 0, 180, true
+	// The default depot (fewer plugs than buses, so no deferral) with a demand target and
+	// illustrative demand prices: the cap lowers the demand; whether it lowers the bill
+	// depends on the prices.
+	bill.CostAware, bill.DemandTargetKW = true, 1600
+	bill.DemandPeakPrice, bill.DemandOffPeakPrice = 40, 20
 	return []presetDTO{
 		{"default", "Padrão", "50 ônibus, 25 carregadores, 2000 kW, sem falhas.", d},
 		{"tight", "Rede apertada (600 kW)", "Pouca potência para muitos ônibus, com falhas leves.", tight},
 		{"severe", "Falhas severas", "Carregadores caindo, leituras ruins e queda de rede.", severe},
 		{"aged", "Leituras atrasadas", "Gateway que informa leituras com 1 minuto de idade, 1200 kW e falhas severas.", aged},
+		{"peak-arrivals", "Chegadas na ponta (custo)", "50 ônibus, 50 carregadores, 2000 kW; os ônibus chegam entre 18:00 e 21:00 (a ponta) e o planejador consciente de custo adia a carga para depois dela quando há folga.", peak},
+		{"demand-bill", "Fatura com demanda (ilustrativa)", "Preços de demanda ILUSTRATIVOS (40 e 20 R$/kW, modo Azul) e meta de demanda de 1600 kW no planejador consciente de custo. A meta reduz o pico, mas pode aumentar a fatura mensal estimada: ajuste olhando o mês estimado.", bill},
 	}
 }
 
@@ -57,6 +82,9 @@ func (s *Server) defaults(r *http.Request) (any, *apiError) {
 			MaxBuses: sim.MaxBuses, MaxChargers: sim.MaxChargers, MaxSeeds: sim.MaxSeeds,
 			MaxLimitKW: sim.MaxLimitKW, MaxReadingAgeMin: sim.MaxReadingAgeMin,
 			LabMaxWork: labMaxWork, LabMaxRunBuses: labMaxRunBuses, LabMaxRunChargers: labMaxRunChargers,
+			MaxArrivalMin: sim.MaxArrivalMin, MaxDemandPrice: sim.MaxDemandPrice, MaxNightsPerMonth: sim.MaxNightsPerMonth,
+			MaxDeferMarginMin: sim.MaxDeferMarginMin, DefaultNightsPerMonth: billing.DefaultNightsPerMonth,
+			DefaultDeferMarginMin: defaultDeferMarginMin, DemandVerdeNote: verdeNote,
 		},
 		Presets:     presets(),
 		Controllers: sim.ControllerNames,
@@ -87,6 +115,8 @@ type compareResponse struct {
 	Params      Params          `json:"params"`
 	Controllers []controllerDTO `json:"controllers"`
 	P99Note     string          `json:"p99_note"`
+	// Warnings says what valid parameters do less than they seem to (see Params.warnings).
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 func (s *Server) compare(r *http.Request) (any, *apiError) {
@@ -114,8 +144,9 @@ func (s *Server) compare(r *http.Request) (any, *apiError) {
 		return nil, ctxError(err, "Tempo esgotado: reduza as sementes ou o número de ônibus.")
 	}
 	out := compareResponse{
-		Params:  p,
-		P99Note: "O p99 do planejador é tempo real medido com várias simulações em paralelo: use como ordem de grandeza (para um valor preciso use go run ./cmd/simrun).",
+		Params:   p,
+		Warnings: p.warnings(),
+		P99Note:  "O p99 do planejador é tempo real medido com várias simulações em paralelo: use como ordem de grandeza (para um valor preciso use go run ./cmd/simrun).",
 	}
 	for _, c := range res {
 		cd := controllerDTO{Name: c.Name, Aggregate: c.Aggregate}
@@ -195,5 +226,7 @@ func (s *Server) run(r *http.Request) (any, *apiError) {
 	// plan_p99_micros is wall-clock time and is zeroed on purpose, so the same request
 	// always gives the same bytes.
 	m.PlanP99Micros = 0
-	return buildRun(p, req.Seed, req.Controller, sc, m, tr), nil
+	out := buildRun(p, req.Seed, req.Controller, sc, m, tr)
+	out.Warnings = p.warnings()
+	return out, nil
 }

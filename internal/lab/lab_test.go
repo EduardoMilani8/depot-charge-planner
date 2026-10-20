@@ -335,8 +335,8 @@ func TestRunSizeForEveryPreset(t *testing.T) {
 		} `json:"presets"`
 	}
 	decode(t, do(s, newReq("GET", "/api/defaults", "")), &d)
-	if len(d.Presets) != 4 {
-		t.Fatalf("%d presets, want 4 (default, tight, severe, aged)", len(d.Presets))
+	if len(d.Presets) != 6 {
+		t.Fatalf("%d presets, want 6 (default, tight, severe, aged, peak-arrivals, demand-bill)", len(d.Presets))
 	}
 	seeds := 5
 	if testing.Short() {
