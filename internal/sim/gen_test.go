@@ -106,3 +106,14 @@ func TestRandomProfileCombinesEveryFaultKind(t *testing.T) {
 		t.Errorf("random profile should vary the number of faults across seeds: %v", distinct)
 	}
 }
+
+func TestGenerateCarriesTheNightsPerMonth(t *testing.T) {
+	p := DefaultGenParams()
+	if got := Generate(p, 1).Tariff.Nights(); got != 30 {
+		t.Errorf("default nights %d, want 30", got)
+	}
+	p.Demand.NightsPerMonth = 22
+	if got := Generate(p, 1).Tariff.Nights(); got != 22 {
+		t.Errorf("nights %d, want 22", got)
+	}
+}

@@ -37,6 +37,22 @@ func TestValidateParams(t *testing.T) {
 		{"min need NaN", func(p *GenParams, c *planner.Config, s *int) { c.SwapBackMinNeedKWh = math.NaN() }, "swap-back-min-need"},
 		{"min need negative", func(p *GenParams, c *planner.Config, s *int) { c.SwapBackMinNeedKWh = -1 }, "swap-back-min-need"},
 		{"min need Inf", func(p *GenParams, c *planner.Config, s *int) { c.SwapBackMinNeedKWh = math.Inf(1) }, "swap-back-min-need"},
+		{"nights negative", func(p *GenParams, c *planner.Config, s *int) { p.Demand.NightsPerMonth = -1 }, "nights-per-month"},
+		{"nights too many", func(p *GenParams, c *planner.Config, s *int) { p.Demand.NightsPerMonth = MaxNightsPerMonth + 1 }, "nights-per-month"},
+		{"defer margin negative", func(p *GenParams, c *planner.Config, s *int) { c.Cost = &planner.CostPolicy{DeferMarginMin: -1} }, "defer-margin"},
+		{"defer margin NaN", func(p *GenParams, c *planner.Config, s *int) {
+			c.Cost = &planner.CostPolicy{DeferMarginMin: math.NaN()}
+		}, "defer-margin"},
+		{"defer margin huge", func(p *GenParams, c *planner.Config, s *int) {
+			c.Cost = &planner.CostPolicy{DeferMarginMin: MaxDeferMarginMin + 1}
+		}, "defer-margin"},
+		{"demand target negative", func(p *GenParams, c *planner.Config, s *int) { c.Cost = &planner.CostPolicy{DemandTargetKW: -1} }, "demand-target"},
+		{"demand target Inf", func(p *GenParams, c *planner.Config, s *int) {
+			c.Cost = &planner.CostPolicy{DemandTargetKW: math.Inf(1)}
+		}, "demand-target"},
+		{"demand target huge", func(p *GenParams, c *planner.Config, s *int) {
+			c.Cost = &planner.CostPolicy{DemandTargetKW: MaxLimitKW * 10}
+		}, "demand-target"},
 	}
 	for _, tc := range cases {
 		p, c, seeds := ok, cfg, 20
@@ -49,6 +65,28 @@ func TestValidateParams(t *testing.T) {
 		}
 		if fe.Field != tc.field {
 			t.Errorf("%s: field %q, want %q", tc.name, fe.Field, tc.field)
+		}
+	}
+}
+
+// The edges of the new ranges are valid, and a policy with the margin 0 (the planner's
+// default of 45) and a target above the site limit (inert) are allowed.
+func TestValidateParamsCostEdges(t *testing.T) {
+	p := DefaultGenParams()
+	for _, nights := range []int{0, 1, MaxNightsPerMonth} {
+		p.Demand.NightsPerMonth = nights
+		if err := ValidateParams(p, planner.DefaultConfig(), 1); err != nil {
+			t.Errorf("nights %d: %v", nights, err)
+		}
+	}
+	for _, pol := range []planner.CostPolicy{
+		{}, {DeferMarginMin: MaxDeferMarginMin}, {DemandTargetKW: p.LimitKW * 2}, {DemandTargetKW: MaxLimitKW},
+	} {
+		cfg := planner.DefaultConfig()
+		pol := pol
+		cfg.Cost = &pol
+		if err := ValidateParams(DefaultGenParams(), cfg, 1); err != nil {
+			t.Errorf("%+v: %v", pol, err)
 		}
 	}
 }

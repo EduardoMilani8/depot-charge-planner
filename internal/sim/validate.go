@@ -3,6 +3,7 @@ package sim
 import (
 	"fmt"
 
+	"github.com/EduardoMilani8/depot-charge-planner/internal/billing"
 	"github.com/EduardoMilani8/depot-charge-planner/internal/planner"
 )
 
@@ -21,6 +22,10 @@ const (
 	// arrival would be present for one tick or never, and the bus would count as neither
 	// ready nor short, so the window must end before the earliest departure.
 	MaxArrivalMin = 600
+	// MaxNightsPerMonth bounds DemandParams.NightsPerMonth (0 = billing.DefaultNightsPerMonth).
+	MaxNightsPerMonth = 31
+	// MaxDeferMarginMin bounds CostPolicy.DeferMarginMin (minutes; 0 = the planner's default).
+	MaxDeferMarginMin = 240
 )
 
 // FieldError names the invalid parameter by its simrun flag name.
@@ -67,6 +72,17 @@ func ValidateParams(p GenParams, cfg planner.Config, seeds int) error {
 	}
 	if !(p.Demand.ContractedKW >= 0 && p.Demand.ContractedKW <= MaxLimitKW) {
 		return &FieldError{"demand-contracted", fmt.Sprintf("must be a finite value in [0, %g] kW", float64(MaxLimitKW))}
+	}
+	if p.Demand.NightsPerMonth < 0 || p.Demand.NightsPerMonth > MaxNightsPerMonth {
+		return &FieldError{"nights-per-month", fmt.Sprintf("must be between 0 (the default, %d) and %d", billing.DefaultNightsPerMonth, MaxNightsPerMonth)}
+	}
+	if c := cfg.Cost; c != nil {
+		if !(c.DeferMarginMin >= 0 && c.DeferMarginMin <= MaxDeferMarginMin) {
+			return &FieldError{"defer-margin", fmt.Sprintf("must be a finite value in [0, %d] minutes (0 = the default, 45)", MaxDeferMarginMin)}
+		}
+		if !(c.DemandTargetKW >= 0 && c.DemandTargetKW <= MaxLimitKW) {
+			return &FieldError{"demand-target", fmt.Sprintf("must be a finite value in [0, %g] kW (0 = off)", float64(MaxLimitKW))}
+		}
 	}
 	if cfg.SwapBackCooldownMin < 0 {
 		return &FieldError{"swap-back-cooldown", "must be >= 0"}

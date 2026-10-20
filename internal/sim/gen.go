@@ -50,6 +50,9 @@ type DemandParams struct {
 	PeakPrice, OffPeakPrice float64 // R$/kW; in Verde only OffPeakPrice is used
 	ContractedKW            float64 // 0 = no contract
 	Verde                   bool    // Verde mode (one demand charge) instead of Azul
+	// NightsPerMonth scales the night to a month in the estimate (Tariff.NightsPerMonth);
+	// 0 = billing.DefaultNightsPerMonth (30).
+	NightsPerMonth int
 }
 
 // Default arrival window of Generate, in minutes since the start of the scenario.
@@ -84,7 +87,7 @@ func Generate(p GenParams, seed int64) Scenario {
 		BaseLimitKW:   p.LimitKW,
 		Tariff: Tariff{PeakFromMin: 18 * 60, PeakToMin: 21 * 60, PeakPrice: 2.70, OffPeakPrice: 0.90,
 			DemandPeakPrice: p.Demand.PeakPrice, DemandOffPeakPrice: p.Demand.OffPeakPrice,
-			ContractedKW: p.Demand.ContractedKW, DemandVerde: p.Demand.Verde},
+			ContractedKW: p.Demand.ContractedKW, DemandVerde: p.Demand.Verde, NightsPerMonth: p.Demand.NightsPerMonth},
 		FollowSwaps:   p.FollowSwaps,
 		ReadingAgeMin: p.ReadingAgeMin,
 	}
