@@ -1,4 +1,5 @@
-import { fmtNum, fmtPct, fmtBRL } from './format.js';
+import { fmtNum, fmtPct, fmtBRL, fmtBRL2 } from './format.js';
+import { hasBill, describeCost } from './cost.js';
 
 const f = {
   pct: (v) => fmtPct(v),
@@ -22,6 +23,34 @@ export const COLUMNS = [
   { key: 'plan_p99_micros', label: 'p99 (µs)', fmt: f.int, help: 'Tempo de cálculo do planejador no pior 1% dos ciclos. Aproximado quando várias simulações rodam em paralelo.' },
 ];
 
+// Shown only when a comparison carries a bill (the server sends one when demand is priced). They sit
+// right after the energy cost, so p99 stays the last column.
+const bill = (key, fmt) => (m) => fmt(m.bill?.[key]);
+export const BILL_COLUMNS = [
+  { key: 'bill_demand_kw', label: 'demanda kW', get: bill('demand_kw', (v) => fmtNum(v, 0)),
+    help: 'Demanda: a maior potência média da rede em um bloco de 15 minutos da noite, que é o que a distribuidora cobra.' },
+  { key: 'bill_demand_brl', label: 'demanda R$/mês (proxy)', get: bill('demand_brl', fmtBRL2),
+    help: 'Cobrança de demanda estimada para o mês, tratando a demanda desta noite como a do mês (proxy). Com contrato, vale o contratado.' },
+  { key: 'bill_monthly_brl', label: 'fatura mensal estimada R$', get: bill('monthly_brl', fmtBRL2),
+    help: 'Estimativa: energia da noite × noites por mês + a cobrança de demanda. Não é uma fatura.' },
+];
+
+// columnsFor: the columns of the comparison table, with the bill ones after the energy cost when the data has a bill.
+export function columnsFor(data) {
+  if (!hasBill(data)) return COLUMNS;
+  const i = COLUMNS.findIndex((c) => c.key === 'cost_brl');
+  return [...COLUMNS.slice(0, i + 1), ...BILL_COLUMNS, ...COLUMNS.slice(i + 1)];
+}
+
+export const COST_TERMS = [
+  ['bloco de 15 min', 'A distribuidora mede a potência média da rede em blocos de 15 minutos alinhados ao relógio (:00, :15, :30, :45). A demanda é o maior bloco.'],
+  ['Azul e Verde', 'Azul: um preço de demanda na ponta e outro fora da ponta, cada um sobre o maior bloco da sua janela. Verde: uma única cobrança, ao preço fora da ponta, sobre o maior bloco da noite (o preço de ponta é ignorado).'],
+  ['demanda contratada', 'Contrato (0 = sem contrato). Com contrato, paga-se o contratado mesmo que a garagem use menos; sem contrato, a demanda medida serve de proxy do que seria contratado.'],
+  ['ultrapassagem', 'Quando o maior bloco passa de 105% do contratado, cobra-se o contratado mais o excedente a 2 vezes o preço de demanda (valores a conferir com a distribuidora).'],
+  ['proxy mensal', 'O laboratório simula uma noite. A fatura mensal estimada trata a demanda dessa noite como a do mês e multiplica a energia pelo número de noites por mês: é uma estimativa, não uma fatura.'],
+  ['adiado', 'Ônibus que o planejador consciente de custo mantém ligado sem carregar até a ponta (18:00 às 21:00) acabar, porque ainda sai pronto. Limitar a demanda (meta) não é, por si só, economia na fatura: pode até aumentá-la.'],
+];
+
 export const CONTROLLER_HELP = {
   fifo: 'Carrega por ordem de chegada, no máximo de potência, até acabar o limite.',
   edf: 'Carrega primeiro quem sai mais cedo.',
@@ -31,7 +60,7 @@ export const CONTROLLER_HELP = {
 };
 
 export function formatCell(col, metrics) {
-  return col.fmt(metrics[col.key]);
+  return col.get ? col.get(metrics) : col.fmt(metrics[col.key]);
 }
 
 export const FAULT_LABEL = {
@@ -83,5 +112,6 @@ export function describeParams(p, { seeds = false } = {}) {
   if (seeds) bits.push(`${p.seeds} sementes`);
   if (p.reading_age_min > 0) bits.push(`leitura com ${p.reading_age_min} min de idade`);
   bits.push(`operadores ${p.follow_swaps ? 'seguem' : 'não seguem'} os rodízios`);
+  bits.push(...describeCost(p));
   return bits.join(', ');
 }

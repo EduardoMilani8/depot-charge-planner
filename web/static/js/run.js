@@ -12,6 +12,8 @@ import { nextFocusTarget, restoreFocus } from './focus.js';
 import { createPlayer, countingText } from './motion.js';
 import { feedUpdate } from './events.js';
 import { createFeed, FEED_MAX } from './feed.js';
+import { billSummary } from './cost.js';
+import { warningList } from './compare.js';
 
 const SPEEDS = [[30, '30 min/s'], [60, '1 h/s'], [120, '2 h/s'], [300, '5 h/s'], [600, '10 h/s']];
 // Elements where Space already means something else.
@@ -43,9 +45,12 @@ export function createRunView(root, hooks) {
     const bad = m.plan_violations > 0;
     const pct = countingText(m.ready_pct, fmtPct, 800);
     disposers.push(pct.cancel);
+    // With a bill, the energy cost is named as such and the demand and the estimated month come beside it.
+    const bill = billSummary(m);
     return h('p', { class: 'summary' }, `${m.ready} de ${m.buses} ônibus saíram prontos (`, pct.node,
       `) · déficit ${fmtNum(m.shortfall_kwh, 0)} kWh · pico ${fmtNum(m.peak_kw, 0)} kW · ` +
-      `${bad ? '⚠ ' : ''}violações do plano ${m.plan_violations} · custo ${fmtBRL(m.cost_brl)}`);
+      `${bad ? '⚠ ' : ''}violações do plano ${m.plan_violations} · ${bill ? 'custo de energia da noite' : 'custo'} ${fmtBRL(m.cost_brl)}` +
+      (bill ? ` · ${bill}` : ''));
   }
 
   // playerRow draws the buttons that play the day; the play button also lives in the sticky bar.
@@ -143,15 +148,16 @@ export function createRunView(root, hooks) {
     const busPanel = h('div', { class: 'panel', id: 'panel-buses' });
     const chargerPanel = h('div', { class: 'panel', id: 'panel-chargers' });
     const decisionPanel = h('div', { class: 'panel', id: 'panel-decision' });
-    clear(root).append(
+    clear(root).append(...[
       heading(),
       sourceLine(data),
       h('p', { class: 'note run-params' }, `Parâmetros: ${describeParams(data.params)}.`),
+      warningList(data.warnings),
       controls({ ...data, imported: Boolean(data.source) }),
       summaryLine(data.metrics),
       faultList(data),
       h('div', { class: 'transport' }, playerRow(player), cursorRow(data, cursor, playButton(player))),
-      powerPanel, feedPanel, busPanel, chargerPanel, decisionPanel);
+      powerPanel, feedPanel, busPanel, chargerPanel, decisionPanel].filter(Boolean));
     disposers.push(renderPowerChart(powerPanel, data, cursor, player).dispose);
     const feed = createFeed(feedPanel, { startClock: data.scenario.start_clock_min, max: FEED_MAX });
     // The feed follows the day while it plays. While paused the cursor only updates

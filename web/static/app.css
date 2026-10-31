@@ -189,3 +189,25 @@ table.real-table td small.detail { display: block; font-weight: 400; font-size: 
 /* "Animações: desligadas" (class set by motion.js) and the system's "reduce motion" end all movement. */
 .no-motion *, .no-motion *::before, .no-motion *::after { animation: none !important; transition: none !important; }
 @media (prefers-reduced-motion: reduce) { :root:not(.motion-on) *, :root:not(.motion-on) *::before, :root:not(.motion-on) *::after { animation: none !important; transition: none !important; } }
+
+/* Energy cost. Hatching and words, never colour alone: the peak window is a pattern, a deferred bus says "adiado". */
+fieldset.group { border: 1px solid var(--border); border-radius: 8px; margin: 12px 0; padding: 4px 12px 8px; min-width: 0; }
+fieldset.group legend { padding: 0 6px; color: var(--muted); font-size: .9rem; font-weight: 600; }
+fieldset.group.inactive .grid { opacity: .55; }
+fieldset.group.inactive legend::after { content: " (inativo)"; font-weight: 400; }
+.real-hint { margin: 6px 0; padding: 8px 12px; background: color-mix(in srgb, var(--amber) 14%, var(--card)); border-left: 4px solid var(--amber); }
+.field-hint { color: var(--muted); font-size: .8rem; flex-basis: 100%; }
+.field.inactive { opacity: .6; }
+.field.inactive input { cursor: not-allowed; }
+.warnings { margin: 8px 0; padding: 8px 12px 8px 14px; list-style: none; background: color-mix(in srgb, var(--amber) 14%, var(--card)); border-left: 4px solid var(--amber); }
+.warnings ul { list-style: none; margin: 4px 0 0; padding: 0; }
+.warnings li { margin: 2px 0; }
+.savings { margin: 10px 0; font-weight: 600; }
+.target-note { margin: 10px 0; padding: 8px 12px; border-left: 4px solid var(--control-border); color: var(--fg); }
+.target-note.warn { background: var(--bad-bg); border-left-color: var(--bad); color: var(--bad); font-weight: 600; }
+.peak-band { fill: url(#pat-peak); pointer-events: none; }
+.pat-peak-bg { fill: color-mix(in srgb, var(--purple) 8%, transparent); } .pat-peak-line { stroke: var(--purple); opacity: .55; }
+.peak-label { fill: var(--muted); font-size: 11px; font-weight: 600; pointer-events: none; }
+.deferred-band { fill: url(#pat-deferred); stroke: var(--purple); stroke-width: 1; pointer-events: none; }
+.pat-deferred-bg { fill: color-mix(in srgb, var(--purple) 18%, var(--card)); } .pat-deferred-line { stroke: var(--purple); }
+.deferred-label { fill: var(--fg); font-size: 9px; font-weight: 700; pointer-events: none; paint-order: stroke; stroke: var(--card); stroke-width: 2.5px; }

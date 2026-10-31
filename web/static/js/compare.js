@@ -1,6 +1,7 @@
 import { h, clear } from './dom.js';
 import { s } from './charts/svg.js';
-import { COLUMNS, CONTROLLER_HELP, formatCell, describeParams } from './glossary.js';
+import { CONTROLLER_HELP, COST_TERMS, columnsFor, formatCell, describeParams } from './glossary.js';
+import { savingsSentence, hasBill } from './cost.js';
 import { dotStrip } from './charts/layout.js';
 import { fmtNum, fmtPct } from './format.js';
 import { countingText, staggerStep } from './motion.js';
@@ -13,13 +14,14 @@ function summary(p) {
 // counts up. `cancels` collects what stops the counters.
 function table(data, cancels) {
   const best = Math.max(...data.controllers.map((c) => c.aggregate.ready_pct));
+  const columns = columnsFor(data);
   const head = h('tr', {}, h('th', { scope: 'col' }, 'controlador'),
-    COLUMNS.map((c) => h('th', { scope: 'col', title: c.help }, c.label)));
+    columns.map((c) => h('th', { scope: 'col', title: c.help }, c.label)));
   const rows = data.controllers.map((c, index) => {
     const isBest = c.aggregate.ready_pct === best;
     return h('tr', { class: c.name === 'planner' ? 'planner reveal' : 'reveal', style: `--i:${index}` },
       h('th', { scope: 'row', title: CONTROLLER_HELP[c.name] }, c.name),
-      COLUMNS.map((col) => {
+      columns.map((col) => {
         const bad = col.mustBeZero && c.aggregate[col.key] > 0;
         let text = formatCell(col, c.aggregate);
         if (col.key === 'ready_pct') {
@@ -58,17 +60,44 @@ function seedsPanel(data, onOpen) {
     }));
 }
 
-function glossary() {
-  return h('details', { class: 'glossary' }, h('summary', {}, 'O que significa cada coluna e cada controlador'),
-    h('dl', {}, COLUMNS.map((c) => [h('dt', {}, c.label), h('dd', {}, c.help)]),
-      Object.entries(CONTROLLER_HELP).map(([k, v]) => [h('dt', {}, k), h('dd', {}, v)])));
+function glossary(data) {
+  return h('details', { class: 'glossary' }, h('summary', {}, 'O que significa cada coluna, cada controlador e cada termo de custo'),
+    h('dl', {}, columnsFor(data).map((c) => [h('dt', {}, c.label), h('dd', {}, c.help)]),
+      Object.entries(CONTROLLER_HELP).map(([k, v]) => [h('dt', {}, k), h('dd', {}, v)]),
+      COST_TERMS.map(([t, d]) => [h('dt', {}, t), h('dd', {}, d)])));
+}
+
+// warningList shows the server's warnings about valid parameters that do less than they seem to.
+export function warningList(list) {
+  if (!list || list.length === 0) return null;
+  return h('ul', { class: 'warnings' }, list.map((w) => h('li', {}, '⚠ ' + w)));
+}
+
+// targetSlot is the place of the "with and without the demand target" sentence; main.js fills it in.
+function targetSlot(data) {
+  const p = data.params;
+  if (!(p.cost_aware && p.demand_target_kw > 0)) return null;
+  const text = hasBill(data) ? 'Calculando a fatura sem a meta de demanda…'
+    : 'Para ver se a meta de demanda reduz a fatura mensal estimada, informe os preços de demanda ou a demanda contratada.';
+  return h('p', { class: 'note target-note', role: 'status' }, text);
 }
 
 // renderCompare draws the Comparação tab and returns { dispose }, which stops the counters.
 export function renderCompare(root, data, onOpen) {
   const cancels = [];
   clear(root);
-  root.append(h('h2', {}, 'Comparação'), h('p', { class: 'note' }, summary(data.params)), table(data, cancels), seedsPanel(data, onOpen),
-    h('p', { class: 'note' }, data.p99_note), glossary());
-  return { dispose() { cancels.forEach((c) => c()); } };
+  const slot = targetSlot(data);
+  const savings = savingsSentence(data.controllers);
+  root.append(...[h('h2', {}, 'Comparação'), h('p', { class: 'note' }, summary(data.params)), warningList(data.warnings), table(data, cancels),
+    savings ? h('p', { class: 'savings' }, savings) : null, slot, seedsPanel(data, onOpen),
+    h('p', { class: 'note' }, data.p99_note), glossary(data)].filter(Boolean)); // append(null) would write the text "null"
+  return {
+    dispose() { cancels.forEach((c) => c()); },
+    // setTargetNote({ text, tone }) replaces the placeholder sentence; a warning tone gets the warning style.
+    setTargetNote(note) {
+      if (!slot || !note) return;
+      slot.textContent = note.text;
+      slot.classList.toggle('warn', note.tone === 'warn');
+    },
+  };
 }

@@ -5,6 +5,7 @@ import { valuesAt } from './charts/layout.js';
 import { clock, fmtNum } from './format.js';
 import { LAYER_LABEL } from './glossary.js';
 import { throttle } from './motion.js';
+import { isDeferredReason, deferredWindows } from './cost.js';
 
 const kw = (v, digits = 1) => (v === null || v === undefined || !Number.isFinite(v) ? '—' : `${fmtNum(v, digits)} kW`);
 
@@ -17,6 +18,7 @@ export function renderDecisionPanel(root, data, cursor, selection) {
   const start = data.scenario.start_clock_min;
   const busIdx = new Map(data.series.buses.map((b, i) => [b.id, i]));
   const occupancy = chargerOccupancy(data);
+  const deferredByBus = deferredWindows(data);
   // Only the planner explains itself bus by bus; the other controllers list no buses at all.
   const explains = data.decisions.some((d) => (d.buses?.length ?? 0) > 0);
   const noteEl = h('p', { class: 'note' });
@@ -85,7 +87,7 @@ export function renderDecisionPanel(root, data, cursor, selection) {
       const tr = h('tr', { tabindex: 0, 'data-bus': b.b,
         onclick: () => pick(b.b), onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(b.b); } } },
       h('th', { scope: 'row' }, b.b),
-      h('td', {}, b.as ? (b.ok ? '✓ atinge o alvo' : '✗ não atinge') : 'não avaliado'),
+      h('td', {}, b.as ? (b.ok ? '✓ atinge o alvo' : '✗ não atinge') : 'não avaliado', b.r >= 0 && isDeferredReason(data.reasons[b.r]) ? ' · adiado' : ''),
       h('td', {}, b.as && !b.ok ? `${fmtNum(b.sf, 0)} kWh` : '—'), // not assessed: there is no forecast shortfall to show
       h('td', { class: 'reason' }, b.r >= 0 ? data.reasons[b.r] : '—'));
       busRows.set(b.b, tr);
@@ -150,7 +152,11 @@ export function renderDecisionPanel(root, data, cursor, selection) {
     }
     const i = busIdx.get(id);
     const chart = h('div', { class: 'soc-chart' });
-    detail.append(h('h3', {}, `Ônibus ${id}`), h('ul', { class: 'explain' }, explainBus(data, i).map((t) => h('li', {}, t))), chart);
+    const lines = explainBus(data, i);
+    for (const w of deferredByBus.get(id) ?? []) {
+      lines.push(`Adiado pelo planejador: a carga esperou a ponta acabar, das ${clock(start, w.from)} às ${clock(start, Math.min(w.to + 1, n))}.`);
+    }
+    detail.append(h('h3', {}, `Ônibus ${id}`), h('ul', { class: 'explain' }, lines.map((t) => h('li', {}, t))), chart);
     disposeChart = renderSoCChart(chart, data, i, cursor).dispose;
   }
 

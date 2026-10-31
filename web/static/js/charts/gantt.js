@@ -9,6 +9,7 @@ import { bindCursorKeys } from '../cursor.js';
 import { bindPlotPointer } from './pointer.js';
 import { crossedPlayback } from '../events.js';
 import { animationsEnabled } from '../motion.js';
+import { deferredWindows } from '../cost.js';
 
 const W = 1000;
 const ROW_H = 20;
@@ -64,7 +65,11 @@ export function renderBusTimeline(root, data, cursor, hooks, player) {
   const markers = swapMarkers(data.decisions);
   const rowNodes = new Map();
   const busClip = s('rect', { x: 0, y: 0, width: W, height: bottom + 26 });
-  const parts = [s('defs', {}, s('clipPath', { id: 'clip-bus-past' }, busClip))];
+  // Buses the cost-aware planner holds back until the peak ends: hatched and labelled "adiado".
+  const deferred = deferredWindows(data);
+  const parts = [s('defs', {}, s('clipPath', { id: 'clip-bus-past' }, busClip),
+    deferred.size > 0 ? s('pattern', { id: 'pat-deferred', width: 6, height: 6, patternUnits: 'userSpaceOnUse', patternTransform: 'rotate(45)' },
+      s('rect', { width: 6, height: 6, class: 'pat-deferred-bg' }), s('line', { x1: 0, y1: 0, x2: 0, y2: 6, class: 'pat-deferred-line', 'stroke-width': 2 })) : null)];
   const bars = []; // { node, b }: the bus bars, to light up the ones being charged
   const fills = []; // the charge fills, clipped to the cursor while the day plays
   const pops = []; // { node, minute, id }: marks that pop when the cursor passes them
@@ -85,6 +90,15 @@ export function renderBusTimeline(root, data, cursor, hooks, player) {
       const bar = s('rect', { x: x(from), y: barY, width: Math.max(2, x(to) - x(from)), height: barH, class: 'bus-bar' });
       g.append(bar);
       bars.push({ node: bar, b, on: false });
+      for (const w of deferred.get(b.id) ?? []) {
+        const a = Math.max(from, w.from);
+        const z = Math.min(to, w.to);
+        if (z <= a) continue;
+        const wide = x(z) - x(a);
+        g.append(s('rect', { x: x(a), y: barY, width: Math.max(2, wide), height: barH, class: 'deferred-band' },
+          s('title', {}, `${b.id}: adiado, a carga espera a ponta acabar (${clock(data.scenario.start_clock_min, a)} às ${clock(data.scenario.start_clock_min, z)})`)));
+        if (wide >= 40) g.append(s('text', { x: x(a) + 3, y: y0 + ROW_H / 2 + 3.5, class: 'deferred-label' }, 'adiado'));
+      }
       const frac = (v) => (Number.isFinite(v) ? v / o.capacity_kwh : null);
       const fill = s('path', { d: fillPath(b.true_soc_kwh.map(frac), x, (f) => barY + barH * (1 - f), barY + barH), class: 'soc-fill' });
       fills.push(fill);
@@ -153,7 +167,8 @@ export function renderBusTimeline(root, data, cursor, hooks, player) {
     legendItem(swatchSvg(12, s('path', { d: 'M1,11l10,0l-5,-9z', class: 'swap-in' })), 'recebe carregador (rodízio recomendado)'),
     legendItem(swatchSvg(12, s('path', { d: 'M1,1l10,0l-5,9z', class: 'swap-out' })), 'cede carregador (rodízio recomendado)'),
     legendItem(swatchSvg(12, s('path', { d: 'M1,1l10,0l-5,9z', class: 'bus-fault' })), 'falha do ônibus (leitura, consumo ou horário)'),
-    legendItem(swatchSvg(22, s('rect', { y: 4, width: 22, height: 3, class: 'bus-fault-all' })), 'falha em todos os ônibus (faixa no topo)'));
+    legendItem(swatchSvg(22, s('rect', { y: 4, width: 22, height: 3, class: 'bus-fault-all' })), 'falha em todos os ônibus (faixa no topo)'),
+    deferred.size > 0 ? legendItem(swatchSvg(22, s('rect', { width: 22, height: 12, class: 'deferred-band' })), 'adiado: a carga espera a ponta acabar') : null);
   root.replaceChildren(h('h3', {}, 'Ônibus'),
     h('p', { class: 'note' }, 'Clique numa linha (ou no código do ônibus) para ver por que ele saiu pronto ou não. ', picked, jump),
     wrap, legend);

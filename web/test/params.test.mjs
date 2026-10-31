@@ -55,7 +55,7 @@ test('field specs take their bounds from the server limits', () => {
   assert.equal(by.seeds.max, 1000);
   assert.equal(by.swap_back_cooldown_min.advanced, true);
   assert.equal(by.buses.advanced, undefined);
-  assert.equal(specs.length, 9);
+  assert.equal(specs.length, 19);
 });
 
 test('nextTab implements the keyboard pattern of tabs', async () => {
@@ -171,4 +171,79 @@ test('linkState: an imported run only matters on the run tab', () => {
   const real = { params: onScreen.params, controller: 'planner', seed: 1, real: { night: '2026-03-04' } };
   assert.equal(linkState({ ...newer, tab: 'real' }, real).tab, 'real');
   assert.equal(linkState({ ...newer, tab: 'compare' }, real).tab, 'compare');
+});
+
+// ---- energy cost fields ----
+
+const costState = (params) => ({ params: { ...defaults, ...params }, tab: 'compare', seed: 1, controller: 'planner' });
+const COST_VALUES = {
+  cost_aware: true, defer_margin_min: 30, demand_target_kw: 1600, demand_peak_price: 40.5, demand_offpeak_price: 20,
+  demand_contracted_kw: 1500, demand_verde: true, arrival_from_min: 60, arrival_to_min: 180, nights_per_month: 22,
+};
+
+test('cost defaults are omitted from the hash, so the old hashes are unchanged', () => {
+  const hash = stateToHash(costState({}));
+  for (const k of Object.keys(COST_VALUES)) assert.equal(hash.includes(k), false, k);
+  assert.equal(hash, stateToHash({ params: defaults, tab: 'compare', seed: 1, controller: 'planner' }));
+  // zero values written explicitly are defaults too
+  const zeros = costState({ cost_aware: false, defer_margin_min: 0, demand_target_kw: 0, demand_verde: false, nights_per_month: 0 });
+  assert.equal(stateToHash(zeros), hash);
+});
+
+test('an old hash (no cost keys) parses to parameters without cost keys', () => {
+  const old = '#tab=compare&seed=1&controller=planner&buses=50&chargers=25&limit_kw=2000&profile=none&seeds=20&follow_swaps=true&reading_age_min=0&swap_back_cooldown_min=30&swap_back_min_need_kwh=10';
+  const s = hashToState(old, defaults);
+  assert.deepEqual(s.params, defaults);
+  for (const k of Object.keys(COST_VALUES)) assert.equal(k in s.params, false, k);
+});
+
+test('every cost field survives the hash round trip', () => {
+  const s = costState(COST_VALUES);
+  assert.deepEqual(hashToState(stateToHash(s), defaults), s);
+  for (const [k, v] of Object.entries(COST_VALUES)) {
+    const one = costState({ cost_aware: true, [k]: v });
+    assert.deepEqual(hashToState(stateToHash(one), defaults), one, k);
+  }
+});
+
+test('the margin and the target are kept out of the hash while cost_aware is off', () => {
+  const s = costState({ cost_aware: false, defer_margin_min: 30, demand_target_kw: 1600, demand_peak_price: 40 });
+  const hash = stateToHash(s);
+  assert.equal(hash.includes('defer_margin_min'), false);
+  assert.equal(hash.includes('demand_target_kw'), false);
+  assert.equal(hash.includes('demand_peak_price=40'), true);
+  // and a hash that carries them without cost_aware drops them on the way in
+  const back = hashToState('#defer_margin_min=30&demand_target_kw=1600&demand_peak_price=40', defaults);
+  assert.deepEqual(back.params, { ...defaults, demand_peak_price: 40 });
+});
+
+test('garbage cost values in a hash fall back to the defaults', () => {
+  const s = hashToState('#cost_aware=maybe&defer_margin_min=1.5&demand_target_kw=NaN&nights_per_month=abc&demand_verde=1&arrival_to_min=', defaults);
+  assert.deepEqual(s.params, defaults);
+});
+
+test('decideHashAction: a cost change in the hash is a change; the same cost hash is not', () => {
+  const state = costState({ cost_aware: true, demand_target_kw: 1600 });
+  assert.equal(decideHashAction(stateToHash(state), state, defaults), null);
+  const next = decideHashAction(stateToHash(costState({ cost_aware: true, demand_target_kw: 1700 })), state, defaults);
+  assert.equal(next.params.demand_target_kw, 1700);
+});
+
+test('field specs: the cost group, with bounds from the limits and the arrival fields in hours', () => {
+  const specs = fieldSpecs({ max_buses: 1, max_chargers: 1, max_limit_kw: 1e7, max_demand_price: 1e6, max_nights_per_month: 31, max_defer_margin_min: 240, max_arrival_min: 600 });
+  const by = Object.fromEntries(specs.map((f) => [f.key, f]));
+  const cost = specs.filter((f) => f.group === 'cost').map((f) => f.key);
+  assert.deepEqual(cost, ['arrival_from_min', 'arrival_to_min', 'cost_aware', 'defer_margin_min', 'demand_target_kw',
+    'demand_peak_price', 'demand_offpeak_price', 'demand_contracted_kw', 'demand_verde', 'nights_per_month']);
+  assert.ok(specs.filter((f) => f.group === 'cost').every((f) => f.advanced));
+  assert.equal(by.defer_margin_min.max, 240);
+  assert.equal(by.demand_peak_price.max, 1e6);
+  assert.equal(by.nights_per_month.max, 31);
+  assert.equal(by.arrival_to_min.kind, 'hours');
+  assert.equal(by.arrival_to_min.max, 10); // 600 minutes
+  assert.equal(by.demand_verde.kind, 'select');
+  assert.deepEqual(by.demand_verde.options.map(([v]) => v), ['azul', 'verde']);
+  assert.equal(by.defer_margin_min.needsCostAware, true);
+  assert.equal(by.demand_target_kw.needsCostAware, true);
+  assert.equal(by.demand_peak_price.needsCostAware, undefined);
 });

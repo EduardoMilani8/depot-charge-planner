@@ -26,6 +26,13 @@ export function fmtNum(v, digits = 1) {
 export const fmtPct = (v) => fmtNum(v, 1) + '%';
 export const fmtBRL = (v) => 'R$ ' + fmtNum(v, 0);
 
+// fmtBRL2 is money with cents in pt-BR ("R$ 1.234,50", "-R$ 50,00"); "—" when there is no number.
+export function fmtBRL2(v) {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return '—';
+  const n = fmtNum(Math.abs(v), 2);
+  return `${v < 0 && n !== '0,00' ? '-' : ''}R$ ${n}`;
+}
+
 // clock returns the wall-clock time (HH:MM) of a scenario minute.
 export function clock(startClockMin, minute) {
   const m = (((startClockMin + minute) % 1440) + 1440) % 1440;

@@ -6,6 +6,7 @@ import { clock, fmtNum } from '../format.js';
 import { LAYER_LABEL, POWER_FAULTS, describeFault } from '../glossary.js';
 import { bindCursorKeys } from '../cursor.js';
 import { bindPlotPointer } from './pointer.js';
+import { peakBand } from '../cost.js';
 
 const W = 1000;
 const PLOT_H = 300;
@@ -44,6 +45,15 @@ export function renderPowerChart(root, data, cursor, player) {
         s('rect', { width: 6, height: 6, class: 'pat-safe-bg' }), s('circle', { cx: 3, cy: 3, r: 1.4, class: 'pat-dot' }))),
   ];
 
+  // The peak window (energy and demand cost more inside it) is a hatched band, so it does not rely on colour.
+  const band = peakBand(data);
+  if (band) {
+    parts[0].append(s('pattern', { id: 'pat-peak', width: 8, height: 8, patternUnits: 'userSpaceOnUse', patternTransform: 'rotate(-45)' },
+      s('rect', { width: 8, height: 8, class: 'pat-peak-bg' }), s('line', { x1: 0, y1: 0, x2: 0, y2: 8, class: 'pat-peak-line', 'stroke-width': 1.5 })));
+    parts.push(s('rect', { x: x(band.from), y: plotTop, width: Math.max(1, x(band.to) - x(band.from)), height: PLOT_H, class: 'peak-band' },
+      s('title', {}, `janela de ponta: ${clock(scenario.start_clock_min, band.from)} às ${clock(scenario.start_clock_min, band.to)}`)),
+    s('text', { x: x(band.from) + 5, y: plotTop + 12, class: 'peak-label' }, 'ponta'));
+  }
   // y grid and labels
   for (const t of ticks) {
     parts.push(s('line', { x1: MARGIN.left, x2: W - MARGIN.right, y1: y(t), y2: y(t), class: 'gridline' }),
@@ -104,7 +114,8 @@ export function renderPowerChart(root, data, cursor, player) {
     h('span', { class: 'legend-item' }, s('svg', { width: 22, height: 12, 'aria-hidden': 'true' }, s('line', { x1: 0, x2: 22, y1: 6, y2: 6, class: 'line-commanded' })), 'potência comandada'),
     h('span', { class: 'legend-item' }, s('svg', { width: 22, height: 12, 'aria-hidden': 'true' }, s('line', { x1: 0, x2: 22, y1: 6, y2: 6, class: 'line-limit' })), 'limite da garagem'),
     swatch('layer-normal', 'camada normal'), swatch('layer-last-valid', 'último plano válido'), swatch('layer-safe', 'perfil seguro'),
-    swatch('fault', 'falha ativa'));
+    swatch('fault', 'falha ativa'),
+    band ? swatch('peak-band', `janela de ponta (${clock(scenario.start_clock_min, band.from)} às ${clock(scenario.start_clock_min, band.to)})`) : null);
   root.replaceChildren(h('h3', {}, 'Potência'), wrap, readout, legend);
 
   function update(m) {

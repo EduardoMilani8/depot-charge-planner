@@ -1,4 +1,5 @@
 import { getDefaults, compare, createLatest, ApiError } from './api.js';
+import { needsTargetComparison, withoutTarget, targetComparison } from './cost.js';
 import { hashToState, decideHashAction, stateToHash, linkState, nextTab, TABS } from './params.js';
 import { createForm } from './form.js';
 import { renderCompare } from './compare.js';
@@ -9,6 +10,7 @@ import { h } from './dom.js';
 import { applyMotionClass, setAnimations, animationsEnabled } from './motion.js';
 
 const latest = createLatest();
+const latestTarget = createLatest(); // the extra comparison without the demand target
 let state;
 let defaultParams; // the flat `params` of the /api/defaults reply
 let form;
@@ -62,8 +64,26 @@ function setCompare(...nodes) {
   $('compare-out').replaceChildren(...nodes);
 }
 
+// fillTargetNote answers "did the demand target lower the bill?": the same comparison with the target
+// removed (cost_aware kept), set against the one on screen. A cap can raise the bill, so the sentence
+// says which way it went. A failure leaves a plain note: the comparison itself is already on screen.
+async function fillTargetNote(view, data) {
+  if (!needsTargetComparison(data)) return;
+  try {
+    const r = await latestTarget((signal) => compare(withoutTarget(data.params), signal));
+    if (r.stale) return;
+    view.setTargetNote(targetComparison(data, r.value, data.params.demand_target_kw)
+      ?? { tone: 'info', text: 'Não foi possível comparar a fatura com e sem a meta de demanda.' });
+  } catch (e) {
+    view.setTargetNote({ tone: 'info', text: 'Não consegui calcular a fatura sem a meta de demanda agora; a comparação acima continua valendo.' });
+  }
+}
+
 async function runCompare(params) {
   banner('');
+  latestTarget.cancel();
+  form.setRealMode(false);
+  form.setWarnings(null);
   state.params = params;
   form.setBusy(true);
   setCompare(h('p', { class: 'loading' }, 'Rodando as simulações…'));
@@ -75,6 +95,8 @@ async function runCompare(params) {
     compareView = renderCompare($('compare-out'), r.value, (controller, seed) =>
       openRun(controller, seed, compareParams ?? state.params, { heading: true }));
     compareParams = r.value.params;
+    form.setWarnings(r.value.warnings);
+    fillTargetNote(compareView, r.value); // not awaited: the table is already there
   } catch (e) {
     setCompare(h('p', { class: 'note' }, 'Nenhuma comparação: corrija o cenário e rode de novo.'));
     reportError(e);
@@ -86,6 +108,7 @@ async function runCompare(params) {
 // openRealRun shows one imported night (`real` = { files, night }) in the Execução tab. The form's
 // state is left alone: the link of this screen only names the "Dados reais" tab.
 function openRealRun(real, controller, opts = { heading: true }) {
+  form.setRealMode(true); // that run ignores the cost fields
   runSel = { params: state.params, controller, seed: 1, real };
   showTab('run');
   runView.load({ params: state.params, controller, seed: 1, real }, opts);
@@ -94,6 +117,7 @@ function openRealRun(real, controller, opts = { heading: true }) {
 // openRun shows one run. `params` default to the form's; `opts.heading` moves focus to the run's
 // heading once it is drawn (a seed dot was activated).
 export function openRun(controller, seed, params = state.params, opts = {}) {
+  form.setRealMode(false);
   state.controller = controller;
   state.seed = seed;
   runSel = { params, controller, seed };
@@ -131,6 +155,9 @@ function applyState(next) {
   // tab that is now hidden or send its error to showTab('scenario').
   if (latest.busy()) setCompare(h('p', { class: 'note' }, 'Rode um cenário para ver a comparação.'));
   latest.cancel();
+  latestTarget.cancel();
+  form.setRealMode(false);
+  form.setWarnings(null);
   if (runView.cancel()) runSel = null; // a load in flight was dropped: no run on screen any more
   form.setBusy(false);
   banner('');
@@ -199,6 +226,7 @@ async function init() {
       if (!dropsRun(runSel)) return;
       runView.reset();
       runSel = null;
+      form.setRealMode(false);
       syncHash();
     },
   });
