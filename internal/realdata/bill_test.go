@@ -411,3 +411,99 @@ func TestReplayCostAwareIsBlindUnlessArrivalsAreAnnounced(t *testing.T) {
 		t.Errorf("announced assumption missing: %q", known.Assumptions)
 	}
 }
+
+// Fix round 1: edge cases of the demand blocks, hand-computed.
+
+func writeSessions(t *testing.T, rows string) map[string][]byte {
+	t.Helper()
+	m := withFile(garageWith(t, "40,20,,,"), FileSessoes, "onibus_id,carregador_id,inicio,fim,energia_kwh\n"+rows)
+	return without(m, FilePotencia)
+}
+
+// B03 charges 40 kWh from 23:50 to 00:10: 20 minutes, 120 kW. The 23:45 block holds 10 of
+// those minutes (120 x 10/60 = 20 kWh -> 80 kW) and the 00:00 block the other 10 (80 kW).
+// Demand 80 kW, off-peak: 80 x 20 = 1600 (the peak window has no use).
+func TestBillSessionCrossingMidnightSplitsAcrossBlocks(t *testing.T) {
+	ns, _ := demoNights(t, writeSessions(t, "B03,C03,2026-03-04 23:50,2026-03-05 00:10,40\n"), NightOptions{})
+	r := ns[0].Real
+	wantPtrTol(t, "DemandKW", r.DemandKW, 80, 1e-9)
+	wantPtrTol(t, "DemandBRL", r.DemandBRL, 1600, 1e-7)
+	wantPtr(t, "EnergyKWh", r.EnergyKWh, 40)
+}
+
+// A session of 30 seconds counts as one minute (as the cost always did): its 10 kWh all land
+// in the 22:00 block, 10 kWh / 0.25 h = 40 kW. The energy is preserved, not dropped.
+func TestBillSubMinuteSessionKeepsItsEnergy(t *testing.T) {
+	ns, _ := demoNights(t, writeSessions(t, "B02,C02,2026-03-05 22:00:00,2026-03-05 22:00:30,10\n"), NightOptions{})
+	r := ns[1].Real
+	wantPtr(t, "EnergyKWh", r.EnergyKWh, 10)
+	wantPtrTol(t, "DemandKW", r.DemandKW, 40, 1e-9)
+}
+
+// C01 reads 100 kW at 22:00:40 and 0 at 22:15:20. The demand floors both to the minute:
+// 22:00-22:15 at 100 kW = 25 kWh in one block -> 100 kW. The energy keeps the seconds:
+// 100 kW x 880 s / 3600 = 24.44 kWh.
+func TestBillReadingsWithSecondsAreFlooredForDemandOnly(t *testing.T) {
+	power := "instante,carregador_id,potencia_kw\n2026-03-05 22:00:40,C01,100\n2026-03-05 22:15:20,C01,0\n"
+	m := withFile(without(garageWith(t, "40,20,,,"), FileSessoes), FilePotencia, power)
+	ns, _ := demoNights(t, m, NightOptions{})
+	r := ns[1].Real
+	wantPtrTol(t, "DemandKW", r.DemandKW, 100, 1e-9)
+	wantPtrTol(t, "EnergyKWh", r.EnergyKWh, 100.0*880/3600, 1e-9)
+}
+
+// The demo readings in a scrambled order, with a repeated 22:15 reading of C02 (the last
+// one in the file wins, as Load documents): the same 140 kW demand and 65 kWh as the clean file.
+func TestBillUnsortedAndDuplicateReadings(t *testing.T) {
+	power := "instante,carregador_id,potencia_kw\n" +
+		"2026-03-05 22:30,C02,0\n" +
+		"2026-03-05 22:15,C02,999\n" +
+		"2026-03-05 22:15,C01,100\n" +
+		"2026-03-05 22:00,C02,20\n" +
+		"2026-03-05 22:30,C01,0\n" +
+		"2026-03-05 22:15,C02,40\n" +
+		"2026-03-05 22:00,C01,100\n"
+	m := withFile(without(garageWith(t, "40,20,,,"), FileSessoes), FilePotencia, power)
+	ns, _ := demoNights(t, m, NightOptions{})
+	r := ns[1].Real
+	wantPtrTol(t, "DemandKW", r.DemandKW, 140, 1e-9)
+	wantPtrTol(t, "EnergyKWh", r.EnergyKWh, 65, 1e-9)
+	wantPtrTol(t, "DemandBRL", r.DemandBRL, 2800, 1e-7)
+}
+
+func TestBillModeIsCaseInsensitive(t *testing.T) {
+	for _, mode := range []string{"vErDe", "VERDE", "Verde"} {
+		d := loadFiles(t, garageWith(t, "40,20,,"+mode+","))
+		if !d.Garage.DemandVerde {
+			t.Errorf("%q was not read as verde", mode)
+		}
+	}
+	for _, mode := range []string{"AzUl", "AZUL"} {
+		if d := loadFiles(t, garageWith(t, "40,20,,"+mode+",")); d.Garage.DemandVerde {
+			t.Errorf("%q was read as verde", mode)
+		}
+	}
+}
+
+func TestBillNaNAndInfAreRejectedWithLineAndColumn(t *testing.T) {
+	cases := []struct{ demand, col string }{
+		{"NaN,20,,,", "demanda_preco_ponta"},
+		{"40,Inf,,,", "demanda_preco_fora_ponta"},
+		{"40,20,-Inf,,", "demanda_contratada_kw"},
+		{"40,20,+Inf,,", "demanda_contratada_kw"},
+		{"40,20,,,NaN", "noites_por_mes"},
+		{"1e999,20,,,", "demanda_preco_ponta"},
+		{"40,20,1e999,,", "demanda_contratada_kw"},
+	}
+	for _, c := range cases {
+		_, err := Load(garageWith(t, c.demand))
+		var fe *FieldError
+		if !errors.As(err, &fe) || fe.File != FileGaragem || fe.Line != 2 || fe.Column != c.col || fe.Message == "" {
+			t.Errorf("%q: %v (want garagem.csv, linha 2, coluna %s)", c.demand, err, c.col)
+			continue
+		}
+		if !strings.Contains(fe.Error(), "linha 2") || !strings.Contains(fe.Error(), "coluna "+c.col) {
+			t.Errorf("%q: %q", c.demand, fe.Error())
+		}
+	}
+}

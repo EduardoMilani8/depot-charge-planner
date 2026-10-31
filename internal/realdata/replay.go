@@ -248,6 +248,7 @@ func cloneScenario(sc sim.Scenario) sim.Scenario {
 // future arrivals unless announce is set. sim.ForController announces them to a planner
 // with a cost policy (the generated scenarios have a known schedule); a recorded night has
 // none unless the caller says so.
+// Drift note: the planner branch mirrors the one in sim.ForController (internal/sim/compare.go); keep the two in step.
 func forController(name string, cfg planner.Config, sc sim.Scenario, announce bool) (sim.Scenario, sim.Controller, error) {
 	if name == "planner" && cfg.Cost != nil {
 		sc.AnnounceArrivals = announce
