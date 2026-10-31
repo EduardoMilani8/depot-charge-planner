@@ -1080,3 +1080,16 @@ func TestDemandTargetGivesWayOnUnreliableReadings(t *testing.T) {
 		t.Errorf("stale reading: notes %q total %v", p.Notes, totalKW(p))
 	}
 }
+
+// The lab interface (web/static/js/cost.js, isDeferredReason) recognises a deferred bus by this
+// reason prefix, so it must not change without changing the JavaScript and its test.
+func TestDeferredReasonPrefixIsPinnedForTheLab(t *testing.T) {
+	st := (&candidate{bus: model.Bus{ID: "B1"}, postPeakLaxityMin: 30}).deferredStatus()
+	const prefix = "adiado"
+	if !strings.HasPrefix(st.Reason, prefix) {
+		t.Fatalf("deferred reason %q must start with %q (web/static/js/cost.js isDeferredReason)", st.Reason, prefix)
+	}
+	if want := "adiado para depois da ponta: termina com folga de 30 min"; st.Reason != want {
+		t.Fatalf("reason = %q, want %q", st.Reason, want)
+	}
+}
