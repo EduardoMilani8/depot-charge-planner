@@ -8,11 +8,9 @@ import (
 	"runtime"
 
 	"github.com/EduardoMilani8/depot-charge-planner/internal/billing"
+	"github.com/EduardoMilani8/depot-charge-planner/internal/planner"
 	"github.com/EduardoMilani8/depot-charge-planner/internal/sim"
 )
-
-// defaultDeferMarginMin is the planner's own default for Params.DeferMarginMin = 0.
-const defaultDeferMarginMin = 45
 
 type presetDTO struct {
 	ID          string `json:"id"`
@@ -84,7 +82,7 @@ func (s *Server) defaults(r *http.Request) (any, *apiError) {
 			LabMaxWork: labMaxWork, LabMaxRunBuses: labMaxRunBuses, LabMaxRunChargers: labMaxRunChargers,
 			MaxArrivalMin: sim.MaxArrivalMin, MaxDemandPrice: sim.MaxDemandPrice, MaxNightsPerMonth: sim.MaxNightsPerMonth,
 			MaxDeferMarginMin: sim.MaxDeferMarginMin, DefaultNightsPerMonth: billing.DefaultNightsPerMonth,
-			DefaultDeferMarginMin: defaultDeferMarginMin, DemandVerdeNote: verdeNote,
+			DefaultDeferMarginMin: planner.DefaultDeferMarginMin, DemandVerdeNote: verdeNote,
 		},
 		Presets:     presets(),
 		Controllers: sim.ControllerNames,

@@ -131,8 +131,8 @@ import (
 // last-valid layer, the safe layer and Enforce still check every plan against the limit.
 
 const (
-	// defaultDeferMarginMin is CostPolicy.DeferMarginMin when it is 0.
-	defaultDeferMarginMin = 45
+	// DefaultDeferMarginMin is CostPolicy.DeferMarginMin (minutes) when it is 0.
+	DefaultDeferMarginMin = 45
 	// Share of the site budget the post-peak feasibility test may count on; the rest is
 	// the reserve for faults and noise (see the comment at the top).
 	deferBudgetFrac = 0.6
@@ -153,7 +153,7 @@ func (p CostPolicy) validate() error {
 
 func (p CostPolicy) margin() float64 {
 	if p.DeferMarginMin == 0 {
-		return defaultDeferMarginMin
+		return DefaultDeferMarginMin
 	}
 	return p.DeferMarginMin
 }

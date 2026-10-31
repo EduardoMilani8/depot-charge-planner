@@ -78,7 +78,7 @@ func ValidateParams(p GenParams, cfg planner.Config, seeds int) error {
 	}
 	if c := cfg.Cost; c != nil {
 		if !(c.DeferMarginMin >= 0 && c.DeferMarginMin <= MaxDeferMarginMin) {
-			return &FieldError{"defer-margin", fmt.Sprintf("must be a finite value in [0, %d] minutes (0 = the default, 45)", MaxDeferMarginMin)}
+			return &FieldError{"defer-margin", fmt.Sprintf("must be a finite value in [0, %d] minutes (0 = the default, %d)", MaxDeferMarginMin, planner.DefaultDeferMarginMin)}
 		}
 		if !(c.DemandTargetKW >= 0 && c.DemandTargetKW <= MaxLimitKW) {
 			return &FieldError{"demand-target", fmt.Sprintf("must be a finite value in [0, %g] kW (0 = off)", float64(MaxLimitKW))}

@@ -311,3 +311,15 @@ func TestRunDecisionLogOfACostAwareRunReplays(t *testing.T) {
 		t.Error("the log has no announced arrivals: the run was not cost-aware")
 	}
 }
+
+// The -defer-margin default and its help text come from the planner's own constant.
+func TestRunDeferMarginDefaultIsThePlannersOwn(t *testing.T) {
+	var out, errOut bytes.Buffer
+	run([]string{"-help"}, &out, &errOut)
+	want := fmt.Sprintf("(default %d)", planner.DefaultDeferMarginMin)
+	help := errOut.String()
+	i := strings.Index(help, "-defer-margin")
+	if i < 0 || !strings.Contains(help[i:i+400], want) {
+		t.Errorf("-help should show the default %s for -defer-margin:\n%s", want, help)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/EduardoMilani8/depot-charge-planner/internal/planner"
 	"github.com/EduardoMilani8/depot-charge-planner/internal/sim"
 )
 
@@ -339,5 +340,24 @@ func TestNightsPerMonthScalesTheEstimate(t *testing.T) {
 	}
 	if a, b := month(10), month(20); !(b > a) {
 		t.Errorf("monthly R$ with 20 nights (%v) must exceed 10 nights (%v)", b, a)
+	}
+}
+
+// The limits report the planner's own default margin, not a copy of it.
+func TestLimitsDefaultMarginIsThePlannersOwn(t *testing.T) {
+	var d struct {
+		Limits struct {
+			Default int `json:"default_defer_margin_min"`
+		} `json:"limits"`
+	}
+	decode(t, do(New(), newReq("GET", "/api/defaults", "")), &d)
+	if d.Limits.Default != planner.DefaultDeferMarginMin {
+		t.Errorf("limits say %d, planner.DefaultDeferMarginMin is %d", d.Limits.Default, planner.DefaultDeferMarginMin)
+	}
+	rec := do(New(), newReq("POST", "/api/compare", `{"cost_aware":true,"defer_margin_min":999}`))
+	var e struct{ Error string }
+	decode(t, rec, &e)
+	if !strings.Contains(e.Error, fmt.Sprintf("padrão, %d", planner.DefaultDeferMarginMin)) {
+		t.Errorf("message %q must quote the planner default", e.Error)
 	}
 }

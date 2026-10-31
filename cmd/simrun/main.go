@@ -38,8 +38,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// Energy cost (see docs/superpowers/specs/2026-10-11-custo-de-energia-design.md).
 	costAware := fs.Bool("cost-aware", false,
 		"planner: defer charging past the peak window when buses have slack, and cap the demand at -demand-target (needs a plug per bus and announced arrivals; the other controllers are unchanged)")
-	deferMargin := fs.Int("defer-margin", defaultDeferMarginMin,
-		"with -cost-aware: minutes of slack a deferred bus must still have when the peak ends (0..240; 0 = 45)")
+	deferMargin := fs.Int("defer-margin", planner.DefaultDeferMarginMin,
+		fmt.Sprintf("with -cost-aware: minutes of slack a deferred bus must still have when the peak ends (0..%d; 0 = %d)", sim.MaxDeferMarginMin, planner.DefaultDeferMarginMin))
 	demandTarget := fs.Float64("demand-target", 0,
 		"with -cost-aware: cap the grid demand near this many kW when readiness allows (0 = off; above -limit it has no effect). A cap can raise the monthly bill")
 	demandMode := fs.String("demand-mode", "azul",
@@ -182,9 +182,6 @@ func writeDecisionLog(path string, p sim.GenParams, cfg planner.Config) error {
 	}
 	return f.Close()
 }
-
-// defaultDeferMarginMin is the planner's own default for -defer-margin.
-const defaultDeferMarginMin = 45
 
 func nights(d sim.DemandParams) int {
 	if d.NightsPerMonth <= 0 {

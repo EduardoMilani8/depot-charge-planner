@@ -33,7 +33,7 @@ type Params struct {
 	//
 	// CostAware turns on the planner's cost policy: defer charging past the peak window
 	// and cap the demand at DemandTargetKW. DeferMarginMin 0 means the planner's default
-	// (45); both need CostAware. The other controllers never change.
+	// (planner.DefaultDeferMarginMin); both need CostAware. The other controllers never change.
 	CostAware      bool    `json:"cost_aware,omitempty"`
 	DeferMarginMin int     `json:"defer_margin_min,omitempty"`
 	DemandTargetKW float64 `json:"demand_target_kw,omitempty"`
@@ -124,7 +124,7 @@ func ptMessage(field string) string {
 	case "swap-back-min-need":
 		return fmt.Sprintf("Necessidade mínima para voltar: informe de 0 a %.0f kWh.", float64(sim.MaxLimitKW))
 	case "defer-margin":
-		return fmt.Sprintf("Folga do adiamento: informe de 0 a %d minutos (0 usa o padrão, 45).", sim.MaxDeferMarginMin)
+		return fmt.Sprintf("Folga do adiamento: informe de 0 a %d minutos (0 usa o padrão, %d).", sim.MaxDeferMarginMin, planner.DefaultDeferMarginMin)
 	case "demand-target":
 		return fmt.Sprintf("Meta de demanda: informe de 0 a %.0f kW (0 desliga).", float64(sim.MaxLimitKW))
 	case "defer-margin-needs-cost-aware":
