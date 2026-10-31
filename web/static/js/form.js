@@ -1,6 +1,6 @@
 import { h } from './dom.js';
 import { fieldSpecs } from './params.js';
-import { normalizeCostParams, hoursToMin, minToHours } from './cost.js';
+import { normalizeCostParams, hoursToMin, minToHours, hoursMessage } from './cost.js';
 
 const GROUPS = {
   swap: 'Rodízio (anti-vaivém)',
@@ -100,7 +100,8 @@ export function createForm(root, defaults, handlers) {
   function showError(key, message) {
     const entry = inputs.get(key);
     if (!entry) return false;
-    errors.get(key).textContent = message;
+    // The arrival fields are typed in hours; the server's message speaks minutes.
+    errors.get(key).textContent = entry.spec.kind === 'hours' ? hoursMessage(message) : message;
     entry.input.setAttribute('aria-invalid', 'true');
     // A field inside the collapsed "Avançado" block is not rendered until it is opened.
     const details = entry.input.closest('details');
@@ -127,10 +128,12 @@ export function createForm(root, defaults, handlers) {
 
   // A night of real data opened in the Execução tab ignores the cost fields (the server reads only the
   // spreadsheets there), so they are shown as inactive until a simulated scenario is chosen again.
+  // The hint sits outside the collapsed "Avançado" block (and outside the disabled fieldset, so its button
+  // works): it is what tells why the cost fields below are inactive.
   const realHint = h('div', { class: 'real-hint', hidden: true },
-    h('span', {}, 'Uma noite de dados reais está aberta na Execução e ignora estes campos: eles só valem para cenários simulados. '),
+    h('span', {}, 'Uma noite de dados reais está aberta na Execução e ignora os campos de custo (em Avançado): eles só valem para cenários simulados. '),
     h('button', { type: 'button', class: 'chip', onclick: () => setRealMode(false) }, 'Voltar ao cenário simulado'));
-  const costSet = h('fieldset', { class: 'group group-cost' }, h('legend', {}, GROUPS.cost), realHint);
+  const costSet = h('fieldset', { class: 'group group-cost' }, h('legend', {}, GROUPS.cost));
   function setRealMode(on) {
     costSet.disabled = on;
     costSet.classList.toggle('inactive', on);
@@ -146,6 +149,7 @@ export function createForm(root, defaults, handlers) {
   const form = h('form', { class: 'form', novalidate: true },
     presets,
     h('div', { class: 'grid' }, main),
+    realHint,
     h('details', { class: 'advanced' }, h('summary', {}, 'Avançado: rodízio e custo de energia'), swapSet, costSet),
     h('div', { class: 'actions' }, run),
     warnings);

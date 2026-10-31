@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   COST_KEYS, normalizeCostParams, costActive, hoursToMin, minToHours, hasBill, savingsSentence, withoutTarget,
-  targetComparison, needsTargetComparison, billSummary, peakBand, isDeferredReason, deferredWindows, describeCost,
+  targetComparison, needsTargetComparison, hoursMessage, billSummary, peakBand, isDeferredReason, deferredWindows, describeCost,
 } from '../static/js/cost.js';
 import { fmtBRL2 } from '../static/js/format.js';
 import { COLUMNS, BILL_COLUMNS, columnsFor, formatCell, describeParams, COST_TERMS } from '../static/js/glossary.js';
@@ -63,7 +63,7 @@ test('costActive: any cost or demand setting', () => {
 });
 
 const bill = (monthly, demand = 2000, demandBRL = 40000) => ({ demand_kw: demand, demand_brl: demandBRL, monthly_brl: monthly });
-const ctl = (name, monthly) => ({ name, aggregate: monthly === undefined ? { ready_pct: 90 } : { ready_pct: 90, bill: bill(monthly) } });
+const ctl = (name, monthly, ready = 90) => ({ name, aggregate: monthly === undefined ? { ready_pct: ready } : { ready_pct: ready, bill: bill(monthly) } });
 
 test('hasBill: only when a controller carries a bill', () => {
   assert.equal(hasBill({ controllers: [ctl('fifo'), ctl('planner')] }), false);
@@ -73,24 +73,47 @@ test('hasBill: only when a controller carries a bill', () => {
 
 const SAVINGS_TAIL = ' Compare com a porcentagem de ônibus prontos: um fifo que deixa ônibus sem carga gasta menos, então a comparação não é equivalente.';
 
-test('savingsSentence: planner against fifo and fifo-unplug, in pt-BR with two decimals and the word estimativa', () => {
+test('savingsSentence: all savings keep the "Economia" lead, in pt-BR with two decimals and the word estimativa', () => {
   const s = savingsSentence([ctl('fifo', 676578.5), ctl('fifo-unplug', 500000), ctl('planner', 415016.25)]);
-  assert.equal(s, 'Economia mensal estimada do planner: R$ 261.562,25 contra fifo e R$ 84.983,75 contra fifo-unplug (estimativa: demanda de uma noite tratada como a do mês).' + SAVINGS_TAIL);
+  assert.equal(s, 'Economia mensal estimada do planner: R$ 261.562,25 contra fifo e R$ 84.983,75 contra fifo-unplug (estimativa: demanda de uma noite tratada como a do mês).');
   assert.match(s, /estimativa/);
 });
 
-test('savingsSentence: a baseline that is cheaper is worded as a cost, not a negative saving', () => {
-  const s = savingsSentence([ctl('fifo', 100), ctl('fifo-unplug', 300), ctl('planner', 150)]);
-  assert.match(s, /custa R\$ 50,00 a mais contra fifo e R\$ 150,00 contra fifo-unplug/);
+test('savingsSentence: mixed signs get a neutral lead and one verb per clause', () => {
+  const s = savingsSentence([ctl('fifo', 100), ctl('fifo-unplug', 3337.45 + 100), ctl('planner', 100 + 80076.67)]);
+  assert.equal(s, 'Diferença mensal estimada do planner: custa R$ 80.076,67 a mais contra fifo e custa R$ 76.739,22 a mais contra fifo-unplug (estimativa: demanda de uma noite tratada como a do mês).');
+  const mixed = savingsSentence([ctl('fifo', 100), ctl('fifo-unplug', 500), ctl('planner', 300)]);
+  assert.equal(mixed, 'Diferença mensal estimada do planner: custa R$ 200,00 a mais contra fifo e economiza R$ 200,00 contra fifo-unplug (estimativa: demanda de uma noite tratada como a do mês).');
+  assert.doesNotMatch(mixed, /^Economia/);
 });
 
-test('savingsSentence: one baseline, equal bills, and no bill at all', () => {
+test('savingsSentence: a baseline that is cheaper is worded as a cost, not a negative saving', () => {
+  const s = savingsSentence([ctl('fifo', 100), ctl('planner', 150)]);
+  assert.equal(s, 'Diferença mensal estimada do planner: custa R$ 50,00 a mais contra fifo (estimativa: demanda de uma noite tratada como a do mês).');
+});
+
+test('savingsSentence: zero differences', () => {
+  assert.equal(savingsSentence([ctl('fifo', 200), ctl('planner', 200)]),
+    'Diferença mensal estimada do planner: não muda contra fifo (R$ 0,00) (estimativa: demanda de uma noite tratada como a do mês).');
+  assert.match(savingsSentence([ctl('fifo', 300), ctl('fifo-unplug', 200), ctl('planner', 200)]), /economiza R\$ 100,00 contra fifo e não muda contra fifo-unplug/);
+  assert.match(savingsSentence([ctl('fifo', 200.001), ctl('planner', 200)]), /não muda contra fifo/); // rounds to R$ 0,00
+});
+
+test('savingsSentence: one baseline, and no bill at all', () => {
   assert.match(savingsSentence([ctl('fifo', 300), ctl('planner', 200)]), /^Economia mensal estimada do planner: R\$ 100,00 contra fifo \(estimativa/);
-  assert.match(savingsSentence([ctl('fifo', 200), ctl('planner', 200)]), /R\$ 0,00 contra fifo/);
   assert.equal(savingsSentence([ctl('fifo'), ctl('planner')]), null);
   assert.equal(savingsSentence([ctl('fifo', 100)]), null); // no planner
   assert.equal(savingsSentence([ctl('edf', 100), ctl('planner', 90)]), null); // no baseline of the two
   assert.equal(savingsSentence([]), null);
+});
+
+test('savingsSentence: the equivalence caveat only when the planner readies more buses than a baseline', () => {
+  const unequal = savingsSentence([ctl('fifo', 300, 60), ctl('planner', 200, 100)]);
+  assert.ok(unequal.endsWith(SAVINGS_TAIL));
+  assert.doesNotMatch(savingsSentence([ctl('fifo', 300, 100), ctl('planner', 200, 100)]), /Compare com a porcentagem/);
+  assert.doesNotMatch(savingsSentence([ctl('fifo', 300, 100), ctl('planner', 200, 90)]), /Compare com a porcentagem/); // planner readies fewer
+  // one of two baselines is enough
+  assert.ok(savingsSentence([ctl('fifo', 300, 100), ctl('fifo-unplug', 300, 50), ctl('planner', 200, 100)]).endsWith(SAVINGS_TAIL));
 });
 
 test('withoutTarget removes the demand target and keeps cost_aware', () => {
@@ -183,6 +206,8 @@ test('peakBand: the 18:00-21:00 window as a hatched band, only for generated nig
   assert.equal(peakBand({ ...data, source: 'noite.csv' }), null); // an imported night has its own tariff
   assert.deepEqual(peakBand({ ...data, scenario: { horizon_min: 100, start_clock_min: 1080 } }), { from: 0, to: 100 });
   assert.deepEqual(peakBand({ ...data, scenario: { horizon_min: 600, start_clock_min: 1020 } }), { from: 60, to: 240 });
+  assert.deepEqual(peakBand({ ...data, scenario: { horizon_min: 600, start_clock_min: 1140 } }), { from: 0, to: 120 }); // starts inside the peak: what is left of it
+  assert.deepEqual(peakBand({ ...data, scenario: { horizon_min: 60, start_clock_min: 1140 } }), { from: 0, to: 60 });
   assert.equal(peakBand({ ...data, scenario: { horizon_min: 600, start_clock_min: 1260 } }), null); // starts after the peak and the next one is past the horizon
 });
 
@@ -217,4 +242,12 @@ test('needsTargetComparison: only a target on a cost-aware planner with a bill',
   assert.equal(needsTargetComparison(data({ cost_aware: true })), false);
   assert.equal(needsTargetComparison(data({ demand_target_kw: 1600 })), false);
   assert.equal(needsTargetComparison(null), false);
+});
+
+test('hoursMessage: the server speaks minutes since 18:00, the arrival fields are in hours', () => {
+  assert.equal(hoursMessage('Início das chegadas: informe de 0 a 599 minutos desde as 18:00 (180 = 21:00).'),
+    'Início das chegadas: informe de 0 a 9,98 horas depois das 18:00 (3 = 21:00).');
+  assert.equal(hoursMessage('Fim das chegadas: informe um valor maior que o início e até 600 minutos desde as 18:00 (a janela deve terminar antes da primeira saída).'),
+    'Fim das chegadas: informe um valor maior que o início e até 10 horas depois das 18:00 (a janela deve terminar antes da primeira saída).');
+  assert.equal(hoursMessage('Informe um número.'), 'Informe um número.');
 });

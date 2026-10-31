@@ -45,22 +45,44 @@ export function hasBill(data) {
 }
 
 // savingsSentence: what the planner saves per month against fifo and fifo-unplug, from the same
-// monthly figures the table shows. null without a bill. A negative saving is worded as a cost.
+// monthly figures the table shows. null without a bill. With only savings the lead is "Economia";
+// as soon as a difference is a cost (or nothing changes) the lead is neutral and each clause carries
+// its own verb, so a mixed result never reads as a contradiction. The equivalence caveat is added only
+// when the planner readies more buses than a baseline it is compared with (a fifo that leaves buses
+// uncharged spends less, so the comparison is not like for like).
 export function savingsSentence(controllers) {
   const data = { controllers };
   const pl = monthly(data, 'planner');
   if (!Number.isFinite(pl)) return null;
-  const parts = [];
+  const readyOf = (name) => controllers.find((c) => c.name === name)?.aggregate?.ready_pct;
+  const clauses = [];
+  let unequal = false;
   for (const base of ['fifo', 'fifo-unplug']) {
     const bm = monthly(data, base);
     if (!Number.isFinite(bm)) continue;
     const saved = bm - pl;
     const text = fmtBRL2(saved);
-    parts.push(text.startsWith('-') ? `custa ${fmtBRL2(-saved)} a mais contra ${base}` : `${text} contra ${base}`);
+    if (readyOf('planner') > readyOf(base)) unequal = true;
+    if (text.startsWith('-')) clauses.push({ base, saved: false, text: `custa ${fmtBRL2(-saved)} a mais contra ${base}` });
+    else if (text === 'R$ 0,00') clauses.push({ base, saved: false, text: `não muda contra ${base} (R$ 0,00)` });
+    else clauses.push({ base, saved: true, cost: false, text: `${text} contra ${base}`, verb: `economiza ${text} contra ${base}` });
   }
-  if (parts.length === 0) return null;
-  return `Economia mensal estimada do planner: ${parts.join(' e ')} (estimativa: demanda de uma noite tratada como a do mês).`
-    + ' Compare com a porcentagem de ônibus prontos: um fifo que deixa ônibus sem carga gasta menos, então a comparação não é equivalente.';
+  if (clauses.length === 0) return null;
+  const allSavings = clauses.every((c) => c.saved);
+  const body = allSavings ? clauses.map((c) => c.text) : clauses.map((c) => c.verb ?? c.text);
+  const lead = allSavings ? 'Economia mensal estimada do planner' : 'Diferença mensal estimada do planner';
+  return `${lead}: ${body.join(' e ')} (estimativa: demanda de uma noite tratada como a do mês).`
+    + (unequal ? ' Compare com a porcentagem de ônibus prontos: um fifo que deixa ônibus sem carga gasta menos, então a comparação não é equivalente.' : '');
+}
+
+// hoursMessage rewrites a server message about the arrival window, which speaks in minutes since
+// 18:00, for the fields that are typed in hours after 18:00 ("599 minutos desde as 18:00" -> "9,98 horas
+// depois das 18:00"). The server's own text is left alone.
+export function hoursMessage(message) {
+  const hours = (min) => String(minToHours(Number(min))).replace('.', ',');
+  return String(message)
+    .replace(/(\d+) minutos desde as 18:00/g, (_, m) => `${hours(m)} horas depois das 18:00`)
+    .replace(/\((\d+) = (\d{2}:\d{2})\)/g, (_, m, t) => `(${hours(m)} = ${t})`);
 }
 
 // withoutTarget: the same parameters with the demand target removed (cost_aware stays).
@@ -119,12 +141,16 @@ const PEAK_LENGTH = 3 * 60;
 export function peakBand(data) {
   if (data.source || !costActive(data.params)) return null;
   const horizon = data.scenario.horizon_min;
-  const from = (((PEAK_FROM_CLOCK - data.scenario.start_clock_min) % 1440) + 1440) % 1440;
+  const start = ((data.scenario.start_clock_min % 1440) + 1440) % 1440;
+  // A night that starts inside the peak has only what is left of it.
+  if (start > PEAK_FROM_CLOCK && start < PEAK_FROM_CLOCK + PEAK_LENGTH) return { from: 0, to: Math.min(horizon, PEAK_FROM_CLOCK + PEAK_LENGTH - start) };
+  const from = (((PEAK_FROM_CLOCK - start) % 1440) + 1440) % 1440;
   if (from >= horizon) return null;
   return { from, to: Math.min(horizon, from + PEAK_LENGTH) };
 }
 
-// The planner writes this reason for a bus held back until the peak ends (internal/planner/cost.go).
+// The planner writes this reason for a bus held back until the peak ends (internal/planner/cost.go,
+// candidate.deferredStatus). The Go test TestDeferredReasonPrefixIsPinnedForTheLab pins the prefix.
 export const isDeferredReason = (text) => typeof text === 'string' && text.startsWith('adiado');
 
 // deferredWindows: per bus id, the minute ranges during which the planner kept it deferred.
