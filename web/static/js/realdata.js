@@ -106,7 +106,7 @@ export const columns = () => COLUMNS.filter((c) => c.key !== 'plan_p99_micros');
 
 const SEAL_PEAK = 'Estimado: não há leituras de potência nesta noite; o pico vem das sessões de carga, tratadas como potência constante do início ao fim. Costuma subestimar o pico real. Com potencia.csv ele é medido.';
 const SEAL_COST = 'Estimado: o custo vem das sessões de carga espalhadas uniformemente entre o início e o fim de cada uma. Com potencia.csv ele é medido.';
-const NO_COST = 'Sem custo simulado comparável: faltam as colunas de tarifa em garagem.csv ou a janela de ponta atravessa a meia-noite, que o simulador não representa.';
+const NO_COST = 'Sem custo simulado comparável: faltam as colunas de tarifa em garagem.csv.';
 
 export const SEAL_PARTIAL = 'Parcial: a energia, o pico e o custo reais vêm de sessões ou leituras que não cobrem todos os ônibus (ou que divergem entre si). O valor é medido, mas é de parte da noite: não o compare, sem ressalva, com as linhas simuladas, que cobrem todos os ônibus.';
 

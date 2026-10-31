@@ -85,7 +85,7 @@ type Report struct {
 	Aggregate []ControllerResult `json:"aggregate"` // over the nights, in ReplayNames order
 	// RealAggregate: Buses, WithOutcome, Ready and LateDepartures are summed over the nights;
 	// ReadyPct and ShortfallKWh are means over the nights that have an outcome;
-	// EnergyKWh, PeakKW and CostBRL are means over the nights that have the value
+	// EnergyKWh, PeakKW, CostBRL, DemandKW, DemandBRL and MonthlyBRL are means over the nights that have the value
 	// (nil if none); the Estimated flags are true if any contributing night is.
 	// Partial is true if any night is; CoveredBuses is summed like Buses, and PartialNote
 	// says which kind of gap it is ("parcial: 5 de 6 ônibus", or the divergence note).
@@ -94,9 +94,15 @@ type Report struct {
 	// means over the nights with at least one bus that has a real outcome).
 	MatchedAggregate Matched `json:"matched_aggregate"`
 	// CostComparable is false when the simulated cost cannot be compared with the
-	// real one: no tariff, or a peak window that crosses midnight (sim.Tariff
-	// cannot express it, so the simulator prices the whole night off-peak).
-	CostComparable bool      `json:"cost_comparable"`
+	// real one: there is no tariff (the shared billing library prices any window, also
+	// one that crosses midnight).
+	CostComparable bool `json:"cost_comparable"`
+	// DemandBilled: garagem.csv has demand prices or a contract, so the real nights carry
+	// the demand fields and the simulated rows a Bill. NightsPerMonth is then the number
+	// of nights the monthly estimate multiplies the night's energy by. Both are absent
+	// from the JSON otherwise.
+	DemandBilled   bool      `json:"demand_billed,omitempty"`
+	NightsPerMonth int       `json:"nights_per_month,omitempty"`
 	Assumptions    []string  `json:"assumptions"` // fixed Portuguese statements
 	Warnings       []Warning `json:"warnings"`    // d.Warnings, then the ones Nights returned
 }
@@ -155,7 +161,7 @@ func Replay(ctx context.Context, d *Dataset, cfg planner.Config, o NightOptions,
 			}
 			// ForController builds the controller from the scenario of this very
 			// run (the planner reads it), so it is created here, in the goroutine.
-			sc, ctrl, err := sim.ForController(name, cfg, j.sc)
+			sc, ctrl, err := forController(name, cfg, j.sc, o.AnnounceArrivals)
 			if err != nil {
 				outs[i].err = err
 				return
@@ -187,6 +193,9 @@ func Replay(ctx context.Context, d *Dataset, cfg planner.Config, o NightOptions,
 	rep := &Report{
 		Nights:         make([]NightReport, 0, len(nights)),
 		CostComparable: costComparable(d.Garage),
+	}
+	if t := d.Garage.Tariff(); t.HasDemand() {
+		rep.DemandBilled, rep.NightsPerMonth = true, t.Nights()
 	}
 	perRow := make([][]sim.Metrics, len(ReplayNames))
 	for ni, n := range nights {
@@ -221,7 +230,7 @@ func Replay(ctx context.Context, d *Dataset, cfg planner.Config, o NightOptions,
 	}
 	rep.RealAggregate = realAggregate(nights)
 	rep.MatchedAggregate = matchedAggregate(rep.Nights)
-	rep.Assumptions = assumptions(o, d.Garage)
+	rep.Assumptions = assumptions(o, cfg)
 	rep.Warnings = append(append([]Warning{}, d.Warnings...), nightWarns...)
 	return rep, nil
 }
@@ -235,8 +244,20 @@ func cloneScenario(sc sim.Scenario) sim.Scenario {
 	return sc
 }
 
-// costComparable: the simulated cost needs a tariff the simulator can express.
-func costComparable(g Garage) bool { return g.HasTariff && g.PeakFromMin <= g.PeakToMin }
+// forController is sim.ForController with one difference: the replay is blind about the
+// future arrivals unless announce is set. sim.ForController announces them to a planner
+// with a cost policy (the generated scenarios have a known schedule); a recorded night has
+// none unless the caller says so.
+func forController(name string, cfg planner.Config, sc sim.Scenario, announce bool) (sim.Scenario, sim.Controller, error) {
+	if name == "planner" && cfg.Cost != nil {
+		sc.AnnounceArrivals = announce
+		return sc, sim.NewPlannerController(cfg, sc), nil
+	}
+	return sim.ForController(name, cfg, sc)
+}
+
+// costComparable: the simulated cost needs a tariff to price anything.
+func costComparable(g Garage) bool { return g.HasTariff }
 
 func finiteMetrics(m sim.Metrics) bool {
 	for _, v := range []float64{m.ReadyPct, m.ShortfallKWh, m.PeakKW, m.EnergyKWh, m.CostBRL, m.OperatorMoves} {
@@ -340,8 +361,8 @@ func matchedAggregate(nights []NightReport) Matched {
 func realAggregate(nights []Night) Real {
 	var a Real
 	var outN int
-	var eSum, pSum, cSum float64
-	var eN, pN, cN int
+	var eSum, pSum, cSum, dkSum, dbSum, mSum float64
+	var eN, pN, cN, dN int
 	figureNights := 0 // nights that have at least one real energy, peak or cost figure
 	for _, n := range nights {
 		r := n.Real
@@ -373,6 +394,13 @@ func realAggregate(nights []Night) Real {
 			cN++
 			a.CostEstimated = a.CostEstimated || r.CostEstimated
 		}
+		if r.DemandKW != nil && r.DemandBRL != nil && r.MonthlyBRL != nil {
+			dkSum += *r.DemandKW
+			dbSum += *r.DemandBRL
+			mSum += *r.MonthlyBRL
+			dN++
+			a.DemandEstimated = a.DemandEstimated || r.DemandEstimated
+		}
 	}
 	if outN > 0 {
 		a.ReadyPct /= float64(outN)
@@ -386,6 +414,7 @@ func realAggregate(nights []Night) Real {
 		return &v
 	}
 	a.EnergyKWh, a.PeakKW, a.CostBRL = mean(eSum, eN), mean(pSum, pN), mean(cSum, cN)
+	a.DemandKW, a.DemandBRL, a.MonthlyBRL = mean(dkSum, dN), mean(dbSum, dN), mean(mSum, dN)
 	// The figures are a mean over the nights that have them: when only some nights do, the
 	// aggregate must not read as complete (the simulated rows cover every night).
 	nightsGap := figureNights > 0 && figureNights < len(nights)
@@ -404,7 +433,7 @@ func realAggregate(nights []Night) Real {
 	return a
 }
 
-func assumptions(o NightOptions, g Garage) []string {
+func assumptions(o NightOptions, cfg planner.Config) []string {
 	soc := "As leituras de carga (SoC) dos ônibus são tratadas como perfeitas."
 	if o.SoCNoiseKWh > 0 && !math.IsInf(o.SoCNoiseKWh, 0) {
 		soc = fmt.Sprintf("As leituras de carga (SoC) dos ônibus têm ruído de %g kWh (desvio padrão), para testar a sensibilidade.", o.SoCNoiseKWh)
@@ -416,8 +445,12 @@ func assumptions(o NightOptions, g Garage) []string {
 		"\"planner\" supõe que os operadores executam todos os rodízios recomendados; \"planner (sem rodízio)\" supõe que nenhum é executado.",
 		"A operação real tomou decisões (ordem de ligação, rodízios manuais) que o planejador não vê; o simulador reproduz as condições da noite, não o passado minuto a minuto.",
 	}
-	if g.HasTariff && g.PeakFromMin > g.PeakToMin {
-		as = append(as, "A janela de ponta atravessa a meia-noite e o simulador não a representa: o custo simulado não é comparável com o custo real (o custo real usa a janela correta).")
+	if cfg.Cost != nil {
+		if o.AnnounceArrivals {
+			as = append(as, "\"planner\" com política de custo e chegadas anunciadas: ele conhece a agenda da noite (os ônibus que ainda não chegaram, com o horário e a carga reais de chegada), como se a garagem tivesse a escala em mãos; só o planner usa isso.")
+		} else {
+			as = append(as, "\"planner\" com política de custo, sem agenda: ele não conhece as chegadas futuras (como numa noite que se reproduz sem escala anunciada), por isso não adia carga para depois da ponta; só a meta de demanda, se houver, atua.")
+		}
 	}
 	return as
 }

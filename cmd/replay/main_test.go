@@ -456,36 +456,48 @@ func TestRunNoRealOutcomeIsNotReportedAsAllReady(t *testing.T) {
 }
 
 func TestRunCostNotComparable(t *testing.T) {
-	for name, edit := range map[string]func(string) string{
-		"window crossing midnight": replace("18:00,21:00", "22:00,06:00"),
-		"no tariff":                func(string) string { return "limite_kw\n400\n" },
-	} {
-		dir := copyDemo(t, map[string]func(string) string{"garagem.csv": edit})
-		code, out, errOut := runCmd("-dir", dir)
-		if code != 0 {
-			t.Fatalf("%s: exit %d: %s", name, code, errOut)
-		}
-		if !strings.Contains(out, "não é comparável") {
-			t.Errorf("%s: note missing:\n%s", name, out)
-		}
-		tbs := tables(out)
-		hdr := tbs[0][0]
-		for i, tb := range tbs {
-			for _, row := range tb[2:] {
-				if row[col(t, hdr, "cost R$")] != "—" {
-					t.Errorf("%s: table %d, %s cost = %q, want —", name, i, row[0], row[col(t, hdr, "cost R$")])
-				}
-			}
-		}
-		if name == "window crossing midnight" { // the real cost stays visible
-			if c := tbs[1][1][col(t, hdr, "cost R$")]; c == "—" {
-				t.Errorf("real cost must stay visible with a midnight window: %v", tbs[1][1])
+	// only a missing tariff makes the simulated cost not comparable; a window crossing
+	// midnight is priced by the shared billing library (TestRunMidnightWindowIsComparable)
+	dir := copyDemo(t, map[string]func(string) string{"garagem.csv": func(string) string { return "limite_kw\n400\n" }})
+	code, out, errOut := runCmd("-dir", dir)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	if !strings.Contains(out, "não é comparável") || strings.Contains(out, "meia-noite") {
+		t.Errorf("note missing or stale:\n%s", out)
+	}
+	tbs := tables(out)
+	hdr := tbs[0][0]
+	for i, tb := range tbs {
+		for _, row := range tb[2:] {
+			if row[col(t, hdr, "cost R$")] != "—" {
+				t.Errorf("table %d, %s cost = %q, want —", i, row[0], row[col(t, hdr, "cost R$")])
 			}
 		}
 	}
 	// and the demo, comparable, has no such note
 	if _, out, _ := runCmd("-dir", demoDir); strings.Contains(out, "não é comparável") {
 		t.Errorf("comparable demo shows the note")
+	}
+}
+
+func TestRunMidnightWindowIsComparable(t *testing.T) {
+	dir := copyDemo(t, map[string]func(string) string{"garagem.csv": replace("18:00,21:00", "22:00,06:00")})
+	code, out, errOut := runCmd("-dir", dir)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	if strings.Contains(out, "não é comparável") || strings.Contains(out, "meia-noite") {
+		t.Errorf("stale note:\n%s", out)
+	}
+	tbs := tables(out)
+	hdr := tbs[0][0]
+	for i, tb := range tbs {
+		for _, row := range tb[1:] {
+			if c := row[col(t, hdr, "cost R$")]; c == "—" {
+				t.Errorf("table %d, %s: cost is — with a comparable tariff", i, row[0])
+			}
+		}
 	}
 }
 

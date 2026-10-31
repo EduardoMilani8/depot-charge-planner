@@ -245,12 +245,14 @@ func TestReplayAssumptions(t *testing.T) {
 }
 
 func TestReplayCostComparable(t *testing.T) {
+	// a window crossing midnight is comparable now: the billing library prices it in the
+	// simulator too, and nothing is said about it in the assumptions
 	m := mutate(t, demoFiles(t), FileGaragem, "18:00,21:00", "22:00,06:00")
 	r := demoReplay(t, m, NightOptions{}, 2)
-	if r.CostComparable {
-		t.Errorf("window crossing midnight: CostComparable must be false")
+	if !r.CostComparable {
+		t.Errorf("window crossing midnight: CostComparable must be true")
 	}
-	if len(r.Assumptions) != 6 || !strings.Contains(r.Assumptions[5], "meia-noite") || !strings.Contains(r.Assumptions[5], "não é comparável") {
+	if len(r.Assumptions) != 5 {
 		t.Errorf("assumptions = %q", r.Assumptions)
 	}
 	wantPtr(t, "real cost stays visible", r.Nights[1].Real.CostBRL, 65*2.70)
@@ -260,7 +262,7 @@ func TestReplayCostComparable(t *testing.T) {
 		t.Errorf("no tariff: CostComparable must be false")
 	}
 	if len(r.Assumptions) != 5 {
-		t.Errorf("no tariff must not add the midnight line: %q", r.Assumptions)
+		t.Errorf("no tariff must not add assumptions: %q", r.Assumptions)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/EduardoMilani8/depot-charge-planner/internal/billing"
 	"github.com/EduardoMilani8/depot-charge-planner/internal/sim"
 )
 
@@ -56,6 +57,27 @@ type Garage struct {
 	PeakFromMin, PeakToMin  int     // minutes of the day; both 0 with HasTariff=false
 	PeakPrice, OffPeakPrice float64 // R$/kWh
 	HasTariff               bool
+
+	// Optional demand columns (all zero/false when absent or without a complete energy
+	// tariff). They map one to one to billing.Tariff; see Tariff.
+	DemandPeakPrice, DemandOffPeakPrice float64 // R$/kW (Verde: DemandPeakPrice is ignored)
+	ContractedKW                        float64 // 0 = no contract
+	DemandVerde                         bool    // modo_demanda = verde
+	NightsPerMonth                      int     // 0 = billing.DefaultNightsPerMonth
+}
+
+// Tariff is the garage's tariff for the shared billing library; the zero Tariff (no
+// prices at all) when garagem.csv has no complete energy tariff.
+func (g Garage) Tariff() billing.Tariff {
+	if !g.HasTariff {
+		return billing.Tariff{}
+	}
+	return billing.Tariff{
+		PeakFromMin: g.PeakFromMin, PeakToMin: g.PeakToMin,
+		PeakPrice: g.PeakPrice, OffPeakPrice: g.OffPeakPrice,
+		DemandPeakPrice: g.DemandPeakPrice, DemandOffPeakPrice: g.DemandOffPeakPrice,
+		DemandVerde: g.DemandVerde, ContractedKW: g.ContractedKW, NightsPerMonth: g.NightsPerMonth,
+	}
 }
 
 // Charger is one row of carregadores.csv (defaults already applied).
@@ -396,7 +418,8 @@ func loadGarage(t *Table) (Garage, error) {
 	if ferr := requireCols(t, "limite_kw"); ferr != nil {
 		return g, ferr
 	}
-	t.Known("limite_kw", "ponta_inicio", "ponta_fim", "preco_ponta", "preco_fora_ponta")
+	t.Known("limite_kw", "ponta_inicio", "ponta_fim", "preco_ponta", "preco_fora_ponta",
+		"demanda_preco_ponta", "demanda_preco_fora_ponta", "demanda_contratada_kw", "modo_demanda", "noites_por_mes")
 	if len(t.Rows) == 0 {
 		return g, &FieldError{File: t.File, Message: "o arquivo precisa de uma linha de dados"}
 	}
@@ -458,6 +481,82 @@ func loadGarage(t *Table) (Garage, error) {
 		g.PeakFromMin, g.PeakToMin, g.PeakPrice, g.OffPeakPrice, g.HasTariff = from, to, peak, off, true
 	} else {
 		t.warn(r.Line, "tarifa incompleta: custo não será calculado (informe ponta_inicio, ponta_fim, preco_ponta e preco_fora_ponta)")
+	}
+	return loadDemand(t, r, g)
+}
+
+// plain writes a limit without an exponent (1000000, not 1e+06).
+func plain(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
+
+// loadDemand reads the optional demand columns of garagem.csv. The limits are the
+// simulator's own (sim.MaxDemandPrice, sim.MaxLimitKW, sim.MaxNightsPerMonth), the same
+// that simrun and the lab enforce. Demand is billed only with a complete energy tariff
+// (the peak window defines the blocks of each price); otherwise the demand columns are
+// ignored with a warning, but still validated.
+func loadDemand(t *Table, r Row, g Garage) (Garage, error) {
+	priceCol := func(col string) (float64, *FieldError) {
+		v, ok, err := t.Float(r, col)
+		if err != nil || !ok {
+			return 0, err
+		}
+		switch {
+		case v < 0:
+			return 0, t.fieldErr(r, col, fmt.Sprintf("preço de demanda %s negativo: deve ser maior ou igual a 0", plain(v)))
+		case v > sim.MaxDemandPrice:
+			return 0, t.fieldErr(r, col, fmt.Sprintf("preço de demanda %s R$/kW fora da faixa: deve estar entre 0 e %s R$/kW", plain(v), plain(sim.MaxDemandPrice)))
+		}
+		return v, nil
+	}
+	var d Garage
+	var ferr *FieldError
+	if d.DemandPeakPrice, ferr = priceCol("demanda_preco_ponta"); ferr != nil {
+		return g, ferr
+	}
+	if d.DemandOffPeakPrice, ferr = priceCol("demanda_preco_fora_ponta"); ferr != nil {
+		return g, ferr
+	}
+	kw, ok, ferr := t.Float(r, "demanda_contratada_kw")
+	if ferr != nil {
+		return g, ferr
+	}
+	if ok && (kw < 0 || kw > sim.MaxLimitKW) {
+		if kw < 0 {
+			return g, t.fieldErr(r, "demanda_contratada_kw", fmt.Sprintf("demanda contratada %s kW negativa: deve ser maior ou igual a 0", plain(kw)))
+		}
+		return g, t.fieldErr(r, "demanda_contratada_kw", fmt.Sprintf("demanda contratada %s kW fora da faixa: deve estar entre 0 e %s kW", plain(kw), plain(sim.MaxLimitKW)))
+	}
+	d.ContractedKW = kw
+	switch mode := strings.ToLower(t.Str(r, "modo_demanda")); mode {
+	case "", "azul":
+	case "verde":
+		d.DemandVerde = true
+	default:
+		return g, t.fieldErr(r, "modo_demanda", fmt.Sprintf("modo %s inválido: use azul ou verde", shorten(t.Str(r, "modo_demanda"))))
+	}
+	nights, ok, ferr := t.Float(r, "noites_por_mes")
+	if ferr != nil {
+		return g, ferr
+	}
+	if ok {
+		if nights != float64(int(nights)) {
+			return g, t.fieldErr(r, "noites_por_mes", fmt.Sprintf("noites por mês %s inválido: deve ser um número inteiro", plain(nights)))
+		}
+		if nights < 0 || nights > sim.MaxNightsPerMonth {
+			return g, t.fieldErr(r, "noites_por_mes", fmt.Sprintf("noites por mês %s fora da faixa: deve estar de 0 a %d (0 = %d)", plain(nights), sim.MaxNightsPerMonth, billing.DefaultNightsPerMonth))
+		}
+		d.NightsPerMonth = int(nights)
+	}
+
+	if !g.HasTariff {
+		if d.DemandPeakPrice > 0 || d.DemandOffPeakPrice > 0 || d.ContractedKW > 0 {
+			t.warn(r.Line, "demanda ignorada: sem tarifa de energia completa não há janela de ponta para os blocos de demanda (informe ponta_inicio, ponta_fim, preco_ponta e preco_fora_ponta)")
+		}
+		return g, nil
+	}
+	g.DemandPeakPrice, g.DemandOffPeakPrice, g.ContractedKW = d.DemandPeakPrice, d.DemandOffPeakPrice, d.ContractedKW
+	g.DemandVerde, g.NightsPerMonth = d.DemandVerde, d.NightsPerMonth
+	if g.DemandVerde && g.DemandPeakPrice > 0 {
+		t.warn(r.Line, "modo_demanda verde: demanda_preco_ponta é ignorado (uma cobrança só, a de demanda_preco_fora_ponta, sobre o maior bloco da noite)")
 	}
 	return g, nil
 }

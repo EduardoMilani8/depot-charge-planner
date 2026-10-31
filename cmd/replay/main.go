@@ -172,7 +172,7 @@ func printReport(w io.Writer, rep *realdata.Report, cfg planner.Config) {
 // the mean cut to a whole number (that is how sim.Aggregate works).
 const aggregateNote = "média por noite, exceto plan violations e overshoot min, que são somas das noites, e plan changes, média arredondada para baixo"
 
-const noCostNote = "Nota: o custo simulado não é comparável com o custo real (sem tarifa, ou janela de ponta que atravessa a meia-noite): \"cost R$\" aparece como " + dash + " nas linhas simuladas."
+const noCostNote = "Nota: o custo simulado não é comparável com o custo real (garagem.csv não tem a tarifa de energia completa): \"cost R$\" aparece como " + dash + " nas linhas simuladas."
 
 // printTable prints the simrun columns (without p99): first the measured row.
 func printTable(w io.Writer, real realdata.Real, rows []realdata.ControllerResult, costComparable bool) {

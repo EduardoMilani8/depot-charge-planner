@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/EduardoMilani8/depot-charge-planner/internal/billing"
 	"github.com/EduardoMilani8/depot-charge-planner/internal/model"
 	"github.com/EduardoMilani8/depot-charge-planner/internal/sim"
 )
@@ -43,6 +44,17 @@ type Real struct {
 	PeakEstimated bool     `json:"peak_estimated"`
 	CostBRL       *float64 `json:"cost_brl"` // nil = no tariff or no energy data
 	CostEstimated bool     `json:"cost_estimated"`
+	// Demand billing (billing.Meter), only with demand prices or a contract in garagem.csv; nil
+	// and absent from the JSON otherwise. DemandKW is the largest clock-aligned 15-minute
+	// block, not the instantaneous PeakKW. DemandBRL is the demand charge after the
+	// contract rules, MonthlyBRL = CostBRL x nights per month + DemandBRL (an estimate: one
+	// night stands for the month). They come from the same source as CostBRL, so
+	// DemandEstimated equals CostEstimated: with readings the blocks are measured, with
+	// sessions the energy of each is spread uniformly over its minutes (estimated).
+	DemandKW        *float64 `json:"demand_kw,omitempty"`
+	DemandBRL       *float64 `json:"demand_brl,omitempty"`
+	MonthlyBRL      *float64 `json:"monthly_brl,omitempty"`
+	DemandEstimated bool     `json:"demand_estimated,omitempty"`
 	// Partial: energy, peak and cost come from sessions or readings that do not cover
 	// every bus of the night (or the readings and the sessions disagree by more than
 	// energyMismatch). The values are kept, but they are not the whole night.
@@ -76,6 +88,12 @@ type Night struct {
 type NightOptions struct {
 	// SoCNoiseKWh > 0 (finite) adds a soc_noise fault on every bus ("*", whole night).
 	SoCNoiseKWh float64
+	// AnnounceArrivals, with a cost policy (planner.Config.Cost) in Replay, lets the
+	// planner see the buses that have not arrived yet (the depot's schedule), which the
+	// peak deferral needs. The default (false) is the realistic one for a replay: an
+	// operator replaying a recorded night has no announced schedule unless they say so,
+	// so the policy runs blind and defers nothing. Without a cost policy it does nothing.
+	AnnounceArrivals bool
 }
 
 // Nights turns the dataset into one Night per night key, sorted by Key. It does
@@ -122,10 +140,6 @@ func (d *Dataset) Nights(o NightOptions) ([]Night, []Warning) {
 			" de potência em noites sem ônibus em onibus.csv: ignorada(s)"})
 	}
 	g := d.Garage
-	if g.HasTariff && g.PeakFromMin > g.PeakToMin {
-		ws = append(ws, Warning{File: FileGaragem, Message: "a janela de ponta atravessa a meia-noite; o simulador só aceita janelas dentro do mesmo dia " +
-			"e trata esse horário como fora de ponta: o custo real é calculado com a janela correta, mas o custo simulado não é comparável"})
-	}
 
 	var faults []sim.Fault
 	if o.SoCNoiseKWh > 0 && !math.IsInf(o.SoCNoiseKWh, 0) {
@@ -139,11 +153,7 @@ func (d *Dataset) Nights(o NightOptions) ([]Night, []Warning) {
 		chargers[i] = model.Charger{ID: c.ID, MaxKW: c.MaxKW, MinKW: c.MinKW, Efficiency: c.Efficiency, Status: model.ChargerOK}
 	}
 	defBattery := commonChargerKW(d.Chargers)
-	var tariff sim.Tariff
-	if g.HasTariff {
-		tariff = sim.Tariff{PeakFromMin: g.PeakFromMin, PeakToMin: g.PeakToMin, PeakPrice: g.PeakPrice, OffPeakPrice: g.OffPeakPrice}
-	}
-	cum := priceTable(g)
+	tariff := g.Tariff() // the whole tariff, demand included; a window crossing midnight is fine
 
 	keys := make([]string, 0, len(busesBy))
 	for k := range busesBy {
@@ -216,7 +226,7 @@ func (d *Dataset) Nights(o NightOptions) ([]Night, []Warning) {
 			FollowSwaps:   true,
 		}
 
-		real, busReal, notes := measured(buses, sessBy[k], powBy[k], g, cum, d.HasSessions)
+		real, busReal, notes := measured(buses, sessBy[k], powBy[k], tariff, origin, d.HasSessions)
 		if real.LateDepartures > 0 {
 			line := buses[0].Line
 			for _, b := range buses {
@@ -279,50 +289,23 @@ func commonChargerKW(cs []Charger) float64 {
 	return best
 }
 
-// priceAt is the tariff price at a minute of the day. Unlike sim.Tariff.PriceAt
-// it also handles a peak window that crosses midnight.
-func priceAt(g Garage, clockMin int) float64 {
-	if !g.HasTariff {
-		return 0
+// absMinute is t in whole minutes since base (base is a midnight, so minute % 1440 is the
+// clock minute and the 15-minute demand blocks stay aligned to the clock). Floor, also for
+// instants before base.
+func absMinute(base, t time.Time) int {
+	d := t.Sub(base)
+	m := int(d / time.Minute)
+	if d%time.Minute < 0 {
+		m--
 	}
-	m := ((clockMin % 1440) + 1440) % 1440
-	peak := m >= g.PeakFromMin && m < g.PeakToMin
-	if g.PeakFromMin > g.PeakToMin {
-		peak = m >= g.PeakFromMin || m < g.PeakToMin
-	}
-	if peak {
-		return g.PeakPrice
-	}
-	return g.OffPeakPrice
+	return m
 }
-
-// priceTable[m] = sum of the price of minutes 0..m-1 of a day.
-func priceTable(g Garage) [1441]float64 {
-	var cum [1441]float64
-	for m := 0; m < 1440; m++ {
-		cum[m+1] = cum[m] + priceAt(g, m)
-	}
-	return cum
-}
-
-// priceSpan is the sum of the per-minute price over n minutes starting at the
-// given minute of the day.
-func priceSpan(cum *[1441]float64, startClock, n int) float64 {
-	total := float64(n/1440) * cum[1440]
-	rem := n % 1440
-	if startClock+rem <= 1440 {
-		return total + cum[startClock+rem] - cum[startClock]
-	}
-	return total + cum[1440] - cum[startClock] + cum[startClock+rem-1440]
-}
-
-func clockOf(t time.Time) int { return t.Hour()*60 + t.Minute() }
 
 // measured computes the Real figures of one night and the per-bus outcomes. The
 // strings are warnings about how much of the night the figures cover (Partial).
 // hasSessions says whether sessoes.csv exists at all: a night without sessions in a
 // file that has them for other nights is a gap, one in a dataset without the file is not.
-func measured(buses []Bus, sess []Session, pow []PowerSample, g Garage, cum [1441]float64, hasSessions bool) (Real, []BusReal, []string) {
+func measured(buses []Bus, sess []Session, pow []PowerSample, tariff billing.Tariff, origin time.Time, hasSessions bool) (Real, []BusReal, []string) {
 	r := Real{Buses: len(buses), CoveredBuses: len(buses)}
 	busReal := make([]BusReal, 0, len(buses))
 	for _, b := range buses {
@@ -349,9 +332,17 @@ func measured(buses []Bus, sess []Session, pow []PowerSample, g Garage, cum [144
 		r.ReadyPct = 100 * float64(r.Ready) / float64(r.WithOutcome)
 	}
 
+	// The bill of the night comes from the shared billing library, fed by one source only:
+	// the readings if the night has any, else the sessions.
+	hasTariff := tariff != (billing.Tariff{})
+	base := time.Date(origin.Year(), origin.Month(), origin.Day(), 0, 0, 0, 0, time.UTC)
+	var meter *billing.Meter
+	if hasTariff && (len(pow) > 0 || len(sess) > 0) {
+		meter = billing.NewMeter(tariff)
+	}
 	var sampled sampleStats
 	if len(pow) > 0 {
-		sampled = integrate(pow, g)
+		sampled = integrate(pow, meter, base)
 	}
 	switch {
 	case len(sess) > 0:
@@ -372,18 +363,22 @@ func measured(buses []Bus, sess []Session, pow []PowerSample, g Garage, cum [144
 		p := sessionPeak(sess)
 		r.PeakKW, r.PeakEstimated = &p, true
 	}
-	if g.HasTariff {
-		switch {
-		case len(pow) > 0:
-			c := sampled.cost
-			r.CostBRL = &c
-		case len(sess) > 0:
-			c := 0.0
+	if meter != nil {
+		estimated := len(pow) == 0
+		if estimated {
+			// every session spread uniformly over its minutes (at least one), from its start
 			for _, s := range sess {
 				n := max(1, minutesSince(s.Start, s.End))
-				c += s.EnergyKWh * priceSpan(&cum, clockOf(s.Start), n) / float64(n)
+				from := absMinute(base, s.Start)
+				meter.AddKW(from, from+n, s.EnergyKWh*60/float64(n))
 			}
-			r.CostBRL, r.CostEstimated = &c, true
+		}
+		bill := meter.Bill()
+		c := bill.EnergyBRL
+		r.CostBRL, r.CostEstimated = &c, estimated
+		if tariff.HasDemand() {
+			dk, db, mb := bill.DemandKW, bill.DemandBRL, bill.MonthlyBRL
+			r.DemandKW, r.DemandBRL, r.MonthlyBRL, r.DemandEstimated = &dk, &db, &mb, estimated
 		}
 	}
 	return r, busReal, markPartial(&r, buses, sess, sampled, len(pow) > 0, hasSessions)
@@ -440,7 +435,7 @@ func markPartial(r *Real, buses []Bus, sess []Session, sampled sampleStats, hasP
 
 func (r Real) finite() bool {
 	ok := func(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
-	for _, p := range []*float64{r.EnergyKWh, r.PeakKW, r.CostBRL} {
+	for _, p := range []*float64{r.EnergyKWh, r.PeakKW, r.CostBRL, r.DemandKW, r.DemandBRL, r.MonthlyBRL} {
 		if p != nil && !ok(*p) {
 			return false
 		}
@@ -448,37 +443,57 @@ func (r Real) finite() bool {
 	return ok(r.ReadyPct) && ok(r.ShortfallKWh)
 }
 
-type sampleStats struct{ energy, peak, cost float64 }
+type sampleStats struct{ energy, peak float64 }
 
 // integrate walks the night's samples in time order (Dataset.Power is only
 // sorted per charger, so it sorts a copy). Each reading holds until the next
-// reading of the same charger; the last one holds for 0 minutes. The cost of an
-// interval uses the price at its start.
-func integrate(pow []PowerSample, g Garage) sampleStats {
+// reading of the same charger; the last one holds for 0 minutes. When meter is not nil it
+// is fed the grid power that really flows, for the cost and the demand blocks: between two
+// consecutive instants, the sum of the held readings that are followed by another reading
+// of their charger (the same energy as above), from the minute of the first to the minute
+// of the second (sub-minute timestamps are floored to the minute; the CSVs are in minutes).
+func integrate(pow []PowerSample, meter *billing.Meter, base time.Time) sampleStats {
 	sorted := append([]PowerSample(nil), pow...)
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].At.Before(sorted[j].At) })
 	type held struct {
-		at time.Time
-		kw float64
+		at       time.Time
+		kw       float64
+		followed bool // another reading of the charger comes later
+	}
+	last := map[string]int{} // index (in sorted) of each charger's last reading
+	for i, s := range sorted {
+		last[s.ChargerID] = i
 	}
 	cur := map[string]held{}
 	var st sampleStats
-	total := 0.0
+	total, flowing := 0.0, 0.0
 	for i := 0; i < len(sorted); {
 		at := sorted[i].At
 		j := i
 		for ; j < len(sorted) && sorted[j].At.Equal(at); j++ {
 			s := sorted[j]
 			if h, ok := cur[s.ChargerID]; ok {
-				e := h.kw * at.Sub(h.at).Hours()
-				st.energy += e
-				st.cost += e * priceAt(g, clockOf(h.at))
+				st.energy += h.kw * at.Sub(h.at).Hours()
 				total -= h.kw
+				if h.followed {
+					flowing -= h.kw
+				}
 			}
+			h := held{at, s.KW, j != last[s.ChargerID]}
 			total += s.KW
-			cur[s.ChargerID] = held{at, s.KW}
+			if h.followed {
+				flowing += h.kw
+			}
+			cur[s.ChargerID] = h
 		}
 		st.peak = math.Max(st.peak, total) // after every reading of the instant
+		if meter != nil && j < len(sorted) {
+			kw := flowing
+			if kw < 1e-9 { // running sums leave rounding dust where the exact value is 0
+				kw = 0
+			}
+			meter.AddKW(absMinute(base, at), absMinute(base, sorted[j].At), kw)
+		}
 		i = j
 	}
 	return st

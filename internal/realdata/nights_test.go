@@ -380,19 +380,18 @@ func TestNightsDefaultBatteryPower(t *testing.T) {
 }
 
 func TestNightsPeakWindowCrossingMidnight(t *testing.T) {
-	// 22:00-06:00 is peak. The simulator's Tariff cannot express it (PriceAt would
-	// never be peak), so the real cost is computed correctly and Nights warns.
+	// 22:00-06:00 is peak. The shared billing library prices a window that crosses midnight,
+	// both the real cost and the simulated one, so Nights has nothing to warn about.
 	m := mutate(t, demoFiles(t), FileGaragem, "18:00,21:00", "22:00,06:00")
 	ns, ws := demoNights(t, m, NightOptions{})
 	wantPtr(t, "measured CostBRL", ns[1].Real.CostBRL, 65*2.70)
-	found := false
 	for _, w := range ws {
-		if w.File == FileGaragem && strings.Contains(w.Message, "meia-noite") {
-			found = true
+		if strings.Contains(w.Message, "meia-noite") {
+			t.Errorf("stale midnight-crossing warning: %v", w)
 		}
 	}
-	if !found {
-		t.Errorf("no midnight-crossing warning: %v", ws)
+	if tf := ns[0].Scenario.Tariff; tf.PeakFromMin != 1320 || tf.PeakToMin != 360 || !tf.InPeak(1380) || !tf.InPeak(60) || tf.InPeak(720) {
+		t.Errorf("scenario tariff does not carry the window: %+v", tf)
 	}
 	// sessions-only: B01 20:00-24:00 = 50 kWh/h, 20-22 off-peak, 22-24 peak;
 	// B02 22:00-02:00 and B03 23:30-03:30 lie entirely inside the 22:00-06:00 peak

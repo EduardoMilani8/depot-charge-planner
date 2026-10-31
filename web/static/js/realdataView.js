@@ -480,7 +480,7 @@ export function createRealView({ filesRoot, outRoot, onOpenRun, onClear }) {
       h('p', { class: 'note' }, h('strong', {}, '—'), ' = a planilha não traz esse dado. ', h('span', { class: 'seal' }, 'estimado'),
         ' = calculado com as sessões de carga espalhadas uniformemente no tempo (subestima o pico); com potencia.csv o valor é medido. ',
         'Violações do plano, minutos acima do limite, mudanças de plano e movimentações não são medidos na realidade. Cada linha simulada é uma execução por noite (ou a média das noites).'),
-      report.cost_comparable ? null : h('p', { class: 'note' }, 'O custo simulado aparece como “—”: faltam as colunas de tarifa em garagem.csv ou a janela de ponta atravessa a meia-noite, que o simulador não representa. O custo real, quando existe, continua na linha real.'),
+      report.cost_comparable ? null : h('p', { class: 'note' }, 'O custo simulado aparece como “—”: faltam as colunas de tarifa em garagem.csv. O custo real, quando existe, continua na linha real.'),
       lastNoise > 0 ? h('p', { class: 'note' }, `Esta comparação usou ruído de ${fmtNum(lastNoise, 1)} kWh na leitura de carga. A execução detalhada não aplica esse ruído.`) : null,
     ];
   }
