@@ -170,8 +170,19 @@ func TestRunBillColumnsAndSavingsMatchTheMetrics(t *testing.T) {
 	if line == "" {
 		t.Fatalf("no savings line:\n%s", out)
 	}
-	if !strings.Contains(line, "estimativa") && !strings.Contains(out, "estimativa") {
-		t.Errorf("the monthly figure must be labelled as an estimate:\n%s", out)
+	// The monthly figures are labelled as an estimate, with the nights they assume, and the
+	// savings line warns that the comparison is not like for like.
+	note := ""
+	for _, l := range lines {
+		if strings.HasPrefix(l, "monthly R$ = estimativa") {
+			note = l
+		}
+	}
+	if !strings.Contains(note, "x 22 noites") || !strings.Contains(note, "proxy") {
+		t.Errorf("the note under the table must label monthly R$ an estimate with 22 nights: %q", note)
+	}
+	if !strings.Contains(line, "ready%") || !strings.Contains(line, "não é uma comparação equivalente") {
+		t.Errorf("the savings line lacks the ready%% caveat: %q", line)
 	}
 	pl := byName["planner"].Bill.MonthlyBRL
 	for _, base := range []string{"fifo", "fifo-unplug"} {
@@ -321,5 +332,58 @@ func TestRunDeferMarginDefaultIsThePlannersOwn(t *testing.T) {
 	i := strings.Index(help, "-defer-margin")
 	if i < 0 || !strings.Contains(help[i:i+400], want) {
 		t.Errorf("-help should show the default %s for -defer-margin:\n%s", want, help)
+	}
+}
+
+// -defer-margin 0 means the planner's default, and the header says the margin in force.
+func TestRunHeaderShowsTheEffectiveDeferMargin(t *testing.T) {
+	out, _ := runOK(t, costArgs("-cost-aware", "-defer-margin", "0")...)
+	if !strings.Contains(out, "defer margin 45 min") || strings.Contains(out, "defer margin 0 min") {
+		t.Errorf("header should say 45 min for -defer-margin 0:\n%s", out)
+	}
+	out, _ = runOK(t, costArgs("-cost-aware", "-defer-margin", "30")...)
+	if !strings.Contains(out, "defer margin 30 min") {
+		t.Errorf("header should say 30 min:\n%s", out)
+	}
+}
+
+// -nights-per-month 0 is the default (30 nights), exactly as leaving the flag out.
+func TestRunNightsPerMonthZeroIsTheDefault(t *testing.T) {
+	base := costArgs("-demand-peak-price", "40", "-demand-offpeak-price", "20")
+	def, _ := runOK(t, base...)
+	zero, _ := runOK(t, append(base, "-nights-per-month", "0")...)
+	if blankP99(def) != blankP99(zero) {
+		t.Errorf("-nights-per-month 0 differs from the default:\n%s\n%s", def, zero)
+	}
+	if !strings.Contains(zero, "30 nights/month") || !strings.Contains(zero, "x 30 noites") {
+		t.Errorf("30 nights expected:\n%s", zero)
+	}
+	var out, errOut bytes.Buffer
+	run([]string{"-help"}, &out, &errOut)
+	if !strings.Contains(errOut.String(), "0 = 30; otherwise 1..31") {
+		t.Errorf("-help should say 0 = 30, otherwise 1..31:\n%s", errOut.String())
+	}
+}
+
+// Without cost flags the decision log is byte for byte what the previous code wrote:
+// NewDecisionLogWithConfig on the plain planner controller.
+func TestRunDecisionLogWithoutCostFlagsIsUnchanged(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "decisions.jsonl")
+	runOK(t, "-buses", "4", "-chargers", "2", "-limit", "200", "-seeds", "1", "-log", path)
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := sim.DefaultGenParams()
+	p.NumBuses, p.NumChargers, p.LimitKW = 4, 2, 200
+	cfg := planner.DefaultConfig()
+	sc := sim.Generate(p, 1)
+	var want bytes.Buffer
+	sim.Run(sc, sim.NewPlannerController(cfg, sc), sim.NewDecisionLogWithConfig(&want, cfg))
+	if want.Len() == 0 || !bytes.Equal(got, want.Bytes()) {
+		t.Errorf("the log without cost flags changed (%d bytes, want %d)", len(got), want.Len())
+	}
+	if bytes.Contains(got, []byte("Cost")) {
+		t.Error("a plain log must not mention Cost")
 	}
 }

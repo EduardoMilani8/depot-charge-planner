@@ -52,7 +52,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.IntVar(&p.ArrivalToMin, "arrival-to", 0,
 		fmt.Sprintf("last minute buses may arrive, from 18:00 (up to %d; must be after -arrival-from; the peak window is minutes 0..180)", sim.MaxArrivalMin))
 	fs.IntVar(&p.Demand.NightsPerMonth, "nights-per-month", billing.DefaultNightsPerMonth,
-		"nights the monthly estimate multiplies the night's energy by (1..31; with demand prices)")
+		fmt.Sprintf("nights the monthly estimate multiplies the night's energy by (0 = %d; otherwise 1..%d; only with demand prices)", billing.DefaultNightsPerMonth, sim.MaxNightsPerMonth))
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -109,7 +109,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, ", arrivals: minutes %d-%d", p.ArrivalFromMin, p.ArrivalToMin)
 	}
 	if cfg.Cost != nil {
-		fmt.Fprintf(stdout, ", cost-aware: defer margin %d min", *deferMargin)
+		margin := *deferMargin
+		if margin == 0 {
+			margin = planner.DefaultDeferMarginMin // 0 means the planner's default
+		}
+		fmt.Fprintf(stdout, ", cost-aware: defer margin %d min", margin)
 		if *demandTarget > 0 {
 			fmt.Fprintf(stdout, ", demand target %g kW", *demandTarget)
 		}
@@ -232,5 +236,5 @@ func printBillNotes(w io.Writer, results []sim.ControllerResult, nightsPerMonth 
 		}
 		sep = ", "
 	}
-	fmt.Fprintln(w)
+	fmt.Fprintln(w, "; compare com o ready%: um fifo que deixa ônibus sem carga gasta menos, então não é uma comparação equivalente")
 }
