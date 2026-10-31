@@ -2,3 +2,6 @@
 *.out
 /bin/
 /decisions.jsonl
+/replay
+/lab
+/simrun
