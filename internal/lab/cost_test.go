@@ -321,8 +321,13 @@ func TestWarnings(t *testing.T) {
 		t.Errorf("target above the limit: warnings %q", r.Warnings)
 	}
 	r, _ = postCompare(t, `{"buses":6,"chargers":3,"limit_kw":300,"seeds":1,"cost_aware":true}`)
-	if len(r.Warnings) != 1 || !strings.Contains(r.Warnings[0], "tomada") {
-		t.Errorf("fewer chargers than buses: warnings %q", r.Warnings)
+	if len(r.Warnings) != 1 || !strings.Contains(r.Warnings[0], "tomada") ||
+		strings.Contains(r.Warnings[0], "só a meta de demanda atua") || !strings.Contains(r.Warnings[0], "não muda nada") {
+		t.Errorf("fewer chargers than buses, no target: warnings %q", r.Warnings)
+	}
+	r, _ = postCompare(t, `{"buses":6,"chargers":3,"limit_kw":300,"seeds":1,"cost_aware":true,"demand_target_kw":200}`)
+	if len(r.Warnings) != 1 || !strings.Contains(r.Warnings[0], "só a meta de demanda atua") {
+		t.Errorf("fewer chargers than buses, with a target: warnings %q", r.Warnings)
 	}
 	rec := do(New(), newReq("POST", "/api/run", `{"buses":4,"chargers":4,"limit_kw":300,"demand_verde":true,"demand_peak_price":40,"demand_offpeak_price":20}`))
 	var run struct{ Warnings []string }

@@ -182,7 +182,13 @@ func (p Params) warnings() []string {
 		w = append(w, fmt.Sprintf("A meta de demanda (%.0f kW) é maior que o limite da garagem (%.0f kW): não tem efeito.", p.DemandTargetKW, p.LimitKW))
 	}
 	if p.CostAware && p.Chargers < p.Buses {
-		w = append(w, "Com menos carregadores que ônibus o planejador não adia a carga para depois da ponta (cada ônibus precisa de uma tomada); só a meta de demanda atua.")
+		msg := "Com menos carregadores que ônibus o planejador não adia a carga para depois da ponta (cada ônibus precisa de uma tomada)"
+		if p.DemandTargetKW > 0 {
+			msg += "; só a meta de demanda atua."
+		} else {
+			msg += ", e sem meta de demanda o modo consciente de custo não muda nada."
+		}
+		w = append(w, msg)
 	}
 	return w
 }
