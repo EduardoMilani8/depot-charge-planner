@@ -1,0 +1,1041 @@
+{
+  "nights": [
+    {
+      "key": "2026-03-04",
+      "buses": 3,
+      "real": {
+        "buses": 3,
+        "with_outcome": 3,
+        "ready": 2,
+        "ready_pct": 66.66666666666667,
+        "shortfall_kwh": 45,
+        "energy_kwh": 480,
+        "peak_kw": 120,
+        "peak_estimated": true,
+        "cost_brl": 522.0000000000238,
+        "cost_estimated": true,
+        "partial": false,
+        "covered_buses": 3,
+        "partial_note": "",
+        "late_departures": 0
+      },
+      "controllers": [
+        {
+          "name": "fifo",
+          "aggregate": {
+            "buses": 3,
+            "ready": 3,
+            "ready_pct": 100,
+            "shortfall_kwh": 0,
+            "peak_kw": 150.00000000000003,
+            "plan_violations": 0,
+            "overshoot_min": 0,
+            "energy_kwh": 564.7728436995077,
+            "cost_brl": 773.7955593295569,
+            "plan_changes": 6,
+            "layer_ticks": {
+              "normal": 691
+            },
+            "plan_p99_micros": 0,
+            "operator_moves": 0
+          },
+          "seeds": [
+            {
+              "seed": 1,
+              "metrics": {
+                "buses": 3,
+                "ready": 3,
+                "ready_pct": 100,
+                "shortfall_kwh": 0,
+                "peak_kw": 150.00000000000003,
+                "plan_violations": 0,
+                "overshoot_min": 0,
+                "energy_kwh": 564.7728436995077,
+                "cost_brl": 773.7955593295569,
+                "plan_changes": 6,
+                "layer_ticks": {
+                  "normal": 691
+                },
+                "plan_p99_micros": 0,
+                "operator_moves": 0
+              }
+            }
+          ]
+        },
+        {
+          "name": "edf",
+          "aggregate": {
+            "buses": 3,
+            "ready": 3,
+            "ready_pct": 100,
+            "shortfall_kwh": 0,
+            "peak_kw": 150.00000000000003,
+            "plan_violations": 0,
+            "overshoot_min": 0,
+            "energy_kwh": 564.7728436995077,
+            "cost_brl": 773.7955593295569,
+            "plan_changes": 6,
+            "layer_ticks": {
+              "normal": 691
+            },
+            "plan_p99_micros": 0,
+            "operator_moves": 0
+          },
+          "seeds": [
+            {
+              "seed": 1,
+              "metrics": {
+                "buses": 3,
+                "ready": 3,
+                "ready_pct": 100,
+                "shortfall_kwh": 0,
+                "peak_kw": 150.00000000000003,
+                "plan_violations": 0,
+                "overshoot_min": 0,
+                "energy_kwh": 564.7728436995077,
+                "cost_brl": 773.7955593295569,
+                "plan_changes": 6,
+                "layer_ticks": {
+                  "normal": 691
+                },
+                "plan_p99_micros": 0,
+                "operator_moves": 0
+              }
+            }
+          ]
+        },
+        {
+          "name": "fifo-unplug",
+          "aggregate": {
+            "buses": 3,
+            "ready": 3,
+            "ready_pct": 100,
+            "shortfall_kwh": 0,
+            "peak_kw": 150.00000000000003,
+            "plan_violations": 0,
+            "overshoot_min": 0,
+            "energy_kwh": 564.7728436995077,
+            "cost_brl": 773.7955593295569,
+            "plan_changes": 6,
+            "layer_ticks": {
+              "normal": 691
+            },
+            "plan_p99_micros": 0,
+            "operator_moves": 2
+          },
+          "seeds": [
+            {
+              "seed": 1,
+              "metrics": {
+                "buses": 3,
+                "ready": 3,
+                "ready_pct": 100,
+                "shortfall_kwh": 0,
+                "peak_kw": 150.00000000000003,
+                "plan_violations": 0,
+                "overshoot_min": 0,
+                "energy_kwh": 564.7728436995077,
+                "cost_brl": 773.7955593295569,
+                "plan_changes": 6,
+                "layer_ticks": {
+                  "normal": 691
+                },
+                "plan_p99_micros": 0,
+                "operator_moves": 2
+              }
+            }
+          ]
+        },
+        {
+          "name": "safe",
+          "aggregate": {
+            "buses": 3,
+            "ready": 3,
+            "ready_pct": 100,
+            "shortfall_kwh": 0,
+            "peak_kw": 176.09185063319228,
+            "plan_violations": 0,
+            "overshoot_min": 0,
+            "energy_kwh": 670.2127659574438,
+            "cost_brl": 868.6914893617022,
+            "plan_changes": 6,
+            "layer_ticks": {
+              "safe": 691
+            },
+            "plan_p99_micros": 0,
+            "operator_moves": 0
+          },
+          "seeds": [
+            {
+              "seed": 1,
+              "metrics": {
+                "buses": 3,
+                "ready": 3,
+                "ready_pct": 100,
+                "shortfall_kwh": 0,
+                "peak_kw": 176.09185063319228,
+                "plan_violations": 0,
+                "overshoot_min": 0,
+                "energy_kwh": 670.2127659574438,
+                "cost_brl": 868.6914893617022,
+                "plan_changes": 6,
+                "layer_ticks": {
+                  "safe": 691
+                },
+                "plan_p99_micros": 0,
+                "operator_moves": 0
+              }
+            }
+          ]
+        },
+        {
+          "name": "planner",
+          "aggregate": {
+            "buses": 3,
+            "ready": 3,
+            "ready_pct": 100,
+            "shortfall_kwh": 0,
+            "peak_kw": 150.00000000000003,
+            "plan_violations": 0,
+            "overshoot_min": 0,
+            "energy_kwh": 597.9204554237497,
+            "cost_brl": 803.6284098813748,
+            "plan_changes": 6,
+            "layer_ticks": {
+              "normal": 691
+            },
+            "plan_p99_micros": 0,
+            "operator_moves": 0
+          },
+          "seeds": [
+            {
+              "seed": 1,
+              "metrics": {
+                "buses": 3,
+                "ready": 3,
+                "ready_pct": 100,
+                "shortfall_kwh": 0,
+                "peak_kw": 150.00000000000003,
+                "plan_violations": 0,
+                "overshoot_min": 0,
+                "energy_kwh": 597.9204554237497,
+                "cost_brl": 803.6284098813748,
+                "plan_changes": 6,
+                "layer_ticks": {
+                  "normal": 691
+                },
+                "plan_p99_micros": 0,
+                "operator_moves": 0
+              }
+            }
+          ]
+        },
+        {
+          "name": "planner (sem rodízio)",
+          "aggregate": {
+            "buses": 3,
+            "ready": 3,
+            "ready_pct": 100,
+            "shortfall_kwh": 0,
+            "peak_kw": 150.00000000000003,
+            "plan_violations": 0,
+            "overshoot_min": 0,
+            "energy_kwh": 597.9204554237497,
+            "cost_brl": 803.6284098813748,
+            "plan_changes": 6,
+            "layer_ticks": {
+              "normal": 691
+            },
+            "plan_p99_micros": 0,
+            "operator_moves": 0
+          },
+          "seeds": [
+            {
+              "seed": 1,
+              "metrics": {
+                "buses": 3,
+                "ready": 3,
+                "ready_pct": 100,
+                "shortfall_kwh": 0,
+                "peak_kw": 150.00000000000003,
+                "plan_violations": 0,
+                "overshoot_min": 0,
+                "energy_kwh": 597.9204554237497,
+                "cost_brl": 803.6284098813748,
+                "plan_changes": 6,
+                "layer_ticks": {
+                  "normal": 691
+                },
+                "plan_p99_micros": 0,
+                "operator_moves": 0
+              }
+            }
+          ]
+        }
+      ],
+      "per_bus": [
+        {
+          "id": "B01",
+          "capacity_kwh": 300,
+          "target_kwh": 270,
+          "real_final_kwh": 273,
+          "real_ready": true,
+          "planner_final_kwh": 281.8437408302889,
+          "planner_ready": true,
+          "no_swap_final_kwh": 281.8437408302889,
+          "no_swap_ready": true
+        },
+        {
+          "id": "B02",
+          "capacity_kwh": 300,
+          "target_kwh": 255,
+          "real_final_kwh": 210,
+          "real_ready": false,
+          "planner_final_kwh": 268.09686027832737,
+          "planner_ready": true,
+          "no_swap_final_kwh": 268.09686027832737,
+          "no_swap_ready": true
+        },
+        {
+          "id": "B03",
+          "capacity_kwh": 300,
+          "target_kwh": 270,
+          "real_final_kwh": 270,
+          "real_ready": true,
+          "planner_final_kwh": 282.1046269897072,
+          "planner_ready": true,
+          "no_swap_final_kwh": 282.1046269897072,
+          "no_swap_ready": true
+        }
+      ],
+      "matched": {
+        "buses": 3,
+        "planner_ready_pct": 100,
+        "planner_shortfall_kwh": 0,
+        "no_swap_ready_pct": 100,
+        "no_swap_shortfall_kwh": 0
+      }
+    },
+    {
+      "key": "2026-03-05",
+      "buses": 3,
+      "real": {
+        "buses": 3,
+        "with_outcome": 2,
+        "ready": 1,
+        "ready_pct": 50,
+        "shortfall_kwh": 6,
+        "energy_kwh": 65,
+        "peak_kw": 140,
+        "peak_estimated": false,
+        "cost_brl": 58.5,
+        "cost_estimated": false,
+        "partial": true,
+        "covered_buses": 2,
+        "partial_note": "parcial: 2 de 3 ônibus",
+        "late_departures": 0
+      },
+      "controllers": [
+        {
+          "name": "fifo",
+          "aggregate": {
+            "buses": 3,
+            "ready": 3,
+            "ready_pct": 100,
+            "shortfall_kwh": 0,
+            "peak_kw": 300.00000000000006,
+            "plan_violations": 0,
+            "overshoot_min": 0,
+            "energy_kwh": 487.75484948096965,
+            "cost_brl": 438.9793645328727,
+            "plan_changes": 6,
+            "layer_ticks": {
+              "normal": 631
+            },
+            "plan_p99_micros": 0,
+            "operator_moves": 0
+          },
+          "seeds": [
+            {
+              "seed": 1,
+              "metrics": {
+                "buses": 3,
+                "ready": 3,
+                "ready_pct": 100,
+                "shortfall_kwh": 0,
+                "peak_kw": 300.00000000000006,
+                "plan_violations": 0,
+                "overshoot_min": 0,
+                "energy_kwh": 487.75484948096965,
+                "cost_brl": 438.9793645328727,
+                "plan_changes": 6,
+                "layer_ticks": {
+                  "normal": 631
+                },
+                "plan_p99_micros": 0,
+                "operator_moves": 0
+              }
+            }
+          ]
+        },
+        {
+          "name": "edf",
+          "aggregate": {
+            "buses": 3,
+            "ready": 3,
+            "ready_pct": 100,
+            "shortfall_kwh": 0,
+            "peak_kw": 300.00000000000006,
+            "plan_violations": 0,
+            "overshoot_min": 0,
+            "energy_kwh": 487.75484948096965,
+            "cost_brl": 438.9793645328727,
+            "plan_changes": 6,
+            "layer_ticks": {
+              "normal": 631
+            },
+            "plan_p99_micros": 0,
+            "operator_moves": 0
+          },
+          "seeds": [
+            {
+              "seed": 1,
+              "metrics": {
+                "buses": 3,
+                "ready": 3,
+                "ready_pct": 100,
+                "shortfall_kwh": 0,
+                "peak_kw": 300.00000000000006,
+                "plan_violations": 0,
+                "overshoot_min": 0,
+                "energy_kwh": 487.75484948096965,
+                "cost_brl": 438.9793645328727,
+                "plan_changes": 6,
+                "layer_ticks": {
+                  "normal": 631
+                },
+                "plan_p99_micros": 0,
+                "operator_moves": 0
+              }
+            }
+          ]
+        },
+        {
+          "name": "fifo-unplug",
+          "aggregate": {
+            "buses": 3,
+            "ready": 3,
+            "ready_pct": 100,
+            "shortfall_kwh": 0,
+            "peak_kw": 300.00000000000006,
+            "plan_violations": 0,
+            "overshoot_min": 0,
+            "energy_kwh": 487.75484948096965,
+            "cost_brl": 438.9793645328727,
+            "plan_changes": 6,
+            "layer_ticks": {
+              "normal": 631
+            },
+            "plan_p99_micros": 0,
+            "operator_moves": 1
+          },
+          "seeds": [
+            {
+              "seed": 1,
+              "metrics": {
+                "buses": 3,
+                "ready": 3,
+                "ready_pct": 100,
+                "shortfall_kwh": 0,
+                "peak_kw": 300.00000000000006,
+                "plan_violations": 0,
+                "overshoot_min": 0,
+                "energy_kwh": 487.75484948096965,
+                "cost_brl": 438.9793645328727,
+                "plan_changes": 6,
+                "layer_ticks": {
+                  "normal": 631
+                },
+                "plan_p99_micros": 0,
+                "operator_moves": 1
+              }
+            }
+          ]
+        },
+        {
+          "name": "safe",
+          "aggregate": {
+            "buses": 3,
+            "ready": 3,
+            "ready_pct": 100,
+            "shortfall_kwh": 0,
+            "peak_kw": 300.00000000000006,
+            "plan_violations": 0,
+            "overshoot_min": 0,
+            "energy_kwh": 606.3829787234035,
+            "cost_brl": 545.7446808510634,
+            "plan_changes": 5,
+            "layer_ticks": {
+              "safe": 631
+            },
+            "plan_p99_micros": 0,
+            "operator_moves": 0
+          },
+          "seeds": [
+            {
+              "seed": 1,
+              "metrics": {
+                "buses": 3,
+                "ready": 3,
+                "ready_pct": 100,
+                "shortfall_kwh": 0,
+                "peak_kw": 300.00000000000006,
+                "plan_violations": 0,
+                "overshoot_min": 0,
+                "energy_kwh": 606.3829787234035,
+                "cost_brl": 545.7446808510634,
+                "plan_changes": 5,
+                "layer_ticks": {
+                  "safe": 631
+                },
+                "plan_p99_micros": 0,
+                "operator_moves": 0
+              }
+            }
+          ]
+        },
+        {
+          "name": "planner",
+          "aggregate": {
+            "buses": 3,
+            "ready": 3,
+            "ready_pct": 100,
+            "shortfall_kwh": 0,
+            "peak_kw": 300.00000000000006,
+            "plan_violations": 0,
+            "overshoot_min": 0,
+            "energy_kwh": 517.7354084788627,
+            "cost_brl": 465.9618676309764,
+            "plan_changes": 6,
+            "layer_ticks": {
+              "normal": 631
+            },
+            "plan_p99_micros": 0,
+            "operator_moves": 0
+          },
+          "seeds": [
+            {
+              "seed": 1,
+              "metrics": {
+                "buses": 3,
+                "ready": 3,
+                "ready_pct": 100,
+                "shortfall_kwh": 0,
+                "peak_kw": 300.00000000000006,
+                "plan_violations": 0,
+                "overshoot_min": 0,
+                "energy_kwh": 517.7354084788627,
+                "cost_brl": 465.9618676309764,
+                "plan_changes": 6,
+                "layer_ticks": {
+                  "normal": 631
+                },
+                "plan_p99_micros": 0,
+                "operator_moves": 0
+              }
+            }
+          ]
+        },
+        {
+          "name": "planner (sem rodízio)",
+          "aggregate": {
+            "buses": 3,
+            "ready": 3,
+            "ready_pct": 100,
+            "shortfall_kwh": 0,
+            "peak_kw": 300.00000000000006,
+            "plan_violations": 0,
+            "overshoot_min": 0,
+            "energy_kwh": 517.7354084788627,
+            "cost_brl": 465.9618676309764,
+            "plan_changes": 6,
+            "layer_ticks": {
+              "normal": 631
+            },
+            "plan_p99_micros": 0,
+            "operator_moves": 0
+          },
+          "seeds": [
+            {
+              "seed": 1,
+              "metrics": {
+                "buses": 3,
+                "ready": 3,
+                "ready_pct": 100,
+                "shortfall_kwh": 0,
+                "peak_kw": 300.00000000000006,
+                "plan_violations": 0,
+                "overshoot_min": 0,
+                "energy_kwh": 517.7354084788627,
+                "cost_brl": 465.9618676309764,
+                "plan_changes": 6,
+                "layer_ticks": {
+                  "normal": 631
+                },
+                "plan_p99_micros": 0,
+                "operator_moves": 0
+              }
+            }
+          ]
+        }
+      ],
+      "per_bus": [
+        {
+          "id": "B01",
+          "capacity_kwh": 300,
+          "target_kwh": 270,
+          "real_final_kwh": 264,
+          "real_ready": false,
+          "planner_final_kwh": 282.2706454547916,
+          "planner_ready": true,
+          "no_swap_final_kwh": 282.2706454547916,
+          "no_swap_ready": true
+        },
+        {
+          "id": "B02",
+          "capacity_kwh": 300,
+          "target_kwh": 240,
+          "real_final_kwh": 240,
+          "real_ready": true,
+          "planner_final_kwh": 252.98870925925902,
+          "planner_ready": true,
+          "no_swap_final_kwh": 252.98870925925902,
+          "no_swap_ready": true
+        },
+        {
+          "id": "B03",
+          "capacity_kwh": 300,
+          "target_kwh": 270,
+          "real_final_kwh": null,
+          "real_ready": null,
+          "planner_final_kwh": 281.4119292560792,
+          "planner_ready": true,
+          "no_swap_final_kwh": 281.4119292560792,
+          "no_swap_ready": true
+        }
+      ],
+      "matched": {
+        "buses": 2,
+        "planner_ready_pct": 100,
+        "planner_shortfall_kwh": 0,
+        "no_swap_ready_pct": 100,
+        "no_swap_shortfall_kwh": 0
+      }
+    }
+  ],
+  "aggregate": [
+    {
+      "name": "fifo",
+      "aggregate": {
+        "buses": 6,
+        "ready": 6,
+        "ready_pct": 100,
+        "shortfall_kwh": 0,
+        "peak_kw": 225.00000000000006,
+        "plan_violations": 0,
+        "overshoot_min": 0,
+        "energy_kwh": 526.2638465902387,
+        "cost_brl": 606.3874619312148,
+        "plan_changes": 6,
+        "layer_ticks": null,
+        "plan_p99_micros": 0,
+        "operator_moves": 0
+      },
+      "seeds": [
+        {
+          "seed": 1,
+          "metrics": {
+            "buses": 3,
+            "ready": 3,
+            "ready_pct": 100,
+            "shortfall_kwh": 0,
+            "peak_kw": 150.00000000000003,
+            "plan_violations": 0,
+            "overshoot_min": 0,
+            "energy_kwh": 564.7728436995077,
+            "cost_brl": 773.7955593295569,
+            "plan_changes": 6,
+            "layer_ticks": {
+              "normal": 691
+            },
+            "plan_p99_micros": 0,
+            "operator_moves": 0
+          }
+        },
+        {
+          "seed": 2,
+          "metrics": {
+            "buses": 3,
+            "ready": 3,
+            "ready_pct": 100,
+            "shortfall_kwh": 0,
+            "peak_kw": 300.00000000000006,
+            "plan_violations": 0,
+            "overshoot_min": 0,
+            "energy_kwh": 487.75484948096965,
+            "cost_brl": 438.9793645328727,
+            "plan_changes": 6,
+            "layer_ticks": {
+              "normal": 631
+            },
+            "plan_p99_micros": 0,
+            "operator_moves": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "edf",
+      "aggregate": {
+        "buses": 6,
+        "ready": 6,
+        "ready_pct": 100,
+        "shortfall_kwh": 0,
+        "peak_kw": 225.00000000000006,
+        "plan_violations": 0,
+        "overshoot_min": 0,
+        "energy_kwh": 526.2638465902387,
+        "cost_brl": 606.3874619312148,
+        "plan_changes": 6,
+        "layer_ticks": null,
+        "plan_p99_micros": 0,
+        "operator_moves": 0
+      },
+      "seeds": [
+        {
+          "seed": 1,
+          "metrics": {
+            "buses": 3,
+            "ready": 3,
+            "ready_pct": 100,
+            "shortfall_kwh": 0,
+            "peak_kw": 150.00000000000003,
+            "plan_violations": 0,
+            "overshoot_min": 0,
+            "energy_kwh": 564.7728436995077,
+            "cost_brl": 773.7955593295569,
+            "plan_changes": 6,
+            "layer_ticks": {
+              "normal": 691
+            },
+            "plan_p99_micros": 0,
+            "operator_moves": 0
+          }
+        },
+        {
+          "seed": 2,
+          "metrics": {
+            "buses": 3,
+            "ready": 3,
+            "ready_pct": 100,
+            "shortfall_kwh": 0,
+            "peak_kw": 300.00000000000006,
+            "plan_violations": 0,
+            "overshoot_min": 0,
+            "energy_kwh": 487.75484948096965,
+            "cost_brl": 438.9793645328727,
+            "plan_changes": 6,
+            "layer_ticks": {
+              "normal": 631
+            },
+            "plan_p99_micros": 0,
+            "operator_moves": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "fifo-unplug",
+      "aggregate": {
+        "buses": 6,
+        "ready": 6,
+        "ready_pct": 100,
+        "shortfall_kwh": 0,
+        "peak_kw": 225.00000000000006,
+        "plan_violations": 0,
+        "overshoot_min": 0,
+        "energy_kwh": 526.2638465902387,
+        "cost_brl": 606.3874619312148,
+        "plan_changes": 6,
+        "layer_ticks": null,
+        "plan_p99_micros": 0,
+        "operator_moves": 1.5
+      },
+      "seeds": [
+        {
+          "seed": 1,
+          "metrics": {
+            "buses": 3,
+            "ready": 3,
+            "ready_pct": 100,
+            "shortfall_kwh": 0,
+            "peak_kw": 150.00000000000003,
+            "plan_violations": 0,
+            "overshoot_min": 0,
+            "energy_kwh": 564.7728436995077,
+            "cost_brl": 773.7955593295569,
+            "plan_changes": 6,
+            "layer_ticks": {
+              "normal": 691
+            },
+            "plan_p99_micros": 0,
+            "operator_moves": 2
+          }
+        },
+        {
+          "seed": 2,
+          "metrics": {
+            "buses": 3,
+            "ready": 3,
+            "ready_pct": 100,
+            "shortfall_kwh": 0,
+            "peak_kw": 300.00000000000006,
+            "plan_violations": 0,
+            "overshoot_min": 0,
+            "energy_kwh": 487.75484948096965,
+            "cost_brl": 438.9793645328727,
+            "plan_changes": 6,
+            "layer_ticks": {
+              "normal": 631
+            },
+            "plan_p99_micros": 0,
+            "operator_moves": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "safe",
+      "aggregate": {
+        "buses": 6,
+        "ready": 6,
+        "ready_pct": 100,
+        "shortfall_kwh": 0,
+        "peak_kw": 238.04592531659617,
+        "plan_violations": 0,
+        "overshoot_min": 0,
+        "energy_kwh": 638.2978723404237,
+        "cost_brl": 707.2180851063829,
+        "plan_changes": 5,
+        "layer_ticks": null,
+        "plan_p99_micros": 0,
+        "operator_moves": 0
+      },
+      "seeds": [
+        {
+          "seed": 1,
+          "metrics": {
+            "buses": 3,
+            "ready": 3,
+            "ready_pct": 100,
+            "shortfall_kwh": 0,
+            "peak_kw": 176.09185063319228,
+            "plan_violations": 0,
+            "overshoot_min": 0,
+            "energy_kwh": 670.2127659574438,
+            "cost_brl": 868.6914893617022,
+            "plan_changes": 6,
+            "layer_ticks": {
+              "safe": 691
+            },
+            "plan_p99_micros": 0,
+            "operator_moves": 0
+          }
+        },
+        {
+          "seed": 2,
+          "metrics": {
+            "buses": 3,
+            "ready": 3,
+            "ready_pct": 100,
+            "shortfall_kwh": 0,
+            "peak_kw": 300.00000000000006,
+            "plan_violations": 0,
+            "overshoot_min": 0,
+            "energy_kwh": 606.3829787234035,
+            "cost_brl": 545.7446808510634,
+            "plan_changes": 5,
+            "layer_ticks": {
+              "safe": 631
+            },
+            "plan_p99_micros": 0,
+            "operator_moves": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "planner",
+      "aggregate": {
+        "buses": 6,
+        "ready": 6,
+        "ready_pct": 100,
+        "shortfall_kwh": 0,
+        "peak_kw": 225.00000000000006,
+        "plan_violations": 0,
+        "overshoot_min": 0,
+        "energy_kwh": 557.8279319513063,
+        "cost_brl": 634.7951387561756,
+        "plan_changes": 6,
+        "layer_ticks": null,
+        "plan_p99_micros": 0,
+        "operator_moves": 0
+      },
+      "seeds": [
+        {
+          "seed": 1,
+          "metrics": {
+            "buses": 3,
+            "ready": 3,
+            "ready_pct": 100,
+            "shortfall_kwh": 0,
+            "peak_kw": 150.00000000000003,
+            "plan_violations": 0,
+            "overshoot_min": 0,
+            "energy_kwh": 597.9204554237497,
+            "cost_brl": 803.6284098813748,
+            "plan_changes": 6,
+            "layer_ticks": {
+              "normal": 691
+            },
+            "plan_p99_micros": 0,
+            "operator_moves": 0
+          }
+        },
+        {
+          "seed": 2,
+          "metrics": {
+            "buses": 3,
+            "ready": 3,
+            "ready_pct": 100,
+            "shortfall_kwh": 0,
+            "peak_kw": 300.00000000000006,
+            "plan_violations": 0,
+            "overshoot_min": 0,
+            "energy_kwh": 517.7354084788627,
+            "cost_brl": 465.9618676309764,
+            "plan_changes": 6,
+            "layer_ticks": {
+              "normal": 631
+            },
+            "plan_p99_micros": 0,
+            "operator_moves": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "planner (sem rodízio)",
+      "aggregate": {
+        "buses": 6,
+        "ready": 6,
+        "ready_pct": 100,
+        "shortfall_kwh": 0,
+        "peak_kw": 225.00000000000006,
+        "plan_violations": 0,
+        "overshoot_min": 0,
+        "energy_kwh": 557.8279319513063,
+        "cost_brl": 634.7951387561756,
+        "plan_changes": 6,
+        "layer_ticks": null,
+        "plan_p99_micros": 0,
+        "operator_moves": 0
+      },
+      "seeds": [
+        {
+          "seed": 1,
+          "metrics": {
+            "buses": 3,
+            "ready": 3,
+            "ready_pct": 100,
+            "shortfall_kwh": 0,
+            "peak_kw": 150.00000000000003,
+            "plan_violations": 0,
+            "overshoot_min": 0,
+            "energy_kwh": 597.9204554237497,
+            "cost_brl": 803.6284098813748,
+            "plan_changes": 6,
+            "layer_ticks": {
+              "normal": 691
+            },
+            "plan_p99_micros": 0,
+            "operator_moves": 0
+          }
+        },
+        {
+          "seed": 2,
+          "metrics": {
+            "buses": 3,
+            "ready": 3,
+            "ready_pct": 100,
+            "shortfall_kwh": 0,
+            "peak_kw": 300.00000000000006,
+            "plan_violations": 0,
+            "overshoot_min": 0,
+            "energy_kwh": 517.7354084788627,
+            "cost_brl": 465.9618676309764,
+            "plan_changes": 6,
+            "layer_ticks": {
+              "normal": 631
+            },
+            "plan_p99_micros": 0,
+            "operator_moves": 0
+          }
+        }
+      ]
+    }
+  ],
+  "real_aggregate": {
+    "buses": 6,
+    "with_outcome": 5,
+    "ready": 3,
+    "ready_pct": 58.333333333333336,
+    "shortfall_kwh": 25.5,
+    "energy_kwh": 272.5,
+    "peak_kw": 130,
+    "peak_estimated": true,
+    "cost_brl": 290.2500000000119,
+    "cost_estimated": true,
+    "partial": true,
+    "covered_buses": 5,
+    "partial_note": "parcial: 5 de 6 ônibus",
+    "late_departures": 0
+  },
+  "matched_aggregate": {
+    "buses": 5,
+    "planner_ready_pct": 100,
+    "planner_shortfall_kwh": 0,
+    "no_swap_ready_pct": 100,
+    "no_swap_shortfall_kwh": 0
+  },
+  "cost_comparable": true,
+  "assumptions": [
+    "As leituras de carga (SoC) dos ônibus são tratadas como perfeitas.",
+    "O limite de potência da garagem (limite_kw) é fixo durante toda a noite.",
+    "Nenhum defeito de carregador é injetado: o que deu errado na operação real já está nos dados.",
+    "\"planner\" supõe que os operadores executam todos os rodízios recomendados; \"planner (sem rodízio)\" supõe que nenhum é executado.",
+    "A operação real tomou decisões (ordem de ligação, rodízios manuais) que o planejador não vê; o simulador reproduz as condições da noite, não o passado minuto a minuto."
+  ],
+  "warnings": [
+    {
+      "file": "onibus.csv",
+      "line": 0,
+      "message": "soc_saida_real_pct vazio em 1 ônibus: o desfecho real 'pronto' não será calculado para eles"
+    },
+    {
+      "file": "sessoes.csv",
+      "line": 0,
+      "message": "noite 2026-03-05: 1 de 3 ônibus sem sessão: energia, pico e custo reais cobrem só os demais"
+    }
+  ]
+}

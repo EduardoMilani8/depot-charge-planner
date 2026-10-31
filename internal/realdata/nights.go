@@ -154,6 +154,7 @@ func (d *Dataset) Nights(o NightOptions) ([]Night, []Warning) {
 	}
 	defBattery := commonChargerKW(d.Chargers)
 	tariff := g.Tariff() // the whole tariff, demand included; a window crossing midnight is fine
+	cum := priceTable(tariff)
 
 	keys := make([]string, 0, len(busesBy))
 	for k := range busesBy {
@@ -226,7 +227,7 @@ func (d *Dataset) Nights(o NightOptions) ([]Night, []Warning) {
 			FollowSwaps:   true,
 		}
 
-		real, busReal, notes := measured(buses, sessBy[k], powBy[k], tariff, origin, d.HasSessions)
+		real, busReal, notes := measured(buses, sessBy[k], powBy[k], g, cum, origin, d.HasSessions)
 		if real.LateDepartures > 0 {
 			line := buses[0].Line
 			for _, b := range buses {
@@ -289,6 +290,29 @@ func commonChargerKW(cs []Charger) float64 {
 	return best
 }
 
+// priceTable[m] = sum of the energy price of minutes 0..m-1 of a day (billing.Tariff.PriceAt:
+// a window that crosses midnight is handled there).
+func priceTable(t billing.Tariff) [1441]float64 {
+	var cum [1441]float64
+	for m := 0; m < 1440; m++ {
+		cum[m+1] = cum[m] + t.PriceAt(m)
+	}
+	return cum
+}
+
+// priceSpan is the sum of the per-minute price over n minutes starting at the
+// given minute of the day.
+func priceSpan(cum *[1441]float64, startClock, n int) float64 {
+	total := float64(n/1440) * cum[1440]
+	rem := n % 1440
+	if startClock+rem <= 1440 {
+		return total + cum[startClock+rem] - cum[startClock]
+	}
+	return total + cum[1440] - cum[startClock] + cum[startClock+rem-1440]
+}
+
+func clockOf(t time.Time) int { return t.Hour()*60 + t.Minute() }
+
 // absMinute is t in whole minutes since base (base is a midnight, so minute % 1440 is the
 // clock minute and the 15-minute demand blocks stay aligned to the clock). Floor, also for
 // instants before base.
@@ -305,7 +329,7 @@ func absMinute(base, t time.Time) int {
 // strings are warnings about how much of the night the figures cover (Partial).
 // hasSessions says whether sessoes.csv exists at all: a night without sessions in a
 // file that has them for other nights is a gap, one in a dataset without the file is not.
-func measured(buses []Bus, sess []Session, pow []PowerSample, tariff billing.Tariff, origin time.Time, hasSessions bool) (Real, []BusReal, []string) {
+func measured(buses []Bus, sess []Session, pow []PowerSample, g Garage, cum [1441]float64, origin time.Time, hasSessions bool) (Real, []BusReal, []string) {
 	r := Real{Buses: len(buses), CoveredBuses: len(buses)}
 	busReal := make([]BusReal, 0, len(buses))
 	for _, b := range buses {
@@ -332,17 +356,20 @@ func measured(buses []Bus, sess []Session, pow []PowerSample, tariff billing.Tar
 		r.ReadyPct = 100 * float64(r.Ready) / float64(r.WithOutcome)
 	}
 
-	// The bill of the night comes from the shared billing library, fed by one source only:
-	// the readings if the night has any, else the sessions.
-	hasTariff := tariff != (billing.Tariff{})
-	base := time.Date(origin.Year(), origin.Month(), origin.Day(), 0, 0, 0, 0, time.UTC)
+	// Cost: interval by interval, as it has always been computed (a reading's energy at the
+	// price of the minute it starts, a session's spread uniformly over its minutes), so the
+	// numbers of a dataset without demand columns never change. The demand blocks come from
+	// the shared billing.Meter, fed by one source only: the readings if the night has any,
+	// else the sessions.
+	tariff := g.Tariff()
 	var meter *billing.Meter
-	if hasTariff && (len(pow) > 0 || len(sess) > 0) {
+	if tariff.HasDemand() && (len(pow) > 0 || len(sess) > 0) {
 		meter = billing.NewMeter(tariff)
 	}
+	base := time.Date(origin.Year(), origin.Month(), origin.Day(), 0, 0, 0, 0, time.UTC)
 	var sampled sampleStats
 	if len(pow) > 0 {
-		sampled = integrate(pow, meter, base)
+		sampled = integrate(pow, tariff, meter, base)
 	}
 	switch {
 	case len(sess) > 0:
@@ -363,7 +390,21 @@ func measured(buses []Bus, sess []Session, pow []PowerSample, tariff billing.Tar
 		p := sessionPeak(sess)
 		r.PeakKW, r.PeakEstimated = &p, true
 	}
-	if meter != nil {
+	if g.HasTariff {
+		switch {
+		case len(pow) > 0:
+			c := sampled.cost
+			r.CostBRL = &c
+		case len(sess) > 0:
+			c := 0.0
+			for _, s := range sess {
+				n := max(1, minutesSince(s.Start, s.End))
+				c += s.EnergyKWh * priceSpan(&cum, clockOf(s.Start), n) / float64(n)
+			}
+			r.CostBRL, r.CostEstimated = &c, true
+		}
+	}
+	if meter != nil && r.CostBRL != nil {
 		estimated := len(pow) == 0
 		if estimated {
 			// every session spread uniformly over its minutes (at least one), from its start
@@ -374,12 +415,9 @@ func measured(buses []Bus, sess []Session, pow []PowerSample, tariff billing.Tar
 			}
 		}
 		bill := meter.Bill()
-		c := bill.EnergyBRL
-		r.CostBRL, r.CostEstimated = &c, estimated
-		if tariff.HasDemand() {
-			dk, db, mb := bill.DemandKW, bill.DemandBRL, bill.MonthlyBRL
-			r.DemandKW, r.DemandBRL, r.MonthlyBRL, r.DemandEstimated = &dk, &db, &mb, estimated
-		}
+		dk, db := bill.DemandKW, bill.DemandBRL
+		mb := *r.CostBRL*float64(tariff.Nights()) + db // the night's cost as shown, not the meter's per-minute one
+		r.DemandKW, r.DemandBRL, r.MonthlyBRL, r.DemandEstimated = &dk, &db, &mb, estimated
 	}
 	return r, busReal, markPartial(&r, buses, sess, sampled, len(pow) > 0, hasSessions)
 }
@@ -443,16 +481,16 @@ func (r Real) finite() bool {
 	return ok(r.ReadyPct) && ok(r.ShortfallKWh)
 }
 
-type sampleStats struct{ energy, peak float64 }
+type sampleStats struct{ energy, peak, cost float64 }
 
 // integrate walks the night's samples in time order (Dataset.Power is only
 // sorted per charger, so it sorts a copy). Each reading holds until the next
-// reading of the same charger; the last one holds for 0 minutes. When meter is not nil it
-// is fed the grid power that really flows, for the cost and the demand blocks: between two
+// reading of the same charger; the last one holds for 0 minutes. The cost of an interval
+// uses the price at its start. When meter is not nil it is fed the grid power that really flows, for the cost and the demand blocks: between two
 // consecutive instants, the sum of the held readings that are followed by another reading
 // of their charger (the same energy as above), from the minute of the first to the minute
 // of the second (sub-minute timestamps are floored to the minute; the CSVs are in minutes).
-func integrate(pow []PowerSample, meter *billing.Meter, base time.Time) sampleStats {
+func integrate(pow []PowerSample, tariff billing.Tariff, meter *billing.Meter, base time.Time) sampleStats {
 	sorted := append([]PowerSample(nil), pow...)
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].At.Before(sorted[j].At) })
 	type held struct {
@@ -473,7 +511,9 @@ func integrate(pow []PowerSample, meter *billing.Meter, base time.Time) sampleSt
 		for ; j < len(sorted) && sorted[j].At.Equal(at); j++ {
 			s := sorted[j]
 			if h, ok := cur[s.ChargerID]; ok {
-				st.energy += h.kw * at.Sub(h.at).Hours()
+				e := h.kw * at.Sub(h.at).Hours()
+				st.energy += e
+				st.cost += e * tariff.PriceAt(clockOf(h.at)) // the price at the start of the interval
 				total -= h.kw
 				if h.followed {
 					flowing -= h.kw

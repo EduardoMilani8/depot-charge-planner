@@ -1,0 +1,51 @@
+aviso: onibus.csv: soc_saida_real_pct vazio em 1 ônibus: o desfecho real 'pronto' não será calculado para eles
+aviso: sessoes.csv: noite 2026-03-05: 1 de 3 ônibus sem sessão: energia, pico e custo reais cobrem só os demais
+
+Premissas:
+- As leituras de carga (SoC) dos ônibus são tratadas como perfeitas.
+- O limite de potência da garagem (limite_kw) é fixo durante toda a noite.
+- Nenhum defeito de carregador é injetado: o que deu errado na operação real já está nos dados.
+- "planner" supõe que os operadores executam todos os rodízios recomendados; "planner (sem rodízio)" supõe que nenhum é executado.
+- A operação real tomou decisões (ordem de ligação, rodízios manuais) que o planejador não vê; o simulador reproduz as condições da noite, não o passado minuto a minuto.
+Planejador: um ônibus que cedeu o carregador só volta após 30 min e com necessidade > 10 kWh.
+
+Noite 2026-03-04 (3 ônibus)
+controller             ready%  shortfall kWh  peak kW         plan violations  overshoot min  energy kWh  cost R$         plan changes  moves/run
+real                   66.7    45.0           120 (estimado)  —                —              480         522 (estimado)  —             —
+fifo                   100.0   0.0            150             0                0              565         774             6             0.0
+edf                    100.0   0.0            150             0                0              565         774             6             0.0
+fifo-unplug            100.0   0.0            150             0                0              565         774             6             2.0
+safe                   100.0   0.0            176             0                0              670         869             6             0.0
+planner                100.0   0.0            150             0                0              598         804             6             0.0
+planner (sem rodízio)  100.0   0.0            150             0                0              598         804             6             0.0
+Comparação justa (mesmos 3 ônibus do real): real 66.7% | planner 100.0% | sem rodízio 100.0% (shortfall kWh: real 45.0 | planner 0.0 | sem rodízio 0.0)
+Ônibus não prontos na realidade (alvo; real; planner; planner sem rodízio):
+  B02: alvo 255.0 kWh; real 210.0 kWh (não pronto); planner 268.1 kWh (pronto); sem rodízio 268.1 kWh (pronto)
+
+Noite 2026-03-05 (3 ônibus)
+controller             ready%  shortfall kWh  peak kW                       plan violations  overshoot min  energy kWh                   cost R$                      plan changes  moves/run
+real                   50.0    6.0            140 (parcial: 2 de 3 ônibus)  —                —              65 (parcial: 2 de 3 ônibus)  58 (parcial: 2 de 3 ônibus)  —             —
+fifo                   100.0   0.0            300                           0                0              488                          439                          6             0.0
+edf                    100.0   0.0            300                           0                0              488                          439                          6             0.0
+fifo-unplug            100.0   0.0            300                           0                0              488                          439                          6             1.0
+safe                   100.0   0.0            300                           0                0              606                          546                          5             0.0
+planner                100.0   0.0            300                           0                0              518                          466                          6             0.0
+planner (sem rodízio)  100.0   0.0            300                           0                0              518                          466                          6             0.0
+Comparação justa (mesmos 2 ônibus do real): real 50.0% | planner 100.0% | sem rodízio 100.0% (shortfall kWh: real 6.0 | planner 0.0 | sem rodízio 0.0)
+Nota: energia, pico e custo reais cobrem só parte da noite (parcial: 2 de 3 ônibus) e não são comparáveis com as linhas simuladas, que cobrem todos os ônibus (veja os avisos).
+Nota: ready% e shortfall reais contam só os 2 de 3 ônibus com soc_saida_real_pct; os demais não entram como não prontos.
+Ônibus não prontos na realidade (alvo; real; planner; planner sem rodízio):
+  B01: alvo 270.0 kWh; real 264.0 kWh (não pronto); planner 282.3 kWh (pronto); sem rodízio 282.3 kWh (pronto)
+
+Agregado (2 noites; média por noite, exceto plan violations e overshoot min, que são somas das noites, e plan changes, média arredondada para baixo)
+controller             ready%  shortfall kWh  peak kW                                  plan violations  overshoot min  energy kWh                    cost R$                                  plan changes  moves/run
+real                   58.3    25.5           130 (estimado) (parcial: 5 de 6 ônibus)  —                —              272 (parcial: 5 de 6 ônibus)  290 (estimado) (parcial: 5 de 6 ônibus)  —             —
+fifo                   100.0   0.0            225                                      0                0              526                           606                                      6             0.0
+edf                    100.0   0.0            225                                      0                0              526                           606                                      6             0.0
+fifo-unplug            100.0   0.0            225                                      0                0              526                           606                                      6             1.5
+safe                   100.0   0.0            238                                      0                0              638                           707                                      5             0.0
+planner                100.0   0.0            225                                      0                0              558                           635                                      6             0.0
+planner (sem rodízio)  100.0   0.0            225                                      0                0              558                           635                                      6             0.0
+Comparação justa (mesmos 5 ônibus do real): real 58.3% | planner 100.0% | sem rodízio 100.0% (shortfall kWh: real 25.5 | planner 0.0 | sem rodízio 0.0)
+Nota: energia, pico e custo reais cobrem só parte da noite (parcial: 5 de 6 ônibus) e não são comparáveis com as linhas simuladas, que cobrem todos os ônibus (veja os avisos).
+Nota: ready% e shortfall reais contam só os 5 de 6 ônibus com soc_saida_real_pct; os demais não entram como não prontos.

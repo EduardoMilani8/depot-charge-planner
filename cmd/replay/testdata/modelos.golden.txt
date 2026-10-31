@@ -1,0 +1,31 @@
+Premissas:
+- As leituras de carga (SoC) dos ônibus são tratadas como perfeitas.
+- O limite de potência da garagem (limite_kw) é fixo durante toda a noite.
+- Nenhum defeito de carregador é injetado: o que deu errado na operação real já está nos dados.
+- "planner" supõe que os operadores executam todos os rodízios recomendados; "planner (sem rodízio)" supõe que nenhum é executado.
+- A operação real tomou decisões (ordem de ligação, rodízios manuais) que o planejador não vê; o simulador reproduz as condições da noite, não o passado minuto a minuto.
+Planejador: um ônibus que cedeu o carregador só volta após 30 min e com necessidade > 10 kWh.
+
+Noite 2026-03-04 (3 ônibus)
+controller             ready%  shortfall kWh  peak kW  plan violations  overshoot min  energy kWh  cost R$  plan changes  moves/run
+real                   66.7    45.5           120      —                —              604         527      —             —
+fifo                   100.0   0.0            300      0                0              679         611      6             0.0
+edf                    100.0   0.0            300      0                0              679         611      6             0.0
+fifo-unplug            100.0   0.0            300      0                0              679         611      6             1.0
+safe                   100.0   0.0            340      0                0              801         720      6             0.0
+planner                100.0   0.0            300      0                0              710         639      6             0.0
+planner (sem rodízio)  100.0   0.0            300      0                0              710         639      6             0.0
+Comparação justa (mesmos 3 ônibus do real): real 66.7% | planner 100.0% | sem rodízio 100.0% (shortfall kWh: real 45.5 | planner 0.0 | sem rodízio 0.0)
+Ônibus não prontos na realidade (alvo; real; planner; planner sem rodízio):
+  EX002: alvo 297.5 kWh; real 252.0 kWh (não pronto); planner 310.7 kWh (pronto); sem rodízio 310.7 kWh (pronto)
+
+Agregado (1 noite; média por noite, exceto plan violations e overshoot min, que são somas das noites, e plan changes, média arredondada para baixo)
+controller             ready%  shortfall kWh  peak kW  plan violations  overshoot min  energy kWh  cost R$  plan changes  moves/run
+real                   66.7    45.5           120      —                —              604         527      —             —
+fifo                   100.0   0.0            300      0                0              679         611      6             0.0
+edf                    100.0   0.0            300      0                0              679         611      6             0.0
+fifo-unplug            100.0   0.0            300      0                0              679         611      6             1.0
+safe                   100.0   0.0            340      0                0              801         720      6             0.0
+planner                100.0   0.0            300      0                0              710         639      6             0.0
+planner (sem rodízio)  100.0   0.0            300      0                0              710         639      6             0.0
+Comparação justa (mesmos 3 ônibus do real): real 66.7% | planner 100.0% | sem rodízio 100.0% (shortfall kWh: real 45.5 | planner 0.0 | sem rodízio 0.0)

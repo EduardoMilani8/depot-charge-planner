@@ -40,10 +40,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 		"anti-vaivém: minutos antes de um ônibus que cedeu o carregador poder voltar (0 e -swap-back-min-need 0: regra desligada)")
 	fs.Float64Var(&cfg.SwapBackMinNeedKWh, "swap-back-min-need", cfg.SwapBackMinNeedKWh,
 		"anti-vaivém: kWh que um ônibus que cedeu o carregador precisa ter de necessidade, pela média das leituras enquanto espera, para voltar")
+	// Energy cost (see docs/superpowers/specs/2026-10-11-custo-de-energia-design.md).
+	costAware := fs.Bool("cost-aware", false,
+		"planner: adia a carga para depois da ponta quando os ônibus têm folga e limita a demanda em -demand-target (o adiamento só age com -announce-arrivals; as outras linhas não mudam)")
+	deferMargin := fs.Int("defer-margin", planner.DefaultDeferMarginMin,
+		fmt.Sprintf("com -cost-aware: minutos de folga que um ônibus adiado ainda deve ter quando a ponta termina (0 a %d; 0 = %d)", sim.MaxDeferMarginMin, planner.DefaultDeferMarginMin))
+	demandTarget := fs.Float64("demand-target", 0,
+		"com -cost-aware: limita a demanda da rede perto destes kW quando a prontidão permite (0 = desligado; acima do limite da garagem não tem efeito). Um teto pode aumentar a fatura mensal")
+	announce := fs.Bool("announce-arrivals", false,
+		"com -cost-aware: o planner conhece a agenda da noite (os ônibus que ainda não chegaram). Padrão: não conhece, como numa noite reproduzida sem escala anunciada; sem isso o adiamento não age")
 	asJSON := fs.Bool("json", false, "escreve o relatório completo como JSON (em vez das tabelas)")
 	workers := fs.Int("workers", runtime.NumCPU(), "execuções simultâneas (1 ou mais; o resultado não depende disso)")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "Uso: replay -dir PASTA [-soc-noise KWH] [-swap-back-cooldown N] [-swap-back-min-need KWH] [-workers N] [-json]")
+		fmt.Fprintln(stderr, "Uso: replay -dir PASTA [-soc-noise KWH] [-swap-back-cooldown N] [-swap-back-min-need KWH] [-cost-aware [-defer-margin MIN] [-demand-target KW] [-announce-arrivals]] [-workers N] [-json]")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -56,9 +65,25 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "argumento inesperado %q\n", fs.Arg(0))
 		return 2
 	}
+	if *costAware {
+		cfg.Cost = &planner.CostPolicy{DeferMarginMin: float64(*deferMargin), DemandTargetKW: *demandTarget}
+	} else {
+		// Silently ignoring these would let a run look cost-aware when it is not.
+		set := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+		for _, name := range []string{"defer-margin", "demand-target", "announce-arrivals"} {
+			if set[name] {
+				fmt.Fprintf(stderr, "-%s só vale com -cost-aware (ele configura o planner com custo)\n", name)
+				return 2
+			}
+		}
+	}
 	if msg := validateFlags(*dir, *socNoise, cfg, *workers); msg != "" {
 		fmt.Fprintln(stderr, msg)
 		return 2
+	}
+	if *costAware && !*announce {
+		fmt.Fprintln(stderr, "nota: -cost-aware sem -announce-arrivals: o planner não conhece as chegadas futuras e não adia carga para depois da ponta (só a meta de demanda, se houver, age); use -announce-arrivals se a agenda da noite é conhecida")
 	}
 
 	d, err := realdata.LoadDir(*dir)
@@ -76,7 +101,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	rep, err := realdata.Replay(context.Background(), d, cfg, realdata.NightOptions{SoCNoiseKWh: *socNoise}, *workers)
+	rep, err := realdata.Replay(context.Background(), d, cfg, realdata.NightOptions{SoCNoiseKWh: *socNoise, AnnounceArrivals: *announce}, *workers)
 	if err != nil {
 		fmt.Fprintf(stderr, "erro: %v\n", err)
 		return 1
@@ -114,6 +139,14 @@ func validateFlags(dir string, socNoise float64, cfg planner.Config, workers int
 		return fmt.Sprintf("-swap-back-min-need deve ser um número finito entre 0 e %g kWh", float64(sim.MaxLimitKW))
 	case workers < 1 || workers > maxWorkers:
 		return fmt.Sprintf("-workers deve estar entre 1 e %d", maxWorkers)
+	}
+	if c := cfg.Cost; c != nil {
+		switch {
+		case !(c.DeferMarginMin >= 0 && c.DeferMarginMin <= sim.MaxDeferMarginMin):
+			return fmt.Sprintf("-defer-margin deve estar entre 0 e %d minutos (0 = %d)", sim.MaxDeferMarginMin, planner.DefaultDeferMarginMin)
+		case !(c.DemandTargetKW >= 0 && c.DemandTargetKW <= sim.MaxLimitKW):
+			return fmt.Sprintf("-demand-target deve ser um número finito entre 0 e %g kW (0 = desligado)", float64(sim.MaxLimitKW))
+		}
 	}
 	return ""
 }
@@ -153,17 +186,20 @@ func printReport(w io.Writer, rep *realdata.Report, cfg planner.Config) {
 	}
 	for _, n := range rep.Nights {
 		fmt.Fprintf(w, "\nNoite %s (%d ônibus)\n", n.Key, n.Buses)
-		printTable(w, n.Real, n.Controllers, rep.CostComparable)
+		printTable(w, n.Real, n.Controllers, rep.CostComparable, rep.DemandBilled)
 		printMatched(w, n.Real, n.Matched)
 		printRealNote(w, n.Real)
 		printNotReady(w, n)
 	}
 	fmt.Fprintf(w, "\nAgregado (%s; %s)\n", nightsWord(len(rep.Nights)), aggregateNote)
-	printTable(w, rep.RealAggregate, rep.Aggregate, rep.CostComparable)
+	printTable(w, rep.RealAggregate, rep.Aggregate, rep.CostComparable, rep.DemandBilled)
 	printMatched(w, rep.RealAggregate, rep.MatchedAggregate)
 	printRealNote(w, rep.RealAggregate)
 	if !rep.CostComparable {
 		fmt.Fprintln(w, noCostNote)
+	}
+	if rep.DemandBilled {
+		printBillNotes(w, rep)
 	}
 }
 
@@ -174,30 +210,97 @@ const aggregateNote = "média por noite, exceto plan violations e overshoot min,
 
 const noCostNote = "Nota: o custo simulado não é comparável com o custo real (garagem.csv não tem a tarifa de energia completa): \"cost R$\" aparece como " + dash + " nas linhas simuladas."
 
-// printTable prints the simrun columns (without p99): first the measured row.
-func printTable(w io.Writer, real realdata.Real, rows []realdata.ControllerResult, costComparable bool) {
+// printTable prints the simrun columns (without p99): first the measured row. With demand
+// prices (demand) two columns follow "cost R$": demand kW (the largest 15-minute block) and
+// monthly R$; without them the table is exactly what it was before the demand columns existed.
+func printTable(w io.Writer, real realdata.Real, rows []realdata.ControllerResult, costComparable, demand bool) {
 	tw := tabwriter.NewWriter(w, 0, 8, 2, ' ', 0)
 	// energy kWh: grid energy delivered (mean per run). moves/run: swaps executed
 	// (planner, when operators follow them) or buses unplugged (fifo-unplug).
-	fmt.Fprintln(tw, "controller\tready%\tshortfall kWh\tpeak kW\tplan violations\tovershoot min\tenergy kWh\tcost R$\tplan changes\tmoves/run")
+	head := "controller\tready%\tshortfall kWh\tpeak kW\tplan violations\tovershoot min\tenergy kWh\tcost R$"
+	if demand {
+		head += "\tdemand kW\tmonthly R$"
+	}
+	fmt.Fprintln(tw, head+"\tplan changes\tmoves/run")
 	ready, shortfall := dash, dash
 	if real.WithOutcome > 0 {
 		ready, shortfall = fmt.Sprintf("%.1f", real.ReadyPct), fmt.Sprintf("%.1f", real.ShortfallKWh)
 	}
-	fmt.Fprintf(tw, "real\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-		ready, shortfall,
+	cells := []string{"real", ready, shortfall,
 		optional(real.PeakKW, real.PeakEstimated, real), dash, dash,
-		optional(real.EnergyKWh, false, real), optional(real.CostBRL, real.CostEstimated, real), dash, dash)
+		optional(real.EnergyKWh, false, real), optional(real.CostBRL, real.CostEstimated, real)}
+	if demand {
+		cells = append(cells, sealed(real.DemandKW, real.DemandEstimated, real), sealed(real.MonthlyBRL, real.DemandEstimated, real))
+	}
+	cells = append(cells, dash, dash)
+	fmt.Fprintln(tw, strings.Join(cells, "\t"))
 	for _, r := range rows {
 		a := r.Aggregate
 		cost := dash
 		if costComparable {
 			cost = fmt.Sprintf("%.0f", a.CostBRL)
 		}
-		fmt.Fprintf(tw, "%s\t%.1f\t%.1f\t%.0f\t%d\t%d\t%.0f\t%s\t%d\t%.1f\n",
-			r.Name, a.ReadyPct, a.ShortfallKWh, a.PeakKW, a.PlanViolations, a.OvershootMin, a.EnergyKWh, cost, a.PlanChanges, a.OperatorMoves)
+		fmt.Fprintf(tw, "%s\t%.1f\t%.1f\t%.0f\t%d\t%d\t%.0f\t%s",
+			r.Name, a.ReadyPct, a.ShortfallKWh, a.PeakKW, a.PlanViolations, a.OvershootMin, a.EnergyKWh, cost)
+		if demand {
+			if b := a.Bill; b != nil {
+				fmt.Fprintf(tw, "\t%.0f\t%.0f", b.DemandKW, b.MonthlyBRL)
+			} else {
+				fmt.Fprintf(tw, "\t%s\t%s", dash, dash)
+			}
+		}
+		fmt.Fprintf(tw, "\t%d\t%.1f\n", a.PlanChanges, a.OperatorMoves)
 	}
 	tw.Flush()
+}
+
+// sealed is optional for the demand columns of the real row: it always says where the figure
+// comes from, "(medido)" for the blocks of potencia.csv and "(estimado)" for the ones built
+// from the sessions, each spread uniformly over its minutes.
+func sealed(v *float64, est bool, r realdata.Real) string {
+	if v == nil || math.IsNaN(*v) || math.IsInf(*v, 0) {
+		return dash
+	}
+	s := fmt.Sprintf("%.0f (medido)", *v)
+	if est {
+		s = fmt.Sprintf("%.0f%s", *v, estimated)
+	}
+	if r.Partial {
+		s += " (" + r.PartialNote + ")"
+	}
+	return s
+}
+
+// printBillNotes explains the monthly column and compares the planner with the two
+// baselines in estimated reais per month, from the aggregate rows (the mean night). Same
+// sentence as simrun's.
+func printBillNotes(w io.Writer, rep *realdata.Report) {
+	fmt.Fprintf(w, "monthly R$ = estimativa: energia da noite x %d noites + demanda (proxy: a demanda de uma noite vale o mês); demand kW é o maior bloco de 15 minutos; na linha real, (medido) vem de potencia.csv e (estimado) das sessões, cada uma espalhada de modo uniforme\n", rep.NightsPerMonth)
+	monthly := map[string]float64{}
+	for _, r := range rep.Aggregate {
+		if r.Aggregate.Bill != nil {
+			monthly[r.Name] = r.Aggregate.Bill.MonthlyBRL
+		}
+	}
+	pl, ok := monthly["planner"]
+	if !ok {
+		return
+	}
+	fmt.Fprint(w, "economia mensal estimada do planner (R$/mês, negativa = custa mais):")
+	sep := " "
+	for _, base := range []string{"fifo", "fifo-unplug"} {
+		bm, ok := monthly[base]
+		if !ok {
+			continue
+		}
+		if bm > 0 {
+			fmt.Fprintf(w, "%scontra %s R$ %.0f (%.1f%%)", sep, base, bm-pl, 100*(bm-pl)/bm)
+		} else {
+			fmt.Fprintf(w, "%scontra %s R$ %.0f", sep, base, bm-pl)
+		}
+		sep = ", "
+	}
+	fmt.Fprintln(w, "; compare com o ready%: um fifo que deixa ônibus sem carga gasta menos, então não é uma comparação equivalente")
 }
 
 // optional formats a measured value with no decimals: "—" when unknown, with the
