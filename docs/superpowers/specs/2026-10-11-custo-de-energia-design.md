@@ -43,7 +43,7 @@ Nova política opcional em `planner.Config` (`Cost *CostPolicy`, nil = tudo como
 ## 5. Interfaces
 
 - `internal/sim`: `Tariff` ganha campos novos (compatíveis: zero = comportamento atual); novas métricas em `Metrics`: `DemandKW` (maior bloco de 15 min), `DemandCostBRL`, `MonthlyBRL`; `CostBRL` continua sendo a energia da noite (nenhum número antigo muda).
-- `cmd/simrun`: flags `-cost-aware`, `-demand-target KW`, `-demand-peak-price`, `-demand-offpeak-price`, `-demand-contracted KW`, `-demand-mode azul|verde`, `-arrival-from`/`-arrival-to` (janela de chegadas em hora do dia) e colunas `demand kW`, `demand R$/mês`, `monthly R$`.
+- `cmd/simrun`: flags `-cost-aware`, `-demand-target KW`, `-demand-peak-price`, `-demand-offpeak-price`, `-demand-contracted KW`, `-demand-mode azul|verde`, `-arrival-from`/`-arrival-to` (janela de chegadas em minutos desde as 18:00; o laboratório pede horas depois das 18:00) e colunas `demand kW`, `demand R$/mês`, `monthly R$`.
 - `internal/lab` e `web`: campos avançados equivalentes, preset "Chegadas na ponta (custo)", colunas novas na Comparação e economia contra `fifo`/`fifo-unplug`; texto de ajuda sobre o proxy mensal.
 - `internal/realdata`: `garagem.csv` ganha colunas opcionais (`demanda_preco_ponta`, `demanda_preco_fora_ponta`, `demanda_contratada_kw`, `modo_demanda`); a linha "real" usa a mesma biblioteca de fatura; a janela de ponta que atravessa a meia-noite deixa de impedir a comparação de custo.
 
