@@ -76,7 +76,8 @@ import (
 //
 // What was measured (internal/sim/cost_property_test.go, COST_SWEEP=1 for the wide random
 // sweep): with fault-free or mild data the ready% with the policy was never lower than
-// without it on any seed; the energy cost was never more than 0.2% higher (tolerance, not
+// without it on any seed; the energy cost was never more than 0.2% higher (CI asserts this
+// for profile none only; mild is checked in the env-gated sweep) (tolerance, not
 // "never higher": a deferral that ends inside the peak can move a little energy into it,
 // the worst of the final wide sweep was 0.021%). Under severe or random faults this does NOT hold per seed:
 // SoC noise and consumption faults (a bus charged early keeps being topped up by noisy

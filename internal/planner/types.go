@@ -63,7 +63,9 @@ type CostPolicy struct {
 	DeferMarginMin float64
 	// DemandTargetKW caps the grid demand: the normal layer plans with the budget
 	// min(limit, DemandTargetKW) unless that would cost readiness (see the demand cap in
-	// cost.go). The limit stays the Enforce limit. 0 = off; negative, NaN or infinite
+	// cost.go). The target is SOFT: the plan may exceed it, up to the limit, whenever a
+	// bus would otherwise be short, so it does not protect a demand contract; the limit
+	// stays the hard ceiling (and the Enforce limit). 0 = off; negative, NaN or infinite
 	// makes the policy invalid.
 	//
 	// Set the target with the monthly bill in view: lowering the demand is not free. A cap
