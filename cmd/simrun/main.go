@@ -41,7 +41,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	deferMargin := fs.Int("defer-margin", planner.DefaultDeferMarginMin,
 		fmt.Sprintf("with -cost-aware: minutes of slack a deferred bus must still have when the peak ends (0..%d; 0 = %d)", sim.MaxDeferMarginMin, planner.DefaultDeferMarginMin))
 	demandTarget := fs.Float64("demand-target", 0,
-		"with -cost-aware: cap the grid demand near this many kW when readiness allows (0 = off; above -limit it has no effect). A cap can raise the monthly bill")
+		"with -cost-aware: cap the grid demand near this many kW when readiness allows (0 = off; above -limit it has no effect). A SOFT target: the planner exceeds it, up to -limit, whenever a bus would be left uncharged, so it does not protect a demand contract (the hard ceiling is -limit). A cap can raise the monthly bill")
 	demandMode := fs.String("demand-mode", "azul",
 		"demand billing mode: azul (peak and off-peak demand prices) or verde (one price, -demand-offpeak-price, on the whole night; -demand-peak-price is ignored)")
 	fs.Float64Var(&p.Demand.PeakPrice, "demand-peak-price", 0, "demand price in the peak window, R$/kW (azul only; 0 = none). Illustrative: use the utility's tariff")

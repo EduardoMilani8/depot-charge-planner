@@ -182,7 +182,7 @@ func TestCostMessagesAreInPortugueseWithPlainNumbers(t *testing.T) {
 		{`{"demand_contracted_kw":-3}`, "kW"},
 		{`{"arrival_from_min":-1,"arrival_to_min":100}`, "18:00"},
 		{`{"arrival_from_min":100,"arrival_to_min":50}`, fmt.Sprintf("até %d minutos", sim.MaxArrivalMin)},
-		{`{"nights_per_month":99}`, "de 1 a 31"},
+		{`{"nights_per_month":99}`, "0 (= 30) ou de 1 a 31"},
 	} {
 		rec := do(s, newReq("POST", "/api/compare", tc.body))
 		var e struct{ Error string }

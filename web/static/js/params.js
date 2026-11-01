@@ -114,7 +114,7 @@ export function fieldSpecs(limits) {
       placeholder: String(limits.default_defer_margin_min ?? 45), needsCostAware: true, advanced: true, group: 'cost',
       hint: 'Folga mínima que o ônibus adiado ainda deve ter ao terminar a carga. Vazio = padrão.' },
     { key: 'demand_target_kw', label: 'Meta de demanda (kW)', kind: 'float', min: 0, max: limits.max_limit_kw, optional: true, placeholder: 'sem meta',
-      needsCostAware: true, advanced: true, group: 'cost', hint: 'Limita a potência média de cada bloco de 15 min. Pode reduzir a demanda e, mesmo assim, aumentar a fatura mensal.' },
+      needsCostAware: true, advanced: true, group: 'cost', hint: 'Meta flexível: o planejador a ultrapassa, até o limite da garagem, sempre que algum ônibus ficaria sem carga; não serve para proteger o contrato (o teto rígido é o limite da garagem). Pode reduzir a demanda e, mesmo assim, aumentar a fatura mensal.' },
     { key: 'demand_peak_price', label: 'Preço de demanda na ponta (R$/kW)', kind: 'float', min: 0, max: limits.max_demand_price, optional: true, placeholder: '0',
       advanced: true, group: 'cost' },
     { key: 'demand_offpeak_price', label: 'Preço de demanda fora da ponta (R$/kW)', kind: 'float', min: 0, max: limits.max_demand_price, optional: true, placeholder: '0',

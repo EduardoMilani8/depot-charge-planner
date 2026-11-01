@@ -46,7 +46,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	deferMargin := fs.Int("defer-margin", planner.DefaultDeferMarginMin,
 		fmt.Sprintf("com -cost-aware: minutos de folga que um ônibus adiado ainda deve ter quando a ponta termina (0 a %d; 0 = %d)", sim.MaxDeferMarginMin, planner.DefaultDeferMarginMin))
 	demandTarget := fs.Float64("demand-target", 0,
-		"com -cost-aware: limita a demanda da rede perto destes kW quando a prontidão permite (0 = desligado; acima do limite da garagem não tem efeito). Um teto pode aumentar a fatura mensal")
+		"com -cost-aware: limita a demanda da rede perto destes kW quando a prontidão permite (0 = desligado; acima do limite da garagem não tem efeito). Meta flexível: o planner a ultrapassa, até o limite da garagem, sempre que algum ônibus ficaria sem carga; não serve para proteger o contrato (o teto rígido é o limite da garagem). Pode aumentar a fatura mensal")
 	announce := fs.Bool("announce-arrivals", false,
 		"com -cost-aware: o planner conhece a agenda da noite (os ônibus que ainda não chegaram). Padrão: não conhece, como numa noite reproduzida sem escala anunciada; sem isso o adiamento não age")
 	asJSON := fs.Bool("json", false, "escreve o relatório completo como JSON (em vez das tabelas)")
@@ -83,7 +83,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if *costAware && !*announce {
-		fmt.Fprintln(stderr, "nota: -cost-aware sem -announce-arrivals: o planner não conhece as chegadas futuras e não adia carga para depois da ponta (só a meta de demanda, se houver, age); use -announce-arrivals se a agenda da noite é conhecida")
+		fmt.Fprintln(stderr, "nota: -cost-aware sem -announce-arrivals: o planner não conhece as chegadas futuras e não adia carga para depois da ponta (só a meta de demanda, se houver, age); use -announce-arrivals se a agenda da noite é conhecida. Atenção: uma meta de demanda sem agenda é a configuração que o README desaconselha em garagens com vários ônibus por carregador (pode perder até 4 pontos de ready% numa semente)")
 	}
 
 	d, err := realdata.LoadDir(*dir)

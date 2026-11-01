@@ -142,7 +142,7 @@ func ptMessage(field string) string {
 	case "arrival-to":
 		return fmt.Sprintf("Fim das chegadas: informe um valor maior que o início e até %d minutos desde as 18:00 (a janela deve terminar antes da primeira saída).", sim.MaxArrivalMin)
 	case "nights-per-month":
-		return fmt.Sprintf("Noites por mês: informe de 1 a %d (padrão %d).", sim.MaxNightsPerMonth, billing.DefaultNightsPerMonth)
+		return fmt.Sprintf("Noites por mês: informe 0 (= %d) ou de 1 a %d.", billing.DefaultNightsPerMonth, sim.MaxNightsPerMonth)
 	}
 	return "Parâmetro inválido."
 }
