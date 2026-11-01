@@ -154,9 +154,156 @@ Os cenários são sintéticos e usam premissas de dados públicos ainda não val
 
 Todas as premissas de carga vêm de dados públicos e ainda precisam de validação com operadoras reais.
 
+## Custo de energia
+
+Duas coisas, ambas opcionais e desligadas por padrão (sem as opções abaixo, nenhum número deste README muda e `plan violations` segue 0): **medir a fatura** de uma noite de forma mais próxima da conta brasileira de energia (energia por horário mais demanda de potência) e **deixar o planner reduzir essa fatura** sem deixar ônibus sem carga. A especificação está em `docs/superpowers/specs/2026-10-11-custo-de-energia-design.md`.
+
+**Aviso, antes de tudo.** A tarifa é um modelo **paramétrico**, não a tarifa oficial de nenhuma distribuidora. Os preços de energia do gerador (ponta 18:00 a 21:00 a R$ 2,70/kWh, fora da ponta R$ 0,90/kWh) e os preços de demanda usados nas medições abaixo (R$ 50/kW na ponta e R$ 20/kW fora dela) são **ilustrativos**. Os valores reais, o modo (Azul ou Verde), a demanda contratada e a regra de ultrapassagem vêm da fatura e do contrato de cada garagem: **conferir com a distribuidora**. Os números em reais abaixo comparam estratégias entre si; não preveem a conta de ninguém.
+
+### O modelo
+
+- **Energia (R$/kWh).** Dois preços, ponta e fora da ponta, por janela de horário. A janela pode **atravessar a meia-noite** (por exemplo 22:00 a 06:00). `cost R$` continua sendo a energia da noite.
+- **Demanda (R$/kW).** Cobra-se o maior valor médio de potência da rede em **blocos de 15 minutos alinhados ao relógio** (`:00`, `:15`, `:30`, `:45`), não o pico instantâneo. Dois modos:
+  - **Azul:** um preço na ponta e outro fora dela, cada um sobre o maior bloco da sua janela.
+  - **Verde:** uma só cobrança, sobre o maior bloco de toda a noite, ao preço de **fora da ponta**; o preço de demanda da ponta é **ignorado** (o `simrun` e o laboratório avisam).
+- **Contrato (`-demand-contracted`).** Com demanda contratada, paga-se o contratado mesmo que se use menos (baixar o pico abaixo do contratado não baixa a fatura). Até 105% do contratado (tolerância de 5%) cobra-se o contratado; acima disso, o contratado mais o excedente acima do contratado a **2 vezes** o preço de demanda. No Azul o mesmo valor vale para cada janela. Sem contrato (0), cobra-se o maior bloco medido, que serve de proxy do que seria contratado e é onde reduzir o pico aparece em reais.
+- **Estimativa mensal.** `energia da noite x noites por mês (padrão 30) + demanda da noite`. É um **proxy**: trata uma noite como o mês inteiro, e na fatura real a demanda vale o maior bloco do mês. O número é rotulado "estimativa" em todas as telas (`monthly R$`, "demanda (proxy mensal)", "fatura mensal estimada").
+- Uma só biblioteca (`internal/billing`) calcula a fatura do simulador, do `replay` (linha `real`, a partir de `potencia.csv` ou, estimada, das sessões) e do laboratório, para que real e simulado não divirjam por causa de duas implementações.
+
+### Como usar
+
+- `simrun`: `-cost-aware` liga a política de custo do `planner` (as outras linhas da tabela não mudam); `-defer-margin MIN` (folga mínima, padrão 45) e `-demand-target KW` só valem com `-cost-aware` (sem ele o programa recusa). Preços e janela de chegadas: `-demand-peak-price`, `-demand-offpeak-price`, `-demand-mode azul|verde`, `-demand-contracted`, `-nights-per-month`, `-arrival-from` e `-arrival-to` (minutos desde as 18:00; 0 a 180 é a ponta). Com preços de demanda a tabela ganha `demand kW`, `demand R$/mês` e `monthly R$` e uma linha com a economia mensal estimada do `planner` contra `fifo` e `fifo-unplug`. O `simrun` com `-cost-aware` **anuncia a agenda de chegadas** ao `planner` (veja as limitações).
+- `replay`: `-cost-aware`, `-defer-margin`, `-demand-target` e `-announce-arrivals`; a fatura com demanda vem das colunas opcionais de `garagem.csv` (veja "Fatura com demanda" e `docs/dados-reais/README.md`). O `replay` é **às cegas** por padrão (não conhece os ônibus que ainda não chegaram) e só adia carga com `-announce-arrivals`.
+- Laboratório: os campos avançados "custo de energia" da aba Cenário (`cost_aware`, `defer_margin_min`, `demand_target_kw`, `demand_peak_price`, `demand_offpeak_price`, `demand_contracted_kw`, `demand_verde`, `arrival_from_min`, `arrival_to_min` e `nights_per_month` na API; as chegadas na interface são em horas do dia), os cenários prontos "Chegadas na ponta (custo)" e "Fatura com demanda (ilustrativa)", e na Comparação as colunas de demanda e fatura mensal, a frase com a diferença mensal do `planner` e, quando há alvo de demanda, a comparação com a mesma política sem alvo. A aba "Dados reais" ainda não tem as opções de custo do `planner`.
+
+### Premissas das medições
+
+Todos os números abaixo saem do `simrun` com o código deste repositório, 20 sementes, **ônibus que chegam entre 18:00 e 21:00** (`-arrival-from 0 -arrival-to 180`, ou seja, dentro da ponta) e saem entre 04:30 e 07:00, carregadores de 150 kW, bateria de 350 kWh, preços de demanda ilustrativos **Azul R$ 50/kW na ponta e R$ 20/kW fora**, **sem contrato**, 30 noites por mês e tarifa de energia padrão do gerador. "Simples" é o `planner` sem `-cost-aware`; "com custo" é `-cost-aware` (agenda anunciada); "alvo N" acrescenta `-demand-target N`. As colunas são médias por semente; `plan violations` foi 0 em todas as execuções de todas as tabelas (soma das 20 sementes, todos os controladores). Exemplo de comando: `go run ./cmd/simrun -buses 50 -chargers 50 -limit 2000 -profile severe -seeds 20 -arrival-from 0 -arrival-to 180 -demand-peak-price 50 -demand-offpeak-price 20 -cost-aware`.
+
+### Resultados medidos
+
+**Garagem padrão: 50 ônibus, 25 carregadores de 150 kW**
+
+| perfil | limite (kW) | planner | ready% | energia (R$/noite) | demanda (kW) | mensal estimado (R$) | mensal contra o planner simples | mensal contra o mesmo planner sem alvo |
+|---|---|---|---|---|---|---|---|---|
+| none | 600 | simples | 66,8 | 9.775 | 600 | 335.249 | — | — |
+| none | 600 | com custo | 66,8 | 9.775 | 600 | 335.249 | 0,0% | — |
+| none | 600 | com custo e alvo 500 | 66,8 | 9.770 | 600 | 335.105 | 0,0% | 0,0% |
+| none | 600 | com custo e alvo 800 | 66,8 | 9.775 | 600 | 335.249 | 0,0% | 0,0% |
+| none | 1.200 | simples | 100,0 | 15.527 | 1.200 | 549.801 | — | — |
+| none | 1.200 | com custo | 100,0 | 15.527 | 1.200 | 549.801 | 0,0% | — |
+| none | 1.200 | com custo e alvo 500 | 100,0 | 15.518 | 1.200 | 549.521 | -0,1% | -0,1% |
+| none | 1.200 | com custo e alvo 800 | 100,0 | 15.522 | 1.200 | 549.616 | 0,0% | 0,0% |
+| none | 2.000 | simples | 100,0 | 18.706 | 1.999 | 700.398 | — | — |
+| none | 2.000 | com custo | 100,0 | 18.706 | 1.999 | 700.398 | 0,0% | — |
+| none | 2.000 | com custo e alvo 500 | 100,0 | 18.687 | 1.999 | 699.567 | -0,1% | -0,1% |
+| none | 2.000 | com custo e alvo 800 | 100,0 | 18.552 | 1.998 | 684.028 | -2,3% | -2,3% |
+| severe | 600 | simples | 46,2 | 9.339 | 600 | 322.170 | — | — |
+| severe | 600 | com custo | 46,2 | 9.339 | 600 | 322.170 | 0,0% | — |
+| severe | 600 | com custo e alvo 500 | 46,2 | 9.337 | 600 | 322.111 | 0,0% | 0,0% |
+| severe | 600 | com custo e alvo 800 | 46,2 | 9.339 | 600 | 322.170 | 0,0% | 0,0% |
+| severe | 1.200 | simples | 82,3 | 16.021 | 1.200 | 564.510 | — | — |
+| severe | 1.200 | com custo | 82,3 | 16.021 | 1.200 | 564.510 | 0,0% | — |
+| severe | 1.200 | com custo e alvo 500 | 82,3 | 16.019 | 1.200 | 564.434 | 0,0% | 0,0% |
+| severe | 1.200 | com custo e alvo 800 | 82,3 | 16.020 | 1.200 | 564.458 | 0,0% | 0,0% |
+| severe | 2.000 | simples | 89,4 | 19.376 | 1.997 | 720.041 | — | — |
+| severe | 2.000 | com custo | 89,4 | 19.376 | 1.997 | 720.041 | 0,0% | — |
+| severe | 2.000 | com custo e alvo 500 | 89,0 | 19.354 | 1.997 | 719.313 | -0,1% | -0,1% |
+| severe | 2.000 | com custo e alvo 800 | 89,6 | 19.255 | 1.997 | 714.228 | -0,8% | -0,8% |
+
+**Uma tomada por ônibus: 30 ônibus, 30 carregadores**
+
+| perfil | limite (kW) | planner | ready% | energia (R$/noite) | demanda (kW) | mensal estimado (R$) | mensal contra o planner simples | mensal contra o mesmo planner sem alvo |
+|---|---|---|---|---|---|---|---|---|
+| none | 800 | simples | 100,0 | 9.740 | 800 | 348.209 | — | — |
+| none | 800 | com custo | 100,0 | 9.628 | 800 | 344.844 | -1,0% | — |
+| none | 800 | com custo e alvo 400 | 100,0 | 9.623 | 800 | 344.676 | -1,0% | 0,0% |
+| none | 800 | com custo e alvo 600 | 100,0 | 9.608 | 800 | 342.422 | -1,7% | -0,7% |
+| none | 1.500 | simples | 100,0 | 12.533 | 1.500 | 480.567 | — | — |
+| none | 1.500 | com custo | 100,0 | 5.836 | 1.500 | 205.075 | -57,3% | — |
+| none | 1.500 | com custo e alvo 750 | 100,0 | 9.515 | 750 | 337.936 | -29,7% | +64,8% |
+| none | 1.500 | com custo e alvo 1.000 | 100,0 | 8.610 | 1.000 | 324.590 | -32,5% | +58,3% |
+| none | 2.500 | simples | 100,0 | 14.513 | 2.357 | 591.923 | — | — |
+| none | 2.500 | com custo | 100,0 | 5.842 | 2.500 | 225.275 | -61,9% | — |
+| none | 2.500 | com custo e alvo 1.000 | 100,0 | 8.610 | 1.000 | 324.590 | -45,2% | +44,1% |
+| none | 2.500 | com custo e alvo 1.500 | 100,0 | 5.836 | 1.500 | 205.075 | -65,4% | -9,0% |
+| severe | 800 | simples | 91,2 | 10.179 | 800 | 361.349 | — | — |
+| severe | 800 | com custo | 90,8 | 10.044 | 800 | 357.300 | -1,1% | — |
+| severe | 800 | com custo e alvo 400 | 90,8 | 10.037 | 800 | 357.075 | -1,2% | -0,1% |
+| severe | 800 | com custo e alvo 600 | 89,7 | 10.008 | 800 | 355.995 | -1,5% | -0,4% |
+| severe | 1.500 | simples | 99,7 | 13.066 | 1.492 | 494.813 | — | — |
+| severe | 1.500 | com custo | 98,3 | 6.567 | 1.500 | 235.747 | -52,4% | — |
+| severe | 1.500 | com custo e alvo 750 | 98,7 | 10.097 | 1.286 | 366.127 | -26,0% | +55,3% |
+| severe | 1.500 | com custo e alvo 1.000 | 98,7 | 9.280 | 1.272 | 350.846 | -29,1% | +48,8% |
+| severe | 2.500 | simples | 100,0 | 15.127 | 2.316 | 609.878 | — | — |
+| severe | 2.500 | com custo | 99,5 | 6.741 | 2.500 | 266.819 | -56,3% | — |
+| severe | 2.500 | com custo e alvo 1.000 | 99,5 | 9.330 | 2.006 | 367.023 | -39,8% | +37,6% |
+| severe | 2.500 | com custo e alvo 1.500 | 98,7 | 6.634 | 2.060 | 248.976 | -59,2% | -6,7% |
+
+**Uma tomada por ônibus: 50 ônibus, 50 carregadores**
+
+| perfil | limite (kW) | planner | ready% | energia (R$/noite) | demanda (kW) | mensal estimado (R$) | mensal contra o planner simples | mensal contra o mesmo planner sem alvo |
+|---|---|---|---|---|---|---|---|---|
+| none | 600 | simples | 71,4 | 9.881 | 600 | 338.428 | — | — |
+| none | 600 | com custo | 71,4 | 9.881 | 600 | 338.428 | 0,0% | — |
+| none | 600 | com custo e alvo 300 | 71,4 | 9.880 | 600 | 338.396 | 0,0% | 0,0% |
+| none | 600 | com custo e alvo 500 | 71,4 | 9.879 | 600 | 338.370 | 0,0% | 0,0% |
+| none | 1.200 | simples | 100,0 | 15.648 | 1.200 | 553.447 | — | — |
+| none | 1.200 | com custo | 100,0 | 15.646 | 1.200 | 553.379 | 0,0% | — |
+| none | 1.200 | com custo e alvo 600 | 100,0 | 15.636 | 1.200 | 553.077 | -0,1% | -0,1% |
+| none | 1.200 | com custo e alvo 800 | 100,0 | 15.640 | 1.200 | 553.195 | 0,0% | 0,0% |
+| none | 2.000 | simples | 100,0 | 18.985 | 2.000 | 709.243 | — | — |
+| none | 2.000 | com custo | 100,0 | 11.605 | 2.000 | 421.060 | -40,6% | — |
+| none | 2.000 | com custo e alvo 1.000 | 100,0 | 11.591 | 2.000 | 420.642 | -40,7% | -0,1% |
+| none | 2.000 | com custo e alvo 1.600 | 100,0 | 14.801 | 1.600 | 555.491 | -21,7% | +31,9% |
+| severe | 600 | simples | 50,8 | 9.446 | 600 | 325.365 | — | — |
+| severe | 600 | com custo | 50,8 | 9.446 | 600 | 325.365 | 0,0% | — |
+| severe | 600 | com custo e alvo 300 | 50,8 | 9.446 | 600 | 325.366 | 0,0% | 0,0% |
+| severe | 600 | com custo e alvo 500 | 50,8 | 9.445 | 600 | 325.360 | 0,0% | 0,0% |
+| severe | 1.200 | simples | 84,5 | 16.322 | 1.200 | 573.665 | — | — |
+| severe | 1.200 | com custo | 84,6 | 16.320 | 1.200 | 573.606 | 0,0% | — |
+| severe | 1.200 | com custo e alvo 600 | 84,4 | 16.311 | 1.200 | 573.327 | -0,1% | 0,0% |
+| severe | 1.200 | com custo e alvo 800 | 84,4 | 16.313 | 1.200 | 573.400 | 0,0% | 0,0% |
+| severe | 2.000 | simples | 98,2 | 19.992 | 1.999 | 738.639 | — | — |
+| severe | 2.000 | com custo | 95,4 | 12.766 | 2.000 | 467.611 | -36,7% | — |
+| severe | 2.000 | com custo e alvo 1.000 | 95,4 | 12.759 | 2.000 | 467.393 | -36,7% | 0,0% |
+| severe | 2.000 | com custo e alvo 1.600 | 96,8 | 15.881 | 1.783 | 591.372 | -19,9% | +26,5% |
+
+Perfis `none` e `severe` (falhas), 20 sementes; as colunas "mensal contra..." comparam o mensal estimado da linha com o do `planner` simples e, para as linhas com alvo, com o `planner` com custo sem alvo. Leitura:
+
+- **Na garagem padrão (50 ônibus, 25 carregadores), a política de custo não economiza nada.** Ligar `-cost-aware` sem alvo dá exatamente os mesmos números do `planner` simples em todos os limites e perfis (por exemplo 2.000 kW `none`: R$ 18.706 por noite, mensal R$ 700.398, nos dois), porque ela só adia a carga quando há uma tomada para cada ônibus. Os alvos de 500 e 800 kW são inertes nos limites de 600 e 1.200 kW (diferença de 0,1% ou menos) e a 2.000 kW o de 500 kW também (-0,1%); o de 800 kW a 2.000 kW baixa o mensal 2,3% (R$ 684.028 contra R$ 700.398) e a demanda não muda. Um alvo viável nessa garagem funciona: a 2.000 kW `none`, alvo 1.600 kW baixa a demanda de 1.999 para 1.600 kW (-20,0%), a energia de R$ 18.706 para R$ 17.170 por noite e o mensal de R$ 700.398 para R$ 626.853 (-10,5%), com o mesmo `ready%` (100,0); no `severe` a demanda cai de 1.997 para 1.692 kW, o mensal de R$ 720.041 para R$ 648.856 e o `ready%` vai de 89,4 para 89,6. Mesmo assim, contra o `fifo-unplug` (a rotina manual de hoje) o `planner` custa 1,1% a mais a 2.000 kW `none` (R$ 700.398 contra R$ 692.823 por mês, os dois com 100% de ônibus prontos) porque entrega mais energia, e contra o `fifo` custa 18,9% a mais (o `fifo` deixa 41,4% dos ônibus sem carga). Com o alvo de 1.600 kW, o `planner` fica 9,5% abaixo do `fifo-unplug` (R$ 65.969 por mês) a 2.000 kW `none`.
+- **Em garagens com uma tomada por ônibus a economia é grande, quando o limite deixa folga.** 30 ônibus/30 carregadores a 1.500 kW `none`: energia de R$ 12.533 para R$ 5.836 por noite, mensal de R$ 480.567 para R$ 205.075 (-57,3%), e 56,4% (R$ 265.356 por mês) abaixo do `fifo-unplug`; a 2.500 kW, -61,9%. 50/50 a 2.000 kW `none`: -40,6% (R$ 709.243 para R$ 421.060) e 39,2% (R$ 271.763) abaixo do `fifo-unplug`; no `severe`, -36,7% e 34,3% abaixo do `fifo-unplug`. O limite precisa deixar folga: com limite apertado não há como adiar, e o ganho some (30/30 a 800 kW: -1,0%; 50/50 a 600 e 1.200 kW: 0,0%).
+- **O adiamento não baixa a demanda e pode subir.** Na tabela, a demanda com custo é igual ao limite (ou ao pico do simples) e, quando o simples não chegava ao limite, ela sobe: 30/30 a 2.500 kW `none`, de 2.357 para 2.500 kW (+6,1%). A economia vem da energia fora da ponta, não do pico.
+
+**Sob falhas o ganho é menor e a prontidão pode cair.** `ready%` médio e mensal estimado do `planner` simples e com custo, três margens de adiamento (`-defer-margin`), 20 sementes, mesmos preços e chegadas:
+
+| garagem | perfil | ready% planner simples | ready% com custo, margem 45 / 90 / 120 min | mensal estimado (R$) simples | mensal com custo, margem 45 / 90 / 120 min |
+|---|---|---|---|---|---|
+| 30/30 a 1.500 kW | mild | 100,0 | 100,0 / 100,0 / 100,0 | 486.202 | 211.085 / 214.047 / 231.168 |
+| 30/30 a 1.500 kW | random | 99,0 | 97,7 / 97,5 / 97,3 | 476.371 | 309.189 / 311.893 / 319.644 |
+| 30/30 a 1.500 kW | severe | 99,7 | 98,3 / 98,3 / 98,0 | 494.813 | 235.747 / 239.003 / 255.956 |
+| 50/50 a 2.000 kW | mild | 100,0 | 100,0 / 100,0 / 100,0 | 719.298 | 430.865 / 495.084 / 535.420 |
+| 50/50 a 2.000 kW | random | 94,4 | 93,4 / 93,7 / 93,8 | 727.420 | 512.912 / 561.874 / 592.024 |
+| 50/50 a 2.000 kW | severe | 98,2 | 95,4 / 96,0 / 96,7 | 738.639 | 467.611 / 526.026 / 564.426 |
+
+Margem maior deixa mais folga e perde menos ônibus, mas economiza menos: 50/50 a 2.000 kW `severe`, margens 45, 90 e 120 min dão `ready%` 95,4, 96,0 e 96,7 contra 98,2 do simples e mensal de R$ 467.611, R$ 526.026 e R$ 564.426 contra R$ 738.639. Veja as limitações.
+
+**O alvo de demanda é uma troca do operador, e pode subir a fatura mensal.** Baixar o pico não é, por si só, economia na fatura. Com o adiamento ligado, um alvo abaixo da carga que o adiamento concentra depois da ponta faz os ônibus carregarem durante ela: 50/50 a 2.000 kW `none`, alvo 1.600 kW: demanda de 2.000 para 1.600 kW (-20%), mas mensal de R$ 421.060 para R$ 555.491 (+31,9% contra a mesma política sem alvo); 30/30 a 1.500 kW, alvo 750 kW: R$ 205.075 para R$ 337.936 (+64,8%), alvo 1.000 kW: +58,3%. Pode também ajudar: 30/30 com limite de 2.500 kW e alvo 1.500 kW, -9,0% (R$ 225.275 para R$ 205.075). Quando existe **demanda contratada** igual ao limite, a demanda cobrada não muda (R$ 140.000 por mês nas duas linhas de 50/50 a 2.000 kW com contrato de 2.000 kW) e a fatura sobe do mesmo jeito (R$ 488.135 para R$ 584.037; 30/30 a 1.500 kW com contrato de 1.500 kW e alvo 750 kW: R$ 280.075 para R$ 390.436): o piso do contrato já supera a demanda medida. Ajuste o alvo olhando a `monthly R$`, não a `demand kW`.
+
+### Limitações (leia antes de confiar nos números)
+
+1. **A tarifa é paramétrica, não oficial.** Preços, janelas, o modo Azul/Verde, a tolerância de 5% e a ultrapassagem a 2 vezes são parâmetros do modelo; **conferir com a distribuidora**. O Verde usa o preço de demanda fora da ponta e ignora o preço de demanda da ponta. O contrato único vale para as duas janelas do Azul (na prática há dois contratos) e a regra exata entre o contratado e 105% dele é a simplificação "cobra-se o contratado".
+2. **O adiamento para depois da ponta só age quando a agenda de chegadas é anunciada e há uma tomada saudável para cada ônibus** (ônibus presentes mais anunciados que ainda não saíram, no máximo o número de carregadores saudáveis). Nos depósitos com menos tomadas que ônibus, como a garagem padrão de 50 ônibus/25 carregadores e o cenário de rodízio do projeto, ele **não faz nada** (os números são os do `planner` simples), e sem agenda também não adia (não há adiamento às cegas: ele perdia ônibus nos testes). O `replay` é às cegas por padrão; `-announce-arrivals` é a opção de quem sabe a escala da noite.
+3. **Exposição a falhas.** Com os perfis `severe` e `random` a prontidão pode cair com a política ligada (tabela acima: por exemplo 98,2 para 95,4 no 50/50 a 2.000 kW `severe`, margem 45). A garantia por semente (`ready%` nunca abaixo do `planner` simples, em toda semente) vale para os perfis `none` e `mild` e é verificada pelos testes nas garagens listadas; para `severe` e `random` os testes fixam apenas limites, medidos em 8 sementes nas garagens com uma tomada por ônibus: no máximo **40 pontos de `ready%` perdidos no total, 20 na pior semente e 7 sementes piores** (`faultBounds`, em `internal/sim/cost_property_test.go`), e para o alvo de demanda **30 pontos no total, 22 na pior semente e 3 sementes piores** (`capFaultBounds`, em `internal/sim/demand_property_test.go`). A versão anterior do adiamento, que ainda agia nos depósitos com menos tomadas que ônibus, tinha limites de 60 pontos no total, 32 na pior semente e 6 sementes piores. Os limites são os piores casos medidos, não uma garantia: uma garagem real com falhas pode ficar pior.
+4. **Tolerância de custo de 0,2%.** Em alguns casos o custo de energia pode ser até 0,2% maior com a política ligada do que sem ela, em alguma semente (os testes aceitam 0,2%; a varredura larga de 300 geometrias mediu no máximo 0,021%).
+5. **Anunciar as chegadas põe ônibus futuros no `Input` do planner e no registro de decisões** (`-log`): o `planner` com agenda anunciada recebe e grava, a cada minuto, também os ônibus que ainda não chegaram, com horário e carga de chegada. Isso é uma suposição sobre a garagem (que ela tem a escala em mãos) e aumenta o registro.
+6. **O alvo de demanda (`demand-target`) é uma troca, não uma economia garantida.** Pode subir a fatura mensal (linhas 30/30 e 50/50 acima), não economiza nada quando o piso do contrato de demanda já supera a demanda medida, e alvos muito abaixo do limite que a energia da noite não comporta são inertes (não mudam nada). Em garagens com **vários ônibus por carregador e sem agenda anunciada** ele pode perder até **4 pontos de `ready%`** em uma semente (medido, em até 6 de 8 sementes de uma célula): **não ligue o alvo nessas garagens sem uma escala**. Com a agenda anunciada, a demanda ficou acima da mesma política sem alvo em 5 de 3.120 sementes de uma varredura aleatória medida uma vez, fora do CI (até 2% do limite), e `ready%` nunca ficou abaixo. As medições da garagem padrão acima anunciam a agenda (é o que o `simrun` faz com `-cost-aware`); sem ela o alvo age menos, porque espera todas as tomadas serem ocupadas. Limitação de pico não é, por si só, economia na fatura.
+7. **A estimativa mensal trata uma noite como o mês.** `monthly R$` multiplica a energia de uma noite por 30 e soma a demanda dessa noite como se fosse a do mês; noites diferentes, fins de semana, bandeiras tarifárias, impostos e a demanda máxima do mês inteiro não entram. Serve para comparar estratégias, não para prever a fatura.
+8. **Dados sintéticos.** Todas as tabelas usam o gerador do simulador e preços ilustrativos; nenhum número vem de uma garagem real.
+
 ## Próximos passos
 
-O roadmap (validar com dados reais, modo sombra, custo de energia, dimensionamento e tela para o pátio) está em `docs/superpowers/plans/2026-10-08-proximos-passos.md`. Para pedir dados a uma operadora, veja `docs/dados-reais/README.md`.
+O roadmap (validar com dados reais, modo sombra, custo de energia, dimensionamento e tela para o pátio; o custo de energia já está implementado, veja acima) está em `docs/superpowers/plans/2026-10-08-proximos-passos.md`. Para pedir dados a uma operadora, veja `docs/dados-reais/README.md`.
 
 ## Licença
 

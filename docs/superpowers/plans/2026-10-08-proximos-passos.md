@@ -1,6 +1,6 @@
 # Próximos passos do depot-charge-planner (roadmap)
 
-Status: planos de alto nível, escritos em 2026-10-08 depois que o laboratório web ficou pronto. Cada passo ganha, antes de ser implementado, a sua própria especificação e o seu plano detalhado (o mesmo ciclo dos subprojetos 1 e 2). Só o passo 1 já tem especificação: `docs/superpowers/specs/2026-10-08-validacao-dados-reais-design.md`.
+Status: planos de alto nível, escritos em 2026-10-08 depois que o laboratório web ficou pronto. Cada passo ganha, antes de ser implementado, a sua própria especificação e o seu plano detalhado (o mesmo ciclo dos subprojetos 1 e 2). Já têm especificação (e estão implementados) o passo 1, `docs/superpowers/specs/2026-10-08-validacao-dados-reais-design.md`, e o passo 3, `docs/superpowers/specs/2026-10-11-custo-de-energia-design.md`.
 
 ## Ponto de partida
 
@@ -65,6 +65,8 @@ Ordem recomendada: **1 → 3 → 2 → 4 → 5**. O 1 testa se estamos certos; o
 ---
 
 ## Plano 3 — Custo de energia
+
+**Situação:** implementado (2026-11-01). Veja `README.md` ("Custo de energia", com as medições e as limitações), a especificação `docs/superpowers/specs/2026-10-11-custo-de-energia-design.md` e `docs/dados-reais/README.md` (colunas de demanda do `replay`). O adiamento só age com a agenda de chegadas anunciada e uma tomada por ônibus; o alvo de demanda é opcional e pode subir a fatura mensal.
 
 **Objetivo.** Além de "ônibus pronto", minimizar a fatura de energia (carregar fora da ponta, achatar o pico de demanda), sem nunca sacrificar a prontidão.
 

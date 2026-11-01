@@ -1,6 +1,6 @@
 # Custo de energia — especificação
 
-Status: aprovado pelo autor para implementação ("sim, faça o custo", 2026-10-11); as decisões abaixo foram tomadas por Claude e podem ser corrigidas na revisão. Passo 3 do roadmap (`docs/superpowers/plans/2026-10-08-proximos-passos.md`).
+Status: implementado (2026-11-01): `internal/billing`, a fatura com demanda no `simrun`, no laboratório e no `replay`, e o `planner` com `CostPolicy` (adiamento para depois da ponta e alvo de demanda); medições e limitações no `README.md` ("Custo de energia"). Aprovado pelo autor para implementação ("sim, faça o custo", 2026-10-11); as decisões abaixo foram tomadas por Claude e podem ser corrigidas na revisão. Passo 3 do roadmap (`docs/superpowers/plans/2026-10-08-proximos-passos.md`).
 
 ## 1. Objetivo e sucesso
 
