@@ -27,7 +27,7 @@ import (
 //     costTolerance (runCostCell checks the cost for ProfileNone; with mild data the cost
 //     is measured and reported but not asserted here; the wide sweep asserts it for both). The tolerance is not zero: a deferral
 //     that ends inside the peak can leave a little more energy in it than the plain plan
-//     (tapering buses; up to about 0.14% was measured).
+//     (tapering buses; the worst of the final wide sweep was 0.021%).
 //
 // In the profiles severe and random the strict per-seed property does NOT hold (SoC noise,
 // consumption faults, failures after the peak hit buses that charged late), so those cells

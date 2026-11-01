@@ -22,6 +22,17 @@ import (
 // so everything below is re-evaluated with the time left; when the peak ends tp is 0 and
 // every deferred bus starts at once.
 //
+// The schedule is taken at face value. The simulator announces each future bus with its
+// true arrival time and its true initial SoC (World.observe), and replay -announce-arrivals
+// uses the real ones, so the per-seed readiness property below was measured with a PERFECT
+// schedule. A throwaway run (not kept as a test) with the announced SoC scaled by 0.8, 1.2,
+// 1.5 and 2.0 and the announced arrival 15 and 60 minutes off, 20 seeds, profile none, on
+// 30 buses/30 chargers at 1500 kW and 50/50 at 2000 kW, lost no bus (ready% 100.0 with and
+// without the policy); only the saving moved (50/50: 38.9% less energy cost with the true
+// schedule, 35.8% with the SoC 20% too low, 41.8% to 46.0% with it too high). That is one
+// favourable geometry pair without faults: buses missing from the schedule, forecasts
+// combined with faults and tight limits were not measured.
+//
 // When it is allowed. Only with the schedule known (CostPolicy.ScheduleKnown: Input.Buses
 // lists the buses still to arrive, ArrivalMin > Now) and only when plugs are not scarce:
 // buses present + buses announced <= healthy chargers. Then every bus can have its own
@@ -67,7 +78,7 @@ import (
 // sweep): with fault-free or mild data the ready% with the policy was never lower than
 // without it on any seed; the energy cost was never more than 0.2% higher (tolerance, not
 // "never higher": a deferral that ends inside the peak can move a little energy into it,
-// up to about 0.14% was seen). Under severe or random faults this does NOT hold per seed:
+// the worst of the final wide sweep was 0.021%). Under severe or random faults this does NOT hold per seed:
 // SoC noise and consumption faults (a bus charged early keeps being topped up by noisy
 // readings, a deferred one has had less time) and failures after the peak (sensors
 // freezing, chargers failing) hit energy not yet delivered. Those profiles have pinned
@@ -77,7 +88,10 @@ import (
 // on for a planner with a cost policy) every Input the simulator hands out, and so every
 // record of the decision log, also carries the buses that have not arrived yet.
 //
-// Demand cap (CostPolicy.DemandTargetKW > 0). The second lever: PlanNormal plans with the
+// Demand cap (CostPolicy.DemandTargetKW > 0). The target is SOFT: capDemand drops it and
+// plans with the full site limit whenever readiness is at stake, so the demand can exceed
+// it (up to the limit) and it does not protect a demand contract; the hard ceiling is the
+// site limit. The second lever: PlanNormal plans with the
 // budget min(AvailableKW, DemandTargetKW) instead of the full budget, so the grid demand
 // (the largest 15-minute block on the bill) stays near the target. The full limit stays
 // what Enforce checks, and the deferral works on the budget the cap chose. The cap does

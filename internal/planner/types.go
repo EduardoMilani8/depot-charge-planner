@@ -81,7 +81,11 @@ type CostPolicy struct {
 	// still to arrive with ArrivalMin > Now. Deferral needs it (and a plug for every bus):
 	// with false, the default, deferral does nothing, because the planner cannot tell
 	// whether the buses that have not arrived yet will find a free plug. The demand cap
-	// works without it but is safer with it (it counts the announced buses).
+	// works without it but is weaker, and in depots with several buses per charger it can
+	// lose up to 4 points of ready% on a seed: do not enable the cap there without a
+	// schedule (README, "Custo de energia", limitations). The schedule is taken at face
+	// value: the simulator announces the true arrival time and the true initial SoC, and
+	// replay -announce-arrivals the real ones, so forecast errors are not modelled.
 	ScheduleKnown bool
 }
 
